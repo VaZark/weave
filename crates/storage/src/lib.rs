@@ -1,0 +1,270 @@
+//! SQLite persistence: migrations, canonical library tables and filter evaluation.
+
+mod migrations;
+mod query;
+
+use std::path::Path;
+
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use weave_core::{Error, FilterSpec, Result, ScannedTrack, Track, TrackId, normalize_tag};
+
+fn db_err(e: rusqlite::Error) -> Error {
+    Error::Storage(e.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmartPlaylist {
+    pub id: String,
+    pub name: String,
+    pub filter: FilterSpec,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportStats {
+    pub added: usize,
+    pub skipped: usize,
+}
+
+pub struct Storage {
+    conn: Connection,
+}
+
+impl Storage {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(|e| Error::Storage(e.to_string()))?;
+        }
+        Self::init(Connection::open(path).map_err(db_err)?)
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        Self::init(Connection::open_in_memory().map_err(db_err)?)
+    }
+
+    fn init(mut conn: Connection) -> Result<Self> {
+        conn.pragma_update(None, "foreign_keys", true).map_err(db_err)?;
+        conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
+        query::register_functions(&conn)?;
+        migrations::run(&mut conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Insert tracks not yet known by `(backend_id, external_id)`; all-or-nothing.
+    pub fn import_tracks(&mut self, backend_id: &str, tracks: &[ScannedTrack]) -> Result<ImportStats> {
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let mut stats = ImportStats::default();
+        for t in tracks {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT 1 FROM sources WHERE backend_id = ?1 AND external_id = ?2",
+                    params![backend_id, t.external_id],
+                    |_| Ok(true),
+                )
+                .optional()
+                .map_err(db_err)?
+                .unwrap_or(false);
+            if exists {
+                stats.skipped += 1;
+                continue;
+            }
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            tx.execute(
+                "INSERT INTO tracks (id, title, artist, album, bpm) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, t.title, t.artist, t.album, t.bpm],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
+                params![uuid::Uuid::new_v4().simple().to_string(), id, backend_id, t.external_id],
+            )
+            .map_err(db_err)?;
+            stats.added += 1;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(stats)
+    }
+
+    pub fn search(&self, filter: &FilterSpec) -> Result<Vec<Track>> {
+        filter.validate()?;
+        let (sql, args) = query::build(&filter.clone().normalized());
+        let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| {
+                Ok(Track {
+                    id: TrackId(r.get(0)?),
+                    title: r.get(1)?,
+                    artist: r.get(2)?,
+                    album: r.get(3)?,
+                    bpm: r.get(4)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
+    }
+
+    pub fn track(&self, id: &str) -> Result<Track> {
+        self.conn
+            .query_row(
+                "SELECT id, title, artist, album, bpm FROM tracks WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Track {
+                        id: TrackId(r.get(0)?),
+                        title: r.get(1)?,
+                        artist: r.get(2)?,
+                        album: r.get(3)?,
+                        bpm: r.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("track {id}")))
+    }
+
+    /// External reference of a track's source for `backend_id`.
+    pub fn source_ref(&self, track_id: &str, backend_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT external_id FROM sources WHERE track_id = ?1 AND backend_id = ?2",
+                params![track_id, backend_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Add tags (deduplicated, case-insensitive). Returns how many were newly applied.
+    pub fn add_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
+        self.track(track_id)?;
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let mut added = 0;
+        for name in names {
+            let display = name.trim();
+            let norm = normalize_tag(display);
+            if norm.is_empty() {
+                return Err(Error::InvalidInput("tag names cannot be empty".into()));
+            }
+            let tag_id = ensure_tag(&tx, display, &norm)?;
+            added += tx
+                .execute(
+                    "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
+                    params![track_id, tag_id],
+                )
+                .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(added)
+    }
+
+    /// Remove tag associations. Returns how many were removed.
+    pub fn remove_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
+        self.track(track_id)?;
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let mut removed = 0;
+        for name in names {
+            removed += tx
+                .execute(
+                    "DELETE FROM track_tags WHERE track_id = ?1 AND tag_id IN
+                       (SELECT id FROM tags WHERE normalized_name = ?2)",
+                    params![track_id, normalize_tag(name)],
+                )
+                .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(removed)
+    }
+
+    pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
+        self.track(track_id)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT g.name FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
+                 WHERE tt.track_id = ?1 ORDER BY g.normalized_name",
+            )
+            .map_err(db_err)?;
+        stmt.query_map([track_id], |r| r.get(0))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)
+    }
+
+    pub fn create_playlist(&mut self, name: &str, filter: &FilterSpec) -> Result<SmartPlaylist> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::InvalidInput("playlist name cannot be empty".into()));
+        }
+        let filter = filter.clone().normalized();
+        filter.validate()?;
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        match self.conn.execute(
+            "INSERT INTO smart_playlists (id, name, normalized_name, filter_spec) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, normalize_tag(name), spec_json(&filter)?],
+        ) {
+            Ok(_) => Ok(SmartPlaylist { id, name: name.into(), filter }),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                Err(Error::AlreadyExists(format!("playlist \"{name}\"")))
+            }
+            Err(e) => Err(db_err(e)),
+        }
+    }
+
+    pub fn playlist(&self, name: &str) -> Result<SmartPlaylist> {
+        self.conn
+            .query_row(
+                "SELECT id, name, filter_spec FROM smart_playlists WHERE normalized_name = ?1",
+                [normalize_tag(name)],
+                row_to_playlist,
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("playlist \"{name}\"")))?
+    }
+
+    pub fn playlists(&self) -> Result<Vec<SmartPlaylist>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, filter_spec FROM smart_playlists ORDER BY normalized_name")
+            .map_err(db_err)?;
+        let rows = stmt.query_map([], row_to_playlist).map_err(db_err)?;
+        rows.map(|r| r.map_err(db_err)?).collect()
+    }
+
+    pub fn update_playlist_filter(&mut self, id: &str, filter: &FilterSpec) -> Result<()> {
+        filter.validate()?;
+        self.conn
+            .execute(
+                "UPDATE smart_playlists SET filter_spec = ?1 WHERE id = ?2",
+                params![spec_json(filter)?, id],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+}
+
+fn ensure_tag(tx: &Transaction, display: &str, norm: &str) -> Result<i64> {
+    tx.execute(
+        "INSERT OR IGNORE INTO tags (name, normalized_name) VALUES (?1, ?2)",
+        params![display, norm],
+    )
+    .map_err(db_err)?;
+    tx.query_row("SELECT id FROM tags WHERE normalized_name = ?1", [norm], |r| r.get(0))
+        .map_err(db_err)
+}
+
+fn spec_json(f: &FilterSpec) -> Result<String> {
+    serde_json::to_string(f).map_err(|e| Error::Storage(e.to_string()))
+}
+
+fn row_to_playlist(r: &rusqlite::Row) -> rusqlite::Result<Result<SmartPlaylist>> {
+    let json: String = r.get(2)?;
+    Ok(serde_json::from_str::<FilterSpec>(&json)
+        .map(|filter| SmartPlaylist { id: r.get(0).unwrap(), name: r.get(1).unwrap(), filter })
+        .map_err(|e| Error::Storage(format!("corrupt filter_spec: {e}"))))
+}
+
+#[cfg(test)]
+mod tests;

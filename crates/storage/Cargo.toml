@@ -1,0 +1,11 @@
+[package]
+name = "weave-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+weave-core.workspace = true
+rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }

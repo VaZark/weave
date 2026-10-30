@@ -1,0 +1,10 @@
+[package]
+name = "weave-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+weave-core.workspace = true
+weave-storage.workspace = true
+weave-local.workspace = true

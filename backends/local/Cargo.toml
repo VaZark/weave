@@ -1,0 +1,13 @@
+[package]
+name = "weave-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+weave-core.workspace = true
+lofty = "0.22"
+walkdir = "2"
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
