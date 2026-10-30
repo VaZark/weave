@@ -12,30 +12,30 @@
 
 ## Features and CLI
 
-| Feature               | CLI                                                                                     | Behavior                                                                                                                           |
-| --------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Import music          | `weave-player import ~/Music`                                                           | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports.                        |
+| Feature               | CLI                                                                                     | Behavior                                                                                                                                 |
+| --------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Import music          | `weave-player import ~/Music`                                                           | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports.                              |
 | List tracks           | `weave-player list [--page N --limit N \| --all]`                                       | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. Add `--show-ids` for the slug ID column. |
-| Play                  | `weave-player play <track-id>`                                                          | Play an available local source.                                                                                                    |
-| Playback controls     | `weave-player pause`, `weave-player resume`, `weave-player next`                        | Control the active playback session.                                                                                               |
-| Current track         | `weave-player now`                                                                      | Show playback state and track details.                                                                                             |
-| Add tags              | `weave-player add --tag bachata`                                                        | Tag the current track.                                                                                                             |
-| Add tags to track     | `weave-player add <track-id> --tag bachata,90s`                                         | Add multiple tags, without duplicates.                                                                                             |
-| Remove tags           | `weave-player remove <track-id> --tag bachata`                                          | Remove tag associations.                                                                                                           |
-| Show tags             | `weave-player tags <track-id>`                                                          | List a track's custom tags.                                                                                                        |
-| Match all tags        | `weave-player search --tag-all bachata,90s`                                             | Require every tag.                                                                                                                 |
-| Match any tags        | `weave-player search --tag-any bachata,zouk`                                            | Require at least one tag.                                                                                                          |
-| Exclude tags          | `weave-player search --tag-none remix,live`                                             | Exclude tracks with any specified tag.                                                                                             |
-| BPM range             | `weave-player search --bpm-min 90 --bpm-max 140`                                        | Inclusive bounds; unknown BPM does not match.                                                                                      |
-| Combined filters      | `weave-player search --tag-all bachata --tag-none live --bpm-min 90`                    | Apply every provided filter group.                                                                                                 |
-| Metadata search       | `weave-player search --artist "Romeo Santos" --year-min 1990`                           | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`.                                     |
-| Create smart playlist | `weave-player playlist create "Bachata 90s" --description "Slow" --tag-all bachata,90s` | Save filters, not track membership.                                                                                                |
-| Show playlist         | `weave-player playlist show "Bachata 90s"`                                              | Evaluate its saved filters.                                                                                                        |
-| Update playlist       | `weave-player playlist update "Bachata 90s" --bpm-min 90`                               | Change specified filters; retain others.                                                                                           |
-| Play playlist         | `weave-player playlist play "Bachata 90s"`                                              | Queue current matching tracks.                                                                                                     |
-| List playlists        | `weave-player playlist list`                                                            | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                       |
-| List backends         | `weave-player backend list`                                                             | Show registered backends and capabilities.                                                                                         |
-| Inspect backend       | `weave-player backend show local`                                                       | Show capabilities and availability.                                                                                                |
+| Play                  | `weave-player play <track-id>`                                                          | Play an available local source.                                                                                                          |
+| Playback controls     | `weave-player pause`, `weave-player resume`, `weave-player next`                        | Control the active playback session.                                                                                                     |
+| Current track         | `weave-player now`                                                                      | Show playback state and track details.                                                                                                   |
+| Add tags              | `weave-player add --tag bachata`                                                        | Tag the current track.                                                                                                                   |
+| Add tags to track     | `weave-player add <track-id> --tag bachata,90s`                                         | Add multiple tags, without duplicates.                                                                                                   |
+| Remove tags           | `weave-player remove <track-id> --tag bachata`                                          | Remove tag associations.                                                                                                                 |
+| Show tags             | `weave-player tags <track-id>`                                                          | List a track's custom tags.                                                                                                              |
+| Match all tags        | `weave-player search --tag-all bachata,90s`                                             | Require every tag.                                                                                                                       |
+| Match any tags        | `weave-player search --tag-any bachata,zouk`                                            | Require at least one tag.                                                                                                                |
+| Exclude tags          | `weave-player search --tag-none remix,live`                                             | Exclude tracks with any specified tag.                                                                                                   |
+| BPM range             | `weave-player search --bpm-min 90 --bpm-max 140`                                        | Inclusive bounds; unknown BPM does not match.                                                                                            |
+| Combined filters      | `weave-player search --tag-all bachata --tag-none live --bpm-min 90`                    | Apply every provided filter group.                                                                                                       |
+| Metadata search       | `weave-player search --artist "Romeo Santos" --year-min 1990`                           | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`.                                           |
+| Create smart playlist | `weave-player playlist create "Bachata 90s" --description "Slow" --tag-all bachata,90s` | Save filters, not track membership.                                                                                                      |
+| Show playlist         | `weave-player playlist show "Bachata 90s"`                                              | Evaluate its saved filters.                                                                                                              |
+| Update playlist       | `weave-player playlist update "Bachata 90s" --bpm-min 90`                               | Change specified filters; retain others.                                                                                                 |
+| Play playlist         | `weave-player playlist play "Bachata 90s"`                                              | Queue current matching tracks.                                                                                                           |
+| List playlists        | `weave-player playlist list`                                                            | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                             |
+| List backends         | `weave-player backend list`                                                             | Show registered backends and capabilities.                                                                                               |
+| Inspect backend       | `weave-player backend show local`                                                       | Show capabilities and availability.                                                                                                      |
 
 ### Output conventions
 
@@ -133,12 +133,12 @@ Every ID that a user, script, frontend or plugin sees or types is a **slug**: lo
 Internal surrogate keys (the track UUID, source and tag row IDs) exist only inside the database and are never shown,
 returned by the engine API, printed by the CLI or accepted as the documented way to address something.
 
-| Thing | Slug | Example |
-| ----- | ---- | ------- |
-| Track | `artist[-album]-title-source` | `romeo-santos-propuesta-indecente-local` |
-| Playlist | name | `bachata-90s` |
-| Backend | chosen by the backend | `local`, `spotify` |
-| Future entities | derived from their name, same rules | |
+| Thing           | Slug                                | Example                                  |
+| --------------- | ----------------------------------- | ---------------------------------------- |
+| Track           | `artist[-album]-title-source`       | `romeo-santos-propuesta-indecente-local` |
+| Playlist        | name                                | `bachata-90s`                            |
+| Backend         | chosen by the backend               | `local`, `spotify`                       |
+| Future entities | derived from their name, same rules |                                          |
 
 Rules:
 
@@ -197,14 +197,15 @@ weave/
 
 ## Milestones
 
-| Phase | Deliverable                                                                                |
-| ----- | ------------------------------------------------------------------------------------------ |
-| 0.a1  | SQLite library, local import, tags, filters, CLI                                           |
-| 0.a2  | Local playback, queue, saved dynamic playlists, load and track synchronised lyrics         |
-| 0.a3  | Second backend, capability discovery, external plugin contract                             |
-| 0.a4  | Jellyfin integration - playback, playlist sync, save song source to source-neutral library |
-| 0.1   | Spotify integration - playback, playlist sync, save song source to source-neutral library  |
-| 0.2   | GPUI library browser, tag editor, smart playlist builder                                   |
+| Phase | Deliverable                                                                                                                                                      |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.a1  | SQLite library, local import, tags, filters, CLI                                                                                                                 |
+| 0.a2  | Static/dynamic playlists, sorting, limits, favorites, ratings                                                                                                    |
+| 0.a3  | queueing, stop or continue at end of queue (similar tags and avg bpm), sleep timer, queue management and persistence, shuffle, repeat (this song, this playlist) |
+| 0.a4  | MPRIS, local playback, synchronized lyrics                                                                                                                       |
+| 0.a5  | Second backend, capability discovery, external plugin contract : Jellyfin integration - playback, playlist sync, save song source to source-neutral library      |
+| 0.1   | Spotify integration                                                                                                                                              |
+| 0.2   | GPUI library browser, tag editor, smart playlist builder                                                                                                         |
 
 ## Non-goals for MVP
 
