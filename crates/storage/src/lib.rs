@@ -31,6 +31,10 @@ pub struct ImportStats {
     pub skipped: usize,
 }
 
+/// Oldest SQLite this crate supports: `rusqlite`'s own floor. The SQL used here
+/// needs nothing newer, but only the bundled version is tested in CI-style runs.
+pub const MIN_SQLITE_VERSION: i32 = 3_014_000;
+
 pub struct Storage {
     conn: Connection,
 }
@@ -49,6 +53,13 @@ impl Storage {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
+        let found = rusqlite::version_number();
+        if found < MIN_SQLITE_VERSION {
+            return Err(Error::Storage(format!(
+                "SQLite {} is too old; Weave needs 3.14.0 or newer",
+                rusqlite::version()
+            )));
+        }
         conn.pragma_update(None, "foreign_keys", true)
             .map_err(db_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")

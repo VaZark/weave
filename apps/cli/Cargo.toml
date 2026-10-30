@@ -8,6 +8,10 @@ license.workspace = true
 name = "weave-player"
 path = "src/main.rs"
 
+[features]
+default = ["bundled-sqlite"]
+bundled-sqlite = ["weave-engine/bundled-sqlite"]
+
 [dependencies]
 weave-core.workspace = true
 weave-engine.workspace = true

@@ -6,10 +6,28 @@ conventions every change must respect. This page covers getting a working checko
 ## Prerequisites
 
 - **Rust 1.85 or newer** (the workspace uses edition 2024). Install with [rustup](https://rustup.rs).
-- **A C compiler** (`gcc` or `clang`). SQLite is compiled from source and bundled, so no system SQLite is needed.
+- **A C toolchain** (`gcc` or `clang`). Rust uses it to link binaries on Linux, and by default it also compiles the
+  bundled SQLite (see below).
 - Git. No database server, daemon or account is required.
 
 The GPUI desktop app is not built yet (planned for 0.a3); only the CLI and the engine exist today.
+
+## SQLite
+
+By default SQLite is compiled from source and statically linked (cargo feature `bundled-sqlite`, on by default), so
+nothing needs to be installed and every build uses the same version.
+
+To link your system SQLite instead (no SQLite compile; needs the SQLite shared library and, for some distros, its
+`-dev`/headers package), disable the default features:
+
+```bash
+cargo build -p weave-player --no-default-features
+cargo test --workspace --no-default-features
+```
+
+**Minimum SQLite: 3.14.0** (the floor of the `rusqlite` bindings; Weave's own SQL needs nothing newer). The check
+runs at startup, so an older system library fails with a clear error. Only the bundled version (3.50) and one recent
+system version (3.53) have actually been tested, so report any older-version problems you hit.
 
 ## Get the code and build
 

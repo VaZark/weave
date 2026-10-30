@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Compile SQLite from source (needs a C compiler). Disable with --no-default-features
+# to link the system SQLite instead (3.14.0 or newer).
+default = ["bundled-sqlite"]
+bundled-sqlite = ["rusqlite/bundled"]
+
 [dependencies]
 weave-core.workspace = true
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = "0.37"
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }

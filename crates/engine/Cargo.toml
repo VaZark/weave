@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["bundled-sqlite"]
+bundled-sqlite = ["weave-storage/bundled-sqlite"]
+
 [dependencies]
 weave-core.workspace = true
 weave-storage.workspace = true

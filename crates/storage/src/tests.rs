@@ -444,3 +444,12 @@ fn slugs_are_assigned_unique_and_resolvable() {
         Err(Error::NotFound(_))
     ));
 }
+
+#[test]
+fn linked_sqlite_meets_minimum() {
+    assert!(
+        rusqlite::version_number() >= MIN_SQLITE_VERSION,
+        "{}",
+        rusqlite::version()
+    );
+}
