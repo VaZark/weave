@@ -64,7 +64,7 @@ pub fn run(conn: &mut Connection) -> Result<()> {
     let applied: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(db)?;
     if applied > MIGRATIONS.len() {
         return Err(Error::Storage(format!(
-            "database schema v{applied} is newer than this build (v{}); \
+            "incompatible database schema v{applied} (this build uses v{}); \
              pre-0.1 databases are not migrated, so delete the library file and re-import",
             MIGRATIONS.len()
         )));

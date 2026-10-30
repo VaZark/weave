@@ -41,6 +41,7 @@ impl Storage {
             std::fs::create_dir_all(dir).map_err(|e| Error::Storage(e.to_string()))?;
         }
         Self::init(Connection::open(path).map_err(db_err)?)
+            .map_err(|e| Error::Storage(format!("{e}: {}", path.display())))
     }
 
     pub fn open_in_memory() -> Result<Self> {
