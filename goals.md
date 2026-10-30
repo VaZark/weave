@@ -15,7 +15,7 @@
 | Feature               | CLI                                                           | Behavior                                                       |
 | --------------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
 | Import music          | `weave import ~/Music`                                        | Index files without modifying them; prevent duplicate imports. |
-| List tracks           | `weave list [--page N --limit N \| --all]`                    | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. IDs may be shortened to a unique prefix. |
+| List tracks           | `weave list [--page N --limit N \| --all]`                    | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. A track is addressed by its ID, a unique ID prefix, or its slug. |
 | Play                  | `weave play <track-id>`                                       | Play an available local source.                                |
 | Playback controls     | `weave pause`, `weave resume`, `weave next`                   | Control the active playback session.                           |
 | Current track         | `weave now`                                                   | Show playback state and track details.                         |
@@ -113,6 +113,7 @@ erDiagram
 ```
 
 - `TRACK.id` is independent of filesystem paths and service IDs.
+- Each track also has a stable, readable slug `artist[-album]-title-source` (e.g. `romeo-santos-propuesta-indecente-local`), assigned at import and unique (`-2`, `-3` on collision). Lowercase letters/digits of any script and `-` only; apostrophes dropped, `&` → `and`, any other character run → `-`; segments capped at 48 chars; unknown artist → `unknown`, empty title → `untitled`, album omitted when absent; `source` is the first source's backend ID. Metadata edits do not change it. Lookups normalize their input the same way.
 - Descriptive metadata (title, artist, album, album artist, genre, composer, year, track/disc number, duration, BPM) lives in an indexed `TRACK_METADATA` table (one row per track, with lowercased copies for filtering and ordering); `TRACK` holds identity only.
 - A track may have multiple sources.
 - Smart playlists persist filters and resolve membership on demand.

@@ -15,7 +15,8 @@ pub fn register_functions(conn: &Connection) -> Result<()> {
 }
 
 pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, m.composer, \
-                           m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm";
+                           m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
+                           (SELECT slug FROM tracks WHERE id = m.track_id)";
 
 /// Matches the `meta_sort` index, so paging does not need a sort step.
 pub const ORDER: &str = " ORDER BY m.artist_norm, m.album_norm, m.title_norm, m.track_id";

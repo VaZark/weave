@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use weave_core::{
     Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId, normalize_tag,
+    slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -72,7 +73,12 @@ impl Storage {
                 continue;
             }
             let id = uuid::Uuid::new_v4().simple().to_string();
-            tx.execute("INSERT INTO tracks (id) VALUES (?1)", [&id]).map_err(db_err)?;
+            let m = &t.metadata;
+            let slug = unique_slug(
+                &tx,
+                &track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title, backend_id),
+            )?;
+            tx.execute("INSERT INTO tracks (id, slug) VALUES (?1, ?2)", [&id, &slug]).map_err(db_err)?;
             insert_metadata(&tx, &id, &t.metadata)?;
             tx.execute(
                 "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
@@ -121,24 +127,34 @@ impl Storage {
             .ok_or_else(|| Error::NotFound("track".into()))
     }
 
-    fn resolve_id(&self, prefix: &str) -> Result<String> {
-        let prefix = prefix.trim();
-        if prefix.is_empty() {
+    /// Accepts a full ID, a unique ID prefix, or a slug (normalized with `slugify`,
+    /// so `Romeo Santos-Song-local` finds `romeo-santos-song-local`).
+    fn resolve_id(&self, key: &str) -> Result<String> {
+        let key = key.trim();
+        if key.is_empty() {
             return Err(Error::InvalidInput("track id cannot be empty".into()));
+        }
+        let by_slug: Option<String> = self
+            .conn
+            .query_row("SELECT id FROM tracks WHERE slug = ?1", [slugify(key)], |r| r.get(0))
+            .optional()
+            .map_err(db_err)?;
+        if let Some(id) = by_slug {
+            return Ok(id);
         }
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM tracks WHERE substr(id, 1, length(?1)) = ?1 LIMIT 2")
             .map_err(db_err)?;
         let ids: Vec<String> = stmt
-            .query_map([prefix], |r| r.get(0))
+            .query_map([key], |r| r.get(0))
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)?;
         match ids.len() {
-            0 => Err(Error::NotFound(format!("track {prefix}"))),
+            0 => Err(Error::NotFound(format!("track {key}"))),
             1 => Ok(ids.into_iter().next().unwrap()),
-            _ => Err(Error::InvalidInput(format!("track id prefix \"{prefix}\" is ambiguous"))),
+            _ => Err(Error::InvalidInput(format!("track id prefix \"{key}\" is ambiguous"))),
         }
     }
 
@@ -149,6 +165,7 @@ impl Storage {
             .query_map(rusqlite::params_from_iter(args), |r| {
                 Ok(Track {
                     id: TrackId(r.get(0)?),
+                    slug: r.get(12)?,
                     metadata: Metadata {
                         title: r.get(1)?,
                         artist: r.get(2)?,
@@ -321,6 +338,27 @@ impl Storage {
             .map_err(db_err)?;
         Ok(())
     }
+}
+
+/// `base`, or `base-2`, `base-3`… if taken.
+pub(crate) fn unique_slug(tx: &Transaction, base: &str) -> Result<String> {
+    let taken = |s: &str| -> Result<bool> {
+        tx.query_row("SELECT 1 FROM tracks WHERE slug = ?1", [s], |_| Ok(()))
+            .optional()
+            .map(|r| r.is_some())
+            .map_err(db_err)
+    };
+    if !taken(base)? {
+        return Ok(base.to_string());
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find_map(|c| match taken(&c) {
+            Ok(false) => Some(Ok(c)),
+            Ok(true) => None,
+            Err(e) => Some(Err(e)),
+        })
+        .expect("unbounded range")
 }
 
 fn insert_metadata(tx: &Transaction, id: &str, m: &Metadata) -> Result<()> {

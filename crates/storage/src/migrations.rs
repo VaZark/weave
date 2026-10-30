@@ -1,9 +1,14 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use weave_core::{Error, Result};
 
 /// Append-only. `PRAGMA user_version` records how many have been applied.
-const MIGRATIONS: &[&str] = &[
-    "CREATE TABLE tracks (
+enum Step {
+    Sql(&'static str),
+    Code(fn(&Transaction) -> Result<()>),
+}
+
+const MIGRATIONS: &[Step] = &[
+    Step::Sql("CREATE TABLE tracks (
          id     TEXT PRIMARY KEY,
          title  TEXT NOT NULL,
          artist TEXT,
@@ -34,10 +39,10 @@ const MIGRATIONS: &[&str] = &[
          name            TEXT NOT NULL,
          normalized_name TEXT NOT NULL UNIQUE,
          filter_spec     TEXT NOT NULL
-     );",
+     );"),
     // Descriptive metadata moves to its own indexed table. `*_norm` columns hold
     // the lowercased value so filters and ordering never compute per row.
-    "CREATE TABLE track_metadata (
+    Step::Sql("CREATE TABLE track_metadata (
          track_id     TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
          title        TEXT NOT NULL,
          title_norm   TEXT NOT NULL,
@@ -64,7 +69,9 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX meta_sort   ON track_metadata(artist_norm, album_norm, title_norm, track_id);
      CREATE INDEX meta_bpm    ON track_metadata(bpm);
      CREATE INDEX meta_year   ON track_metadata(year);
-     CREATE INDEX meta_genre  ON track_metadata(genre_norm);",
+     CREATE INDEX meta_genre  ON track_metadata(genre_norm);"),
+    // Readable alternative IDs; unique index is created after the backfill.
+    Step::Code(add_slugs),
 ];
 
 pub fn run(conn: &mut Connection) -> Result<()> {
@@ -76,11 +83,38 @@ pub fn run(conn: &mut Connection) -> Result<()> {
             MIGRATIONS.len()
         )));
     }
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
+    for (i, step) in MIGRATIONS.iter().enumerate().skip(applied) {
         let tx = conn.transaction().map_err(db)?;
-        tx.execute_batch(sql).map_err(db)?;
+        match step {
+            Step::Sql(sql) => tx.execute_batch(sql).map_err(db)?,
+            Step::Code(f) => f(&tx)?,
+        }
         tx.pragma_update(None, "user_version", i + 1).map_err(db)?;
         tx.commit().map_err(db)?;
     }
     Ok(())
+}
+
+fn add_slugs(tx: &Transaction) -> Result<()> {
+    let db = |e: rusqlite::Error| Error::Storage(e.to_string());
+    tx.execute_batch("ALTER TABLE tracks ADD COLUMN slug TEXT").map_err(db)?;
+    let rows: Vec<(String, Option<String>, Option<String>, String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT t.id, m.artist, m.album, m.title,
+                        COALESCE((SELECT s.backend_id FROM sources s WHERE s.track_id = t.id
+                                  ORDER BY s.rowid LIMIT 1), 'unknown')
+                 FROM tracks t JOIN track_metadata m ON m.track_id = t.id ORDER BY t.rowid",
+            )
+            .map_err(db)?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .map_err(db)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db)?
+    };
+    for (id, artist, album, title, source) in rows {
+        let slug = crate::unique_slug(tx, &weave_core::track_slug(artist.as_deref(), album.as_deref(), &title, &source))?;
+        tx.execute("UPDATE tracks SET slug = ?1 WHERE id = ?2", [&slug, &id]).map_err(db)?;
+    }
+    tx.execute_batch("CREATE UNIQUE INDEX tracks_slug ON tracks(slug)").map_err(db)
 }

@@ -275,3 +275,64 @@ fn migration_moves_existing_metadata() {
     let f = FilterSpec { artist: Some("ÉDITH".into()), ..Default::default() };
     assert_eq!(all(&s, &f).len(), 1);
 }
+
+#[test]
+fn slugs_are_assigned_unique_and_resolvable() {
+    let mut s = Storage::open_in_memory().unwrap();
+    let mk = |p: &str, artist: Option<&str>, album: Option<&str>, title: &str| ScannedTrack {
+        external_id: p.into(),
+        metadata: Metadata {
+            title: title.into(),
+            artist: artist.map(Into::into),
+            album: album.map(Into::into),
+            ..Default::default()
+        },
+    };
+    s.import_tracks(
+        "local",
+        &[
+            mk("/1", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
+            mk("/2", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
+            mk("/3", None, None, "Mystery"),
+        ],
+    )
+    .unwrap();
+    let slugs: Vec<String> = all(&s, &FilterSpec::default()).into_iter().map(|t| t.slug).collect();
+    assert_eq!(
+        slugs,
+        [
+            "unknown-mystery-local",
+            "romeo-santos-fórmula-dont-stop-local",
+            "romeo-santos-fórmula-dont-stop-local-2",
+        ]
+    );
+    // exact, differently-written, and via tag operations
+    assert_eq!(s.track("romeo-santos-fórmula-dont-stop-local-2").unwrap().slug, slugs[2]);
+    assert_eq!(s.track("Unknown / Mystery / LOCAL").unwrap().slug, slugs[0]);
+    assert_eq!(s.add_tags("unknown-mystery-local", &tags(&["x"])).unwrap(), 1);
+    assert!(matches!(s.track("nope-nope-local"), Err(Error::NotFound(_))));
+    assert!(matches!(s.track("x'; DROP TABLE tracks;--"), Err(Error::NotFound(_))));
+}
+
+#[test]
+fn migration_backfills_slugs() {
+    // Reuse the v1 database from `migration_moves_existing_metadata`, adding a duplicate.
+    let conn = Connection::open_in_memory().unwrap();
+    query::register_functions(&conn).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT, album TEXT, bpm REAL);
+         CREATE TABLE sources (id TEXT PRIMARY KEY, track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            backend_id TEXT NOT NULL, external_id TEXT NOT NULL, UNIQUE (backend_id, external_id));
+         CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE);
+         CREATE TABLE track_tags (track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (track_id, tag_id));
+         CREATE TABLE smart_playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE, filter_spec TEXT NOT NULL);
+         INSERT INTO tracks VALUES ('a1', 'Song', 'Band', NULL, NULL), ('a2', 'Song', 'Band', NULL, NULL);
+         INSERT INTO sources VALUES ('s1', 'a1', 'local', '/1'), ('s2', 'a2', 'local', '/2');
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    let s = Storage::init(conn).unwrap();
+    assert_eq!(s.track("a1").unwrap().slug, "band-song-local");
+    assert_eq!(s.track("a2").unwrap().slug, "band-song-local-2");
+}

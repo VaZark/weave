@@ -30,6 +30,8 @@ pub struct Metadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
+    /// Stable readable alternative ID, e.g. `romeo-santos-propuesta-indecente-local`.
+    pub slug: String,
     #[serde(flatten)]
     pub metadata: Metadata,
     /// Custom tags, in display spelling.
