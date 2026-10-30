@@ -453,3 +453,26 @@ fn linked_sqlite_meets_minimum() {
         rusqlite::version()
     );
 }
+
+#[test]
+fn playlists_have_unique_slug_ids_and_resolve_by_name_or_slug() {
+    let mut s = Storage::open_in_memory().unwrap();
+    let f = FilterSpec::default();
+    let a = s.create_playlist("Rock & Roll", None, &f).unwrap();
+    let b = s.create_playlist("rock and roll!", None, &f).unwrap();
+    let c = s.create_playlist("???", None, &f).unwrap();
+    assert_eq!(
+        (a.id.as_str(), b.id.as_str(), c.id.as_str()),
+        ("rock-and-roll", "rock-and-roll-2", "playlist")
+    );
+    // by name (exact name wins over a slug match), by slug, by sloppy slug
+    assert_eq!(s.playlist("rock and roll!").unwrap().id, "rock-and-roll-2");
+    assert_eq!(s.playlist("rock-and-roll-2").unwrap().id, "rock-and-roll-2");
+    assert_eq!(s.playlist("Rock & Roll").unwrap().id, "rock-and-roll");
+    assert_eq!(s.playlist("ROCK-AND-ROLL").unwrap().id, "rock-and-roll");
+    assert!(matches!(
+        s.create_playlist("ROCK & roll", None, &f),
+        Err(Error::AlreadyExists(_))
+    ));
+    assert!(matches!(s.playlist("nope"), Err(Error::NotFound(_))));
+}

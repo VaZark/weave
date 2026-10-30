@@ -69,6 +69,13 @@ pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str, source
     parts.join("-")
 }
 
+/// Slug for a playlist name; `playlist` if the name has no usable characters.
+/// Uniqueness is the caller's job.
+pub fn playlist_slug(name: &str) -> String {
+    let s = segment(name);
+    if s.is_empty() { "playlist".into() } else { s }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +113,13 @@ mod tests {
         assert_eq!(slugify(&slug), slug);
         let long_slug = format!("{}-song-local", "a".repeat(120));
         assert_eq!(slugify(&long_slug), long_slug);
+    }
+
+    #[test]
+    fn playlist_slugs() {
+        assert_eq!(playlist_slug("Bachata 90s"), "bachata-90s");
+        assert_eq!(playlist_slug("Rock & Roll!"), "rock-and-roll");
+        assert_eq!(playlist_slug("???"), "playlist");
     }
 
     #[test]

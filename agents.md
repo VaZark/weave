@@ -9,14 +9,15 @@ Build an open-source, local-first, source-neutral music management engine used b
 ## Non-negotiable invariants
 
 1. **One canonical library:** A track's Weave identity must not be its file path, Spotify URI or any backend-specific ID.
-2. **User annotations are protected:** Enrichment and backend sync must not overwrite local tags, ratings or metadata overrides without an explicit user action.
-3. **Backends are capability-driven:** Do not hardcode Spotify or `local` special cases into the query, metadata or playlist domain model. The local backend is bundled, but follows shared contracts.
-4. **One engine API:** Never implement filtering, persistence rules or playlist semantics only inside CLI or GPUI.
-5. **Playlists are queries:** Saved smart playlists retain filter definitions and refresh against current canonical library state.
-6. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
-7. **Backend boundaries:** Plugins cannot directly mutate the canonical SQLite database. All changes pass engine validation, provenance and merge policies.
-8. **Compliant integration:** Verify current service terms and capabilities before implementing remote playback, lyrics overlays, content mixing or playlist export.
-9. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
+2. **Slug IDs:** Every ID users, scripts, frontends or plugins see is a slug (lowercase, readable, assigned once, unique). Internal surrogate keys never leak. New entities get a slug-based ID from the start; see Identifiers in `goals.md`.
+3. **User annotations are protected:** Enrichment and backend sync must not overwrite local tags, ratings or metadata overrides without an explicit user action.
+4. **Backends are capability-driven:** Do not hardcode Spotify or `local` special cases into the query, metadata or playlist domain model. The local backend is bundled, but follows shared contracts.
+5. **One engine API:** Never implement filtering, persistence rules or playlist semantics only inside CLI or GPUI.
+6. **Playlists are queries:** Saved smart playlists retain filter definitions and refresh against current canonical library state.
+7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
+8. **Backend boundaries:** Plugins cannot directly mutate the canonical SQLite database. All changes pass engine validation, provenance and merge policies.
+9. **Compliant integration:** Verify current service terms and capabilities before implementing remote playback, lyrics overlays, content mixing or playlist export.
+10. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
 
 ## Recommended implementation sequence
 

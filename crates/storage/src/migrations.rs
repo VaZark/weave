@@ -50,7 +50,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
      );
      CREATE INDEX track_tags_tag ON track_tags(tag_id);
      CREATE TABLE smart_playlists (
-         id              TEXT PRIMARY KEY,
+         id              TEXT PRIMARY KEY,   -- slug, the public ID
          name            TEXT NOT NULL,
          normalized_name TEXT NOT NULL UNIQUE,
          description     TEXT,

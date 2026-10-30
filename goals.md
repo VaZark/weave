@@ -33,7 +33,7 @@
 | Show playlist         | `weave-player playlist show "Bachata 90s"`                                              | Evaluate its saved filters.                                                                                                        |
 | Update playlist       | `weave-player playlist update "Bachata 90s" --bpm-min 90`                               | Change specified filters; retain others.                                                                                           |
 | Play playlist         | `weave-player playlist play "Bachata 90s"`                                              | Queue current matching tracks.                                                                                                     |
-| List playlists        | `weave-player playlist list`                                                            | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                       |
+| List playlists        | `weave-player playlist list`                                                            | Table of ID (slug), NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                       |
 | List backends         | `weave-player backend list`                                                             | Show registered backends and capabilities.                                                                                         |
 | Inspect backend       | `weave-player backend show local`                                                       | Show capabilities and availability.                                                                                                |
 
@@ -85,7 +85,8 @@ erDiagram
     TRACK ||--o{ TRACK_TAG : tagged
     TAG ||--o{ TRACK_TAG : applies_to
     TRACK {
-        string id PK
+        string id PK "internal key; public ID is the slug"
+        string slug UK
         string title
         string artist
         float bpm
@@ -106,19 +107,44 @@ erDiagram
         string tag_id FK
     }
     SMART_PLAYLIST {
-        string id PK
+        string id PK "slug"
         string name
         json filter_spec
     }
 ```
 
 - A track's identity is independent of filesystem paths and service IDs.
-- A track's public ID is a stable, readable slug `artist[-album]-title-source` (e.g. `romeo-santos-propuesta-indecente-local`), assigned at import (the opaque internal key is never shown) and unique (`-2`, `-3` on collision). Lowercase letters/digits of any script and `-` only; apostrophes dropped, `&` → `and`, any other character run → `-`; segments capped at 48 chars; unknown artist → `unknown`, empty title → `untitled`, album omitted when absent; `source` is the first source's backend ID. Metadata edits do not change it. Lookups normalize their input the same way.
+- Every public ID is a slug; see [Identifiers](#identifiers). Tracks and playlists store theirs as `slug`/`id` columns.
 - Descriptive metadata (title, artist, album, album artist, genre, composer, year, track/disc number, duration, BPM) lives in an indexed `TRACK_METADATA` table (one row per track, with lowercased copies for filtering and ordering); `TRACK` holds identity only.
 - A track may have multiple sources.
 - Smart playlists persist filters and resolve membership on demand.
 - Until 0.1 the schema is a single squashed migration; older databases are rejected (delete and re-import). After 0.1 migrations are append-only.
 - Use migrations, transactions, and indexes for tags and source mappings.
+
+### Identifiers
+
+Every ID that a user, script, frontend or plugin sees or types is a **slug**: lowercase, readable and stable.
+Internal surrogate keys (the track UUID, source and tag row IDs) exist only inside the database and are never shown,
+returned by the engine API, printed by the CLI or accepted as the documented way to address something.
+
+| Thing | Slug | Example |
+| ----- | ---- | ------- |
+| Track | `artist[-album]-title-source` | `romeo-santos-propuesta-indecente-local` |
+| Playlist | name | `bachata-90s` |
+| Backend | chosen by the backend | `local`, `spotify` |
+| Future entities | derived from their name, same rules | |
+
+Rules:
+
+- Lowercase letters and digits of any script plus `-`; apostrophes are dropped, `&` becomes `and`, any other run of
+  characters becomes one `-`; no leading or trailing `-`; each part is capped at 48 characters.
+- Unknown artist → `unknown`; empty title → `untitled`; empty playlist name → `playlist`; album omitted when absent.
+  A track's `source` is its first source's backend ID.
+- Slugs are assigned once, unique (`-2`, `-3` on collision) and never change when metadata or names are edited.
+- Lookups normalize their input the same way, so `Bachata 90s` and `BACHATA-90S` find `bachata-90s`. An exact name
+  match wins over a slug match.
+- New entities get a slug-based ID from the start; a backend's `id()` must itself be a slug (tested).
+- Slugs are safe in URLs, shells and SQL literals, and queries are parameterized regardless.
 
 ### Backend contract
 

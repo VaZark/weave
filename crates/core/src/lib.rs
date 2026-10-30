@@ -11,5 +11,5 @@ pub use backend::{
 };
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, normalize_tag};
-pub use slug::{slugify, track_slug};
+pub use slug::{playlist_slug, slugify, track_slug};
 pub use track::{Metadata, Page, SearchResult, Tag, Track, TrackId};

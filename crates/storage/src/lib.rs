@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use weave_core::{
     Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId,
-    normalize_tag, slugify, track_slug,
+    normalize_tag, playlist_slug, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -94,6 +94,8 @@ impl Storage {
             let m = &t.metadata;
             let slug = unique_slug(
                 &tx,
+                "tracks",
+                "slug",
                 &track_slug(
                     m.artist.as_deref(),
                     m.album.as_deref(),
@@ -346,8 +348,22 @@ impl Storage {
         }
         let filter = filter.clone().normalized();
         filter.validate()?;
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        match self.conn.execute(
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let exists = tx
+            .query_row(
+                "SELECT 1 FROM smart_playlists WHERE normalized_name = ?1",
+                [normalize_tag(name)],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(db_err)?
+            .is_some();
+        if exists {
+            return Err(Error::AlreadyExists(format!("playlist \"{name}\"")));
+        }
+        // The slug is the playlist's public ID (the `id` column).
+        let id = unique_slug(&tx, "smart_playlists", "id", &playlist_slug(name))?;
+        tx.execute(
             "INSERT INTO smart_playlists (id, name, normalized_name, description, filter_spec)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -357,27 +373,25 @@ impl Storage {
                 description,
                 spec_json(&filter)?
             ],
-        ) {
-            Ok(_) => Ok(SmartPlaylist {
-                id,
-                name: name.into(),
-                description: description.map(Into::into),
-                filter,
-            }),
-            Err(rusqlite::Error::SqliteFailure(e, _))
-                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                Err(Error::AlreadyExists(format!("playlist \"{name}\"")))
-            }
-            Err(e) => Err(db_err(e)),
-        }
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(SmartPlaylist {
+            id,
+            name: name.into(),
+            description: description.map(Into::into),
+            filter,
+        })
     }
 
+    /// Look up by name (case-insensitive) or by slug ID (normalized like `slugify`).
     pub fn playlist(&self, name: &str) -> Result<SmartPlaylist> {
         self.conn
             .query_row(
-                "SELECT id, name, filter_spec, description FROM smart_playlists WHERE normalized_name = ?1",
-                [normalize_tag(name)],
+                "SELECT id, name, filter_spec, description FROM smart_playlists
+                 WHERE normalized_name = ?1 OR id = ?2
+                 ORDER BY normalized_name = ?1 DESC LIMIT 1",
+                params![normalize_tag(name), slugify(name)],
                 row_to_playlist,
             )
             .optional()
@@ -412,9 +426,10 @@ impl Storage {
 }
 
 /// `base`, or `base-2`, `base-3`… if taken.
-pub(crate) fn unique_slug(tx: &Transaction, base: &str) -> Result<String> {
+fn unique_slug(tx: &Transaction, table: &str, column: &str, base: &str) -> Result<String> {
+    let sql = format!("SELECT 1 FROM {table} WHERE {column} = ?1");
     let taken = |s: &str| -> Result<bool> {
-        tx.query_row("SELECT 1 FROM tracks WHERE slug = ?1", [s], |_| Ok(()))
+        tx.query_row(&sql, [s], |_| Ok(()))
             .optional()
             .map(|r| r.is_some())
             .map_err(db_err)

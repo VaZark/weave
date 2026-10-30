@@ -324,6 +324,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             } else {
                 let rows = ps.iter().map(|p| {
                     vec![
+                        p.id.clone(),
                         p.name.clone(),
                         p.description.clone().unwrap_or_else(|| "-".into()),
                         PLAYLIST_TYPE.into(),
@@ -331,9 +332,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     ]
                 });
                 print_columns(
-                    &["NAME", "DESCRIPTION", "TYPE", "RULESET"],
+                    &["ID", "NAME", "DESCRIPTION", "TYPE", "RULESET"],
                     rows.collect(),
-                    &[3],
+                    &[0, 4],
                 );
             }
         }
@@ -508,13 +509,13 @@ const PLAYLIST_TYPE: &str = "dynamic";
 
 fn playlist_json(p: &SmartPlaylist) -> serde_json::Value {
     serde_json::json!({
-        "name": p.name, "description": p.description, "type": PLAYLIST_TYPE, "filter": p.filter,
+        "id": p.id, "name": p.name, "description": p.description, "type": PLAYLIST_TYPE, "filter": p.filter,
     })
 }
 
 fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
     out(json, &playlist_json(p), || {
-        println!("{}\t{}", p.name, describe(&p.filter))
+        println!("{}\t{}\t{}", p.id, p.name, describe(&p.filter))
     })
 }
 

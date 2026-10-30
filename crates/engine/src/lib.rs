@@ -228,6 +228,18 @@ mod tests {
     }
 
     #[test]
+    fn backend_ids_are_slugs() {
+        let lib = Library::open_in_memory().unwrap();
+        for b in lib.backends() {
+            assert_eq!(
+                weave_core::slugify(&b.id),
+                b.id,
+                "backend id must be a slug"
+            );
+        }
+    }
+
+    #[test]
     fn unknown_backend() {
         let lib = Library::open_in_memory().unwrap();
         assert!(lib.backend("local").is_ok());

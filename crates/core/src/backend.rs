@@ -47,6 +47,7 @@ pub enum Availability {
 /// Backend identity and capability discovery. Each capability group has its own
 /// typed trait (e.g. a library reader) layered on top of this.
 pub trait Backend: Send + Sync {
+    /// Must be a slug (see `slugify`), e.g. `local`, `spotify`.
     fn id(&self) -> &str;
     fn capabilities(&self) -> Vec<CapabilityDescriptor>;
 }
