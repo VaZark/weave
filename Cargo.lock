@@ -620,17 +620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "weave-cli"
-version = "0.0.1"
-dependencies = [
- "clap",
- "serde",
- "serde_json",
- "weave-core",
- "weave-engine",
-]
-
-[[package]]
 name = "weave-core"
 version = "0.0.1"
 dependencies = [
@@ -655,6 +644,17 @@ dependencies = [
  "uuid",
  "walkdir",
  "weave-core",
+]
+
+[[package]]
+name = "weave-player"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "weave-core",
+ "weave-engine",
 ]
 
 [[package]]

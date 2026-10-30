@@ -1,11 +1,11 @@
 [package]
-name = "weave-cli"
+name = "weave-player"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "weave"
+name = "weave-player"
 path = "src/main.rs"
 
 [dependencies]

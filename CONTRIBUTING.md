@@ -16,11 +16,11 @@ The GPUI desktop app is not built yet (planned for 0.a3); only the CLI and the e
 ```bash
 git clone <repository-url> weave
 cd weave
-cargo build            # debug build: target/debug/weave
-cargo build --release  # optimized build: target/release/weave
+cargo build            # debug build: target/debug/weave-player
+cargo build --release  # optimized build: target/release/weave-player
 ```
 
-Install the CLI into `~/.cargo/bin`:
+Install the CLI (the `weave-player` binary) into `~/.cargo/bin`:
 
 ```bash
 cargo install --path apps/cli
@@ -50,24 +50,24 @@ Debug builds include a developer command that fills the library with fake tracks
 files are read, and release builds do not contain it.
 
 ```bash
-weave dev seed                # 60 tracks, tags, and 3 smart playlists
-weave dev seed --count 100    # up to 100
+weave-player dev seed                # 60 tracks, tags, and 3 smart playlists
+weave-player dev seed --count 100    # up to 100
 ```
 
 It is idempotent: running it again adds nothing that already exists. Seeded tracks use the backend id `seed`
 (their IDs end in `-seed`) and have no files, so they are not playable. Then try:
 
 ```bash
-weave list
-weave search --tag-all bachata,90s --bpm-min 90
-weave playlist list
-weave playlist show "Bachata 90s"
+weave-player list
+weave-player search --tag-all bachata,90s --bpm-min 90
+weave-player playlist list
+weave-player playlist show "Bachata 90s"
 ```
 
 To import real music instead (files are only read, never modified):
 
 ```bash
-weave import ~/Music
+weave-player import ~/Music
 ```
 
 ## Project layout
@@ -77,7 +77,7 @@ crates/core/       types, FilterSpec, track slugs, backend contracts
 crates/storage/    SQLite schema, migrations, query building
 crates/engine/     the single API frontends call
 backends/local/    file scanning (audio detected by content, not extension)
-apps/cli/          the `weave` binary (apps/cli/src/dev.rs is debug-only)
+apps/cli/          the `weave-player` binary (apps/cli/src/dev.rs is debug-only)
 ```
 
 Frontends call the engine and never touch the database directly, and filtering or playlist rules live in the

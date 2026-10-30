@@ -12,7 +12,7 @@ use weave_engine::{Library, SmartPlaylist};
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter, 5 unsupported.
 #[derive(Parser)]
 #[command(
-    name = "weave",
+    name = "weave-player",
     version,
     about = "Local-first music library with tags and smart playlists"
 )]
@@ -235,7 +235,7 @@ fn main() -> ExitCode {
                 Failure::Unsupported(m) => (5, m.to_string()),
                 Failure::Other(m) => (1, m),
             };
-            eprintln!("weave: {msg}");
+            eprintln!("weave-player: {msg}");
             ExitCode::from(code)
         }
     }
