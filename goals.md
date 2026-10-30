@@ -162,13 +162,14 @@ weave/
 
 ## Milestones
 
-| Phase | Deliverable                                                                               |
-| ----- | ----------------------------------------------------------------------------------------- |
-| 0.a1  | SQLite library, local import, tags, filters, CLI                                          |
-| 0.a2  | Local playback, queue, saved dynamic playlists                                            |
-| 0.a3  | GPUI library browser, tag editor, smart playlist builder, Synchronized Lyrics             |
-| 0.a4  | Second backend, capability discovery, external plugin contract                            |
-| 0.1   | Spotify integration - playback, playlist sync, save song source to source-neutral library |
+| Phase | Deliverable                                                                                |
+| ----- | ------------------------------------------------------------------------------------------ |
+| 0.a1  | SQLite library, local import, tags, filters, CLI                                           |
+| 0.a2  | Local playback, queue, saved dynamic playlists, load and track synchronised lyrics         |
+| 0.a3  | Second backend, capability discovery, external plugin contract                             |
+| 0.a4  | Jellyfin integration - playback, playlist sync, save song source to source-neutral library |
+| 0.1   | Spotify integration - playback, playlist sync, save song source to source-neutral library  |
+| 0.2   | GPUI library browser, tag editor, smart playlist builder                                   |
 
 ## Non-goals for MVP
 
