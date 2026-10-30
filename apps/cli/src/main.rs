@@ -11,6 +11,7 @@ macro_rules! outln {
 #[cfg(debug_assertions)]
 mod dev;
 mod output;
+mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -126,7 +127,7 @@ enum Cmd {
         #[arg(value_name = "off|song|playlist")]
         mode: RepeatMode,
     },
-    /// Stop playback after a delay (30m, 1h30m, 45s; a bare number is minutes), or `off` to cancel.
+    /// Stop playback after a delay (45s, 30m, 1h30m; a unit is required), or `off` to cancel.
     Sleep {
         #[arg(value_name = "DURATION|off")]
         after: String,
@@ -134,6 +135,16 @@ enum Cmd {
         /// (instead of cutting it off). The stop is scheduled when the track starts.
         #[arg(long)]
         stop_after: bool,
+    },
+    /// Run in the foreground and enforce the sleep timer on time, reporting session changes.
+    /// Optional: nothing starts it for you. (The audio player in 0.a4 will be this kind of host.)
+    Watch {
+        /// How often to re-read the session for changes made by other commands.
+        #[arg(long, default_value = "1s", value_name = "DURATION")]
+        interval: String,
+        /// Exit after this long instead of running until interrupted.
+        #[arg(long = "for", value_name = "DURATION")]
+        run_for: Option<String>,
     },
     /// Inspect backends.
     #[command(subcommand)]
@@ -589,6 +600,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
             session(&lib.set_sleep(setting)?)?;
         }
 
+        Cmd::Watch { interval, run_for } => {
+            let parse = |s: &str| parse_duration(s).map_err(Error::InvalidInput);
+            let interval = parse(&interval)?;
+            let run_for = run_for.as_deref().map(parse).transpose()?;
+            watch::run(&mut lib, json, interval, run_for)?;
+        }
         Cmd::Backend(BackendCmd::List) => {
             let bs = lib.backends();
             if json {

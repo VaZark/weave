@@ -1,13 +1,11 @@
 use std::time::Duration;
 
-/// Parses `90`, `45s`, `30m`, `2h`, `1h30m`, `1h 30m 15s`. A bare number means minutes.
+/// Parses `45s`, `30m`, `2h`, `1h30m`, `1h 30m 15s`. Every number needs a unit, so a bare
+/// `90` is an error rather than a guess between seconds and minutes.
 pub fn parse_duration(input: &str) -> Result<Duration, String> {
     let s: String = input.chars().filter(|c| !c.is_whitespace()).collect();
     if s.is_empty() {
         return Err("empty duration".into());
-    }
-    if let Ok(minutes) = s.parse::<u64>() {
-        return checked(minutes.checked_mul(60), input);
     }
     let mut total: u64 = 0;
     let mut digits = String::new();
@@ -37,7 +35,7 @@ pub fn parse_duration(input: &str) -> Result<Duration, String> {
     }
     if !digits.is_empty() {
         return Err(format!(
-            "invalid duration \"{input}\": missing unit after {digits}"
+            "invalid duration \"{input}\": missing unit after {digits} (try {digits}s, {digits}m or {digits}h)"
         ));
     }
     checked(Some(total), input)
@@ -59,15 +57,23 @@ mod tests {
     fn parses_common_forms() {
         let secs = |s| parse_duration(s).unwrap().as_secs();
         assert_eq!(secs("30m"), 1800);
-        assert_eq!(secs("90"), 5400);
+        assert_eq!(secs("90m"), 5400);
         assert_eq!(secs("1h30m"), 5400);
         assert_eq!(secs("1h 30m 15s"), 5415);
         assert_eq!(secs("45S"), 45);
     }
 
     #[test]
+    fn a_bare_number_names_the_missing_unit() {
+        let err = parse_duration("90").unwrap_err();
+        assert!(err.contains("missing unit") && err.contains("90"), "{err}");
+    }
+
+    #[test]
     fn rejects_garbage() {
-        for bad in ["", "0", "0m", "m", "5x", "1h30", "-5m", "1.5h"] {
+        for bad in [
+            "", "0", "0m", "m", "5x", "1h30", "-5m", "1.5h", "90", "30", "1h 30",
+        ] {
             assert!(parse_duration(bad).is_err(), "{bad}");
         }
     }

@@ -126,6 +126,25 @@ impl Library {
         self.storage.track(&id.0)
     }
 
+    /// How long until the session next needs attention, i.e. until a sleep timer comes
+    /// due while something is playing or paused. `None` means nothing is scheduled.
+    ///
+    /// A host process (the `watch` command today, the audio player in 0.a4) sleeps for
+    /// this long, then calls `session()`, which applies the timer. The deadline is the
+    /// whole schedule: a plain timer fires at it whichever track is playing, and a
+    /// stop-after timer is turned into a stop at the end of the track playing then.
+    /// Hosts should also re-check now and then, because other commands can change it.
+    pub fn next_wakeup(&mut self) -> Result<Option<Duration>> {
+        let queue = self.load_session()?;
+        if queue.state.status == PlayStatus::Stopped {
+            return Ok(None);
+        }
+        Ok(queue
+            .state
+            .sleep
+            .map(|t| Duration::from_millis((t.at_ms - self.now_ms()).max(0) as u64)))
+    }
+
     // --- starting playback -------------------------------------------------
 
     /// Replace the queue with one track and start it.
@@ -832,6 +851,50 @@ mod tests {
         lib.pause().unwrap();
         let v = lib.resume().unwrap();
         assert!(!v.state.stop_after_track && v.state.sleep.is_some());
+    }
+
+    #[test]
+    fn next_wakeup_reports_the_timer_only_while_something_plays() {
+        let (mut lib, clock) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        assert_eq!(lib.next_wakeup().unwrap(), None, "no timer");
+        lib.set_sleep(timer(600, false)).unwrap();
+        assert_eq!(
+            lib.next_wakeup().unwrap(),
+            None,
+            "stopped: nothing to stop yet"
+        );
+
+        lib.next().unwrap();
+        assert_eq!(lib.next_wakeup().unwrap(), Some(Duration::from_secs(600)));
+        advance_clock(&clock, 100);
+        assert_eq!(lib.next_wakeup().unwrap(), Some(Duration::from_secs(500)));
+        lib.pause().unwrap();
+        assert_eq!(
+            lib.next_wakeup().unwrap(),
+            Some(Duration::from_secs(500)),
+            "a paused session still has a deadline"
+        );
+
+        advance_clock(&clock, 500);
+        assert_eq!(
+            lib.next_wakeup().unwrap(),
+            None,
+            "the timer came due and was applied"
+        );
+        assert_eq!(lib.session().unwrap().state.status, PlayStatus::Stopped);
+    }
+
+    #[test]
+    fn next_wakeup_after_a_stop_after_timer_fires_is_a_scheduled_stop_not_a_deadline() {
+        let (mut lib, clock) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.set_sleep(timer(600, true)).unwrap();
+        lib.next().unwrap();
+        advance_clock(&clock, 600);
+        assert_eq!(lib.next_wakeup().unwrap(), None);
+        let v = lib.session().unwrap();
+        assert!(v.state.stop_after_track && v.state.status == PlayStatus::Playing);
     }
 
     #[test]

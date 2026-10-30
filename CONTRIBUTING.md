@@ -73,6 +73,8 @@ weave-player queue show
 weave-player now
 ```
 
+To see the sleep timer enforced on time, run `weave-player watch` in a second terminal, then `weave-player sleep 30s`.
+
 In a debug build, `weave-player dev finish-track` simulates the current track ending by itself, which is what the
 playback backend will report; use it to try repeat, shuffle and `queue end continue`.
 

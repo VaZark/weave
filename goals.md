@@ -45,7 +45,8 @@
 | Shuffle | `weave-player shuffle on` | Play the queue in random order, current track first; each track plays once per round. |
 | Repeat | `weave-player repeat off\|song\|playlist` | `song` replays the current track when it ends (skipping still moves on); `playlist` loops the whole queue. |
 | End of queue | `weave-player queue end stop\|continue` | `stop` ends playback; `continue` appends similar tracks (shared tags, BPM near the queue's average) and keeps going. |
-| Sleep timer | `weave-player sleep 30m`, `weave-player sleep 30m --stop-after`, `weave-player sleep off` | Stop playback after a delay (`45s`, `30m`, `1h30m`; a bare number is minutes). With `--stop-after`, a delay that runs out during a track lets that track finish and stops after it, instead of cutting it off. |
+| Sleep timer | `weave-player sleep 30m`, `weave-player sleep 30m --stop-after`, `weave-player sleep off` | Stop playback after a delay (`45s`, `30m`, `1h30m`). With `--stop-after`, a delay that runs out during a track lets that track finish and stops after it, instead of cutting it off. |
+| Watch the session | `weave-player watch [--interval 1s] [--for 1h]` | Optional foreground host that applies the sleep timer on time (it sleeps until the deadline, not just until the next command) and reports session changes; run it in a terminal, with `&`, or as a user service. Nothing starts it automatically. |
 | List backends | `weave-player backend list` | Show registered backends and capabilities. |
 | Inspect backend | `weave-player backend show local` | Show capabilities and availability. |
 
@@ -200,8 +201,14 @@ and the future GUI. 0.a3 covers the state and rules; actual audio output arrives
   - If the track's duration is unknown the engine cannot tell in advance, so the timer is handled when its deadline
     passes (a stop is scheduled then) or at the next track change.
   - A timer coming due while paused never stops the track mid-way; it waits for the track to finish.
-  - When audio arrives (0.a4) the player must also wake at the deadline to apply a plain timer; the check itself is
-    the same engine call.
+  - **Timers need a host.** Short-lived commands cannot hold a timer, so a plain timer only takes effect the next time
+    something reads the session unless a long-running host is waiting for the deadline. `Library::next_wakeup()` says how
+    long until the session next needs attention; a host sleeps that long (and re-checks every second or so, since other
+    commands change the session), then calls `session()`, which applies the timer. `weave-player watch` is that host
+    today and the audio player in 0.a4 will be the same kind of host. It is optional (no mandatory background
+    services); without one the behavior above still holds, just evaluated lazily.
+  - Session changes are read-modify-write without a cross-process lock, so a command racing the watcher in the same
+    few milliseconds could overwrite one of the two updates.
 - **Queue:** an ordered list that may contain duplicates, plus a play order. Without shuffle the play order is the
   list order. `queue add --next` inserts right after the current track in both orders. Removing the current track
   moves to what would have played next. Positions in commands are 1-based.
