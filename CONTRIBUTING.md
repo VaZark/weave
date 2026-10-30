@@ -9,9 +9,11 @@ conventions every change must respect. This page covers getting a working checko
 - **SQLite 3.14.0 or newer** as a system library (`sqlite` on Arch, `libsqlite3-dev` on Debian/Ubuntu), unless you
   build with `sqlite-from-source` (see [Build rules](#build-rules)).
 - **A C toolchain** (`gcc` or `clang`): Rust links binaries with it on Linux.
-- Git. No database server, daemon or account is required.
+- **ALSA development files** for audio output (`alsa-lib` on Arch, `libasound2-dev` on Debian/Ubuntu), unless you build
+  without the `audio` feature.
+- Git. No database server or account is required.
 
-The GPUI desktop app is not built yet (planned for 0.a3); only the CLI and the engine exist today.
+The GPUI desktop app is not built yet (planned for 0.2); the CLI, the engine and the playback host exist today.
 
 ## Get the code and build
 
@@ -30,7 +32,17 @@ Without installing, run it with `cargo run -p weave-player -- <args>`.
 - Default: links the system SQLite (3.14.0 or newer, checked at startup).
 - `--features sqlite-from-source`: compiles SQLite and links it statically. Set it on the binary, e.g.
   `cargo build -p weave-player --features sqlite-from-source`.
+- Default features `audio` (rodio, needs ALSA headers) and `mpris` (D-Bus media controls); build with
+  `--no-default-features` for a binary that cannot play sound or register with the desktop.
 - `weave-player dev ...` exists only in debug builds.
+
+## Playback while developing
+
+Commands that start playback launch the playback host (`weave-player host`) in the background; its log is
+`<library>.host.log` next to the database, `weave-player now` shows whether it runs and `weave-player quit` stops it.
+Use `--no-host` (or `WEAVE_NO_HOST=1`) to edit the session without ever starting one, and `weave-player host` to run it in
+the foreground. The audio test plays silence and the MPRIS tests talk to the session bus; both skip themselves where
+there is no output device or no bus.
 
 ## Run and test
 
@@ -70,12 +82,10 @@ weave-player list --show-ids    # --show-ids adds the slug ID column
 weave-player search --tag-all bachata,90s --bpm-min 90
 weave-player playlist list
 weave-player playlist show "Bachata 90s"
-weave-player playlist play road-trip   # fill the queue (no audio yet; session state only)
+weave-player playlist play road-trip   # fill the queue (seeded tracks have no files, so nothing plays)
 weave-player queue show
 weave-player now
 ```
-
-To see the sleep timer enforced on time, run `weave-player watch` in a second terminal, then `weave-player sleep 30s`.
 
 In a debug build, `weave-player dev finish-track` simulates the current track ending by itself, which is what the
 playback backend will report; use it to try repeat, shuffle and `queue end continue`.

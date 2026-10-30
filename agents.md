@@ -39,7 +39,7 @@ Build an open-source, local-first, source-neutral music management engine used b
 - Use transactions for multi-table mutations, migrations for schema changes and tests for data integrity.
 - Use fixtures and mocks for remote backends; integration tests must not require real Spotify credentials.
 - Document new capability contracts and version compatibility; model `supported`, `authorized`, and `available` separately.
-- Avoid introducing a mandatory daemon, hosted account or cloud database for the MVP.
+- Keep the library and queue usable with no playback host running; avoid a hosted account or cloud database for the MVP.
 - Use clear terminology: `backend`, `capability`, `recording`, `source reference`, `tag`, `filter`, `smart playlist` (dynamic), `manual playlist`, `queue` and `session`.
 
 ## Definition of done

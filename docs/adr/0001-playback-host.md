@@ -44,3 +44,12 @@ part, and users expect `play` to make sound.
 - Audio needs the ALSA/PulseAudio development files at build time (`audio` feature, on by default for the binary).
 - Gapless playback is not attempted: each track is started when the previous one ends.
 - A command races the host on the session in the same way two commands do (documented in goals.md).
+
+## Notes from building it
+
+- rodio cannot seek in roughly the first 100 ms of a track (`RandomAccessNotSupported`). The `local` backend therefore
+  restarts the file for early seeks and ignores a start offset below 250 ms.
+- Requesting a bus name another player already owns does not fail in zbus; it is queued. The host looks for an owner
+  first and refuses with a clear message.
+- The host is tested against a fake `Playback`; the audio and MPRIS integration tests skip themselves when there is no
+  output device or session bus.

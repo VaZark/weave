@@ -14,6 +14,7 @@ use weave_core::{Error, PlayStatus, Playback, PlayerState};
 use weave_engine::{Library, SessionView};
 
 use crate::Failure;
+use crate::mpris::{Mpris, Remote, Snapshot, TrackInfo};
 
 /// How often the host re-reads the session.
 pub const TICK: Duration = Duration::from_millis(100);
@@ -179,6 +180,11 @@ pub struct Host {
     last_view: Option<SessionView>,
     /// Consecutive tracks skipped because they could not be played.
     skipped: usize,
+    mpris: Option<Mpris>,
+    last_snapshot: Option<(Snapshot, Instant)>,
+    /// Plain lyrics of the track that started with this `start_seq`, for `xesam:asText`.
+    lyrics_cache: Option<(u64, Option<String>)>,
+    quit: bool,
 }
 
 impl Host {
@@ -192,12 +198,37 @@ impl Host {
             report_every: POSITION_EVERY,
             last_view: None,
             skipped: 0,
+            mpris: None,
+            last_snapshot: None,
+            lyrics_cache: None,
+            quit: false,
         }
+    }
+
+    pub fn with_mpris(mut self, mpris: Option<Mpris>) -> Self {
+        self.mpris = mpris;
+        self
+    }
+
+    /// A desktop controller asked the host to exit.
+    pub fn should_quit(&self) -> bool {
+        self.quit
     }
 
     /// One pass: follow the session, detect a finished track, publish the position.
     pub fn tick(&mut self, lib: &mut Library) -> Result<Vec<Event>, Failure> {
         let mut events = Vec::new();
+        while let Some(remote) = self.mpris.as_ref().and_then(Mpris::try_recv) {
+            match apply_remote(lib, &remote) {
+                Ok(true) => self.quit = true,
+                Ok(false) => {}
+                Err(e) => events.push(Event {
+                    name: "error",
+                    text: format!("{remote:?}: {e}"),
+                    track: None,
+                }),
+            }
+        }
         let state = lib.player_state()?;
         let position = lib.session_position_ms()?;
 
@@ -224,11 +255,41 @@ impl Host {
         }
 
         let view = lib.session()?;
+        self.publish_to_mpris(lib, &view)?;
         if let Some(before) = &self.last_view {
             events.extend(session_events(before, &view));
         }
         self.last_view = Some(view);
         Ok(events)
+    }
+
+    /// Send the session to MPRIS when something besides the position changed, and the
+    /// position itself about twice a second.
+    fn publish_to_mpris(&mut self, lib: &Library, view: &SessionView) -> Result<(), Failure> {
+        let Some(mpris) = &self.mpris else {
+            return Ok(());
+        };
+        let key = view.state.start_seq;
+        if self.lyrics_cache.as_ref().map(|(k, _)| *k) != Some(key) {
+            let text = match view.current() {
+                Some(t) => lib.lyrics(&t.id.0)?.map(|l| l.plain_text()),
+                None => None,
+            };
+            self.lyrics_cache = Some((key, text));
+        }
+        let lyrics = self.lyrics_cache.as_ref().and_then(|(_, t)| t.clone());
+        let snapshot = snapshot_of(view, lyrics);
+        let due = match &self.last_snapshot {
+            None => true,
+            Some((prev, at)) => {
+                !prev.same_except_position(&snapshot) || at.elapsed() >= Duration::from_millis(500)
+            }
+        };
+        if due {
+            mpris.send(snapshot.clone());
+            self.last_snapshot = Some((snapshot, Instant::now()));
+        }
+        Ok(())
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -281,6 +342,87 @@ impl Host {
         }
         Ok(())
     }
+}
+
+/// What MPRIS shows for a session.
+pub fn snapshot_of(v: &SessionView, lyrics: Option<String>) -> Snapshot {
+    Snapshot {
+        status: v.state.status,
+        track: v.current().map(|t| TrackInfo {
+            key: v.state.start_seq,
+            title: t.metadata.title.clone(),
+            artist: t.metadata.artist.clone(),
+            album: t.metadata.album.clone(),
+            length_ms: t.metadata.duration_ms,
+            lyrics,
+        }),
+        position_ms: v.position.as_millis() as u64,
+        volume: v.state.volume,
+        shuffle: v.state.shuffle,
+        repeat: v.state.repeat,
+        seek_seq: v.state.seek_seq,
+    }
+}
+
+/// Carry out a desktop controller's request through the same engine calls the CLI uses.
+/// Returns `true` when the host should exit.
+pub fn apply_remote(lib: &mut Library, remote: &Remote) -> Result<bool, Error> {
+    let play = |lib: &mut Library| -> Result<(), Error> {
+        let st = lib.player_state()?;
+        match (st.status, st.current) {
+            (PlayStatus::Playing, _) => {}
+            (PlayStatus::Paused, _) | (PlayStatus::Stopped, Some(_)) => {
+                lib.resume()?;
+            }
+            // Nothing selected yet: start the queue from its first track.
+            (PlayStatus::Stopped, None) => {
+                lib.next()?;
+            }
+        }
+        Ok(())
+    };
+    match remote {
+        Remote::Play => play(lib)?,
+        Remote::Pause => {
+            if lib.player_state()?.status == PlayStatus::Playing {
+                lib.pause()?;
+            }
+        }
+        Remote::PlayPause => {
+            if lib.player_state()?.status == PlayStatus::Playing {
+                lib.pause()?;
+            } else {
+                play(lib)?;
+            }
+        }
+        Remote::Stop => {
+            lib.stop()?;
+        }
+        Remote::Next => {
+            lib.next()?;
+        }
+        Remote::Previous => {
+            lib.previous()?;
+        }
+        Remote::SeekBy(ms) => {
+            let now = lib.session_position_ms()? as i64;
+            lib.seek(Duration::from_millis((now + ms).max(0) as u64))?;
+        }
+        Remote::SetPosition(ms) => {
+            lib.seek(Duration::from_millis(*ms))?;
+        }
+        Remote::SetVolume(v) => {
+            lib.set_volume(*v)?;
+        }
+        Remote::SetShuffle(on) => {
+            lib.set_shuffle(*on)?;
+        }
+        Remote::SetRepeat(mode) => {
+            lib.set_repeat(*mode)?;
+        }
+        Remote::Quit => return Ok(true),
+    }
+    Ok(false)
 }
 
 fn label(v: &SessionView) -> String {

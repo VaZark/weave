@@ -92,6 +92,160 @@ fn follower_ignores_a_seek_that_arrives_together_with_a_new_track() {
     );
 }
 
+// --- desktop controller requests ---------------------------------------------------------------
+
+mod remote {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use weave_core::{Metadata, RepeatMode, ScannedTrack};
+
+    use super::*;
+    use crate::mpris::Remote;
+
+    fn lib() -> (Library, Rc<Cell<i64>>) {
+        let clock = Rc::new(Cell::new(1_000_000));
+        let c = clock.clone();
+        let mut lib = Library::open_in_memory()
+            .unwrap()
+            .with_determinism(1, move || c.get());
+        let tracks: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|t| ScannedTrack {
+                external_id: (*t).into(),
+                metadata: Metadata {
+                    title: (*t).into(),
+                    artist: Some("x".into()),
+                    duration_ms: Some(180_000),
+                    ..Default::default()
+                },
+            })
+            .collect();
+        lib.import_scanned("fake", &tracks).unwrap();
+        lib.queue_add(
+            &["x-a-fake".into(), "x-b-fake".into(), "x-c-fake".into()],
+            false,
+        )
+        .unwrap();
+        (lib, clock)
+    }
+
+    fn title(lib: &mut Library) -> String {
+        lib.session()
+            .unwrap()
+            .current()
+            .map(|t| t.metadata.title.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn play_pause_toggles_and_starts_an_idle_queue() {
+        let (mut lib, _) = lib();
+        assert!(!apply_remote(&mut lib, &Remote::PlayPause).unwrap());
+        let st = lib.player_state().unwrap();
+        assert_eq!(st.status, PlayStatus::Playing);
+        assert_eq!(
+            title(&mut lib),
+            "a",
+            "an idle queue starts at its first track"
+        );
+        apply_remote(&mut lib, &Remote::PlayPause).unwrap();
+        assert_eq!(lib.player_state().unwrap().status, PlayStatus::Paused);
+        apply_remote(&mut lib, &Remote::PlayPause).unwrap();
+        assert_eq!(lib.player_state().unwrap().status, PlayStatus::Playing);
+    }
+
+    #[test]
+    fn play_pause_stop_next_previous() {
+        let (mut lib, _) = lib();
+        apply_remote(&mut lib, &Remote::Play).unwrap();
+        apply_remote(&mut lib, &Remote::Play).unwrap(); // already playing: nothing happens
+        apply_remote(&mut lib, &Remote::Next).unwrap();
+        assert_eq!(title(&mut lib), "b");
+        apply_remote(&mut lib, &Remote::Previous).unwrap();
+        assert_eq!(title(&mut lib), "a");
+        apply_remote(&mut lib, &Remote::Pause).unwrap();
+        apply_remote(&mut lib, &Remote::Pause).unwrap(); // already paused: not an error
+        assert_eq!(lib.player_state().unwrap().status, PlayStatus::Paused);
+        apply_remote(&mut lib, &Remote::Play).unwrap();
+        assert_eq!(lib.player_state().unwrap().status, PlayStatus::Playing);
+        apply_remote(&mut lib, &Remote::Stop).unwrap();
+        assert_eq!(lib.player_state().unwrap().status, PlayStatus::Stopped);
+        apply_remote(&mut lib, &Remote::Play).unwrap();
+        assert_eq!(
+            lib.player_state().unwrap().status,
+            PlayStatus::Playing,
+            "play after stop restarts the track"
+        );
+    }
+
+    #[test]
+    fn seeking_relative_and_absolute_never_goes_before_the_start() {
+        let (mut lib, clock) = lib();
+        apply_remote(&mut lib, &Remote::Play).unwrap();
+        clock.set(clock.get() + 20_000);
+        apply_remote(&mut lib, &Remote::SeekBy(15_000)).unwrap();
+        assert_eq!(lib.session().unwrap().position, Duration::from_secs(35));
+        apply_remote(&mut lib, &Remote::SeekBy(-60_000)).unwrap();
+        assert_eq!(lib.session().unwrap().position, Duration::ZERO);
+        apply_remote(&mut lib, &Remote::SetPosition(90_000)).unwrap();
+        assert_eq!(lib.session().unwrap().position, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn volume_shuffle_and_repeat_pass_through() {
+        let (mut lib, _) = lib();
+        apply_remote(&mut lib, &Remote::SetVolume(0.5)).unwrap();
+        apply_remote(&mut lib, &Remote::SetShuffle(true)).unwrap();
+        apply_remote(&mut lib, &Remote::SetRepeat(RepeatMode::Playlist)).unwrap();
+        let st = lib.player_state().unwrap();
+        assert_eq!(
+            (st.volume, st.shuffle, st.repeat),
+            (0.5, true, RepeatMode::Playlist)
+        );
+    }
+
+    #[test]
+    fn quit_asks_the_host_to_exit_and_bad_requests_are_errors_not_panics() {
+        let (mut lib, _) = lib();
+        assert!(apply_remote(&mut lib, &Remote::Quit).unwrap());
+        assert!(apply_remote(&mut lib, &Remote::SetVolume(7.0)).is_err());
+        let mut empty = Library::open_in_memory().unwrap();
+        assert!(
+            apply_remote(&mut empty, &Remote::SeekBy(1_000)).is_err(),
+            "nothing queued"
+        );
+        assert!(!apply_remote(&mut empty, &Remote::Next).unwrap());
+    }
+
+    #[test]
+    fn the_snapshot_describes_the_session_for_the_desktop() {
+        let (mut lib, _) = lib();
+        lib.play_track("x-b-fake").unwrap();
+        lib.set_volume(0.25).unwrap();
+        let snap = snapshot_of(&lib.session().unwrap(), Some("la la".into()));
+        let track = snap.track.unwrap();
+        assert_eq!(
+            (
+                track.title.as_str(),
+                track.artist.as_deref(),
+                track.length_ms,
+                track.lyrics.as_deref()
+            ),
+            ("b", Some("x"), Some(180_000), Some("la la"))
+        );
+        assert_eq!(
+            (snap.status, snap.volume, track.key),
+            (PlayStatus::Playing, 0.25, 1)
+        );
+        assert!(
+            snapshot_of(&Library::open_in_memory().unwrap().session().unwrap(), None)
+                .track
+                .is_none()
+        );
+    }
+}
+
 // --- the host against a fake player ------------------------------------------------------------
 // Needs sources the engine considers playable, which only exist when audio support is built.
 

@@ -9,16 +9,22 @@ name = "weave-player"
 path = "src/main.rs"
 
 [features]
-default = ["audio"]
+default = ["audio", "mpris"]
 # Audio output (rodio). Needs the ALSA development files on Linux; build with
 # --no-default-features for a binary that cannot play sound.
 audio = ["weave-engine/audio"]
+# Desktop media controls over D-Bus (MPRIS): media keys, GNOME/KDE widgets, playerctl.
+mpris = ["dep:mpris-server", "dep:async-io", "dep:futures-lite", "dep:async-channel"]
 # By default the system SQLite (3.14.0 or newer) is linked. Enable this to compile
 # SQLite from source and link it statically instead (needs a C compiler).
 sqlite-from-source = ["weave-engine/sqlite-from-source"]
 
 [dependencies]
+async-channel = { version = "2", optional = true }
+async-io = { version = "2", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
+futures-lite = { version = "2", optional = true }
+mpris-server = { version = "0.11", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 weave-core.workspace = true

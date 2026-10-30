@@ -1,9 +1,11 @@
 use rusqlite::Connection;
 use weave_core::{Error, Result};
 
-/// Append-only once 0.1 ships. Until then the schema is squashed into a single
-/// step and pre-0.1 databases are not migrated: delete and re-import.
-/// `PRAGMA user_version` records how many steps have been applied.
+/// Until 0.1 the schema is one squashed step that is edited in place, and pre-0.1
+/// databases are not migrated: delete and re-import. `PRAGMA user_version` therefore holds
+/// a fingerprint of this text, so a database made from an older edit is recognized (and
+/// reported clearly) instead of failing later with "no such column".
+/// At 0.1 this becomes a list of append-only numbered migrations.
 const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          id       TEXT PRIMARY KEY,       -- opaque internal key, never shown to users
          slug     TEXT NOT NULL UNIQUE,   -- public ID, see weave_core::track_slug
@@ -100,23 +102,94 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
           current_position, volume, position_ms, position_at, start_seq, seek_seq)
          VALUES (1, 'stopped', 'off', 0, 'stop', NULL, 0, 0, NULL, 1.0, 0, 0, 0, 0);"];
 
+/// FNV-1a over the schema text, kept positive and non-zero (zero means "empty database").
+fn fingerprint() -> i64 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in MIGRATIONS[0].bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    i64::from((hash & 0x7fff_ffff).max(1))
+}
+
 pub fn run(conn: &mut Connection) -> Result<()> {
     let db = |e: rusqlite::Error| Error::Storage(e.to_string());
-    let applied: usize = conn
+    let found: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(db)?;
-    if applied > MIGRATIONS.len() {
+    let tables: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+        .map_err(db)?;
+    let expected = fingerprint();
+
+    if found == expected {
+        return Ok(());
+    }
+    if found != 0 || tables != 0 {
         return Err(Error::Storage(format!(
-            "incompatible database schema v{applied} (this build uses v{}); \
-             pre-0.1 databases are not migrated, so delete the library file and re-import",
-            MIGRATIONS.len()
+            "this library was made by a different pre-0.1 build (schema marker {found}, this build \
+             expects {expected}); pre-0.1 libraries are not migrated, so delete the library file \
+             and re-import"
         )));
     }
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
-        let tx = conn.transaction().map_err(db)?;
-        tx.execute_batch(sql).map_err(db)?;
-        tx.pragma_update(None, "user_version", i + 1).map_err(db)?;
-        tx.commit().map_err(db)?;
+    let tx = conn.transaction().map_err(db)?;
+    tx.execute_batch(MIGRATIONS[0]).map_err(db)?;
+    tx.pragma_update(None, "user_version", expected)
+        .map_err(db)?;
+    tx.commit().map_err(db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_database_gets_the_schema_and_its_fingerprint() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run(&mut conn).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, fingerprint());
+        run(&mut conn).unwrap(); // reopening is a no-op
+        let has_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'track_annotations'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_table, 1);
     }
-    Ok(())
+
+    #[test]
+    fn a_database_from_an_older_edit_of_the_schema_is_rejected_clearly() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE tracks (id TEXT); PRAGMA user_version = 1;")
+            .unwrap();
+        let msg = run(&mut conn).unwrap_err().to_string();
+        assert!(
+            msg.contains("delete the library file") && msg.contains("marker 1"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn tables_without_a_marker_are_not_adopted() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE something_else (x INTEGER);")
+            .unwrap();
+        assert!(run(&mut conn).is_err());
+    }
+
+    #[test]
+    fn the_fingerprint_changes_with_the_schema_text() {
+        assert!(fingerprint() > 0);
+        let mut h = 0x811c_9dc5u32;
+        for b in format!("{}x", MIGRATIONS[0]).bytes() {
+            h ^= u32::from(b);
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        assert_ne!(i64::from((h & 0x7fff_ffff).max(1)), fingerprint());
+    }
 }

@@ -11,6 +11,8 @@ macro_rules! outln {
 #[cfg(debug_assertions)]
 mod dev;
 mod host;
+mod lyrics;
+mod mpris;
 mod output;
 
 use std::path::PathBuf;
@@ -20,6 +22,7 @@ use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use weave_core::{
     EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField, parse_duration,
+    parse_span,
 };
 use weave_engine::Library;
 
@@ -145,12 +148,36 @@ enum Cmd {
         /// Follow the session without producing sound.
         #[arg(long)]
         no_audio: bool,
+        /// Do not register with the desktop's media controls (MPRIS).
+        #[arg(long)]
+        no_mpris: bool,
         /// Exit after this long instead of running until `quit` or Ctrl-C.
         #[arg(long = "for", value_name = "DURATION")]
         run_for: Option<String>,
     },
     /// Stop the playback host.
     Quit,
+    /// Jump within the current track: `1:30`, `90s`, `1m30s`, or relative with `+10s` / `-10s`.
+    Seek {
+        #[arg(value_name = "POSITION", allow_hyphen_values = true)]
+        target: String,
+    },
+    /// Set the volume (0-100, `%` optional); without a value, show the session.
+    Volume {
+        #[arg(value_name = "0-100")]
+        level: Option<String>,
+    },
+    /// Show a track's lyrics (the current track by default); `--follow` prints each line as it
+    /// begins while the session plays.
+    Lyrics {
+        track_id: Option<String>,
+        /// Keep running and print every synchronized line when it comes up.
+        #[arg(long, conflicts_with = "track_id")]
+        follow: bool,
+        /// With --follow, exit after this long.
+        #[arg(long = "for", value_name = "DURATION", requires = "follow")]
+        run_for: Option<String>,
+    },
     /// Inspect backends.
     #[command(subcommand)]
     Backend(BackendCmd),
@@ -625,12 +652,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
             session(&lib.set_sleep(setting)?)?;
         }
 
-        Cmd::Host { no_audio, run_for } => {
+        Cmd::Host {
+            no_audio,
+            no_mpris,
+            run_for,
+        } => {
             let run_for = run_for
                 .as_deref()
                 .map(|s| parse_duration(s).map_err(Error::InvalidInput))
                 .transpose()?;
-            run_host(&mut lib, &db, json, no_audio, run_for)?;
+            run_host(&mut lib, &db, json, no_audio, no_mpris, run_for)?;
         }
         Cmd::Quit => {
             if !host::is_running(&db) {
@@ -647,6 +678,39 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     ));
                 }
                 outln!("playback host stopped");
+            }
+        }
+        Cmd::Seek { target } => {
+            let position = lib.session()?.position;
+            playing(&lib.seek(parse_position(&target, position)?)?)?;
+        }
+        Cmd::Volume { level } => match level {
+            None => print_session(json, show_ids, None, &lib.session()?)?,
+            Some(level) => session(&lib.set_volume(parse_volume(&level)?)?)?,
+        },
+        Cmd::Lyrics {
+            track_id,
+            follow,
+            run_for,
+        } => {
+            if follow {
+                let run_for = run_for
+                    .as_deref()
+                    .map(|s| parse_duration(s).map_err(Error::InvalidInput))
+                    .transpose()?;
+                lyrics::follow(&mut lib, json, run_for)?;
+            } else {
+                let current = track_id.is_none();
+                let track = match &track_id {
+                    Some(id) => lib.track(id)?,
+                    None => lib.current_track()?,
+                };
+                let found = lib.lyrics(&track.id.0)?.ok_or_else(|| {
+                    Error::NotFound(format!("lyrics for \"{}\"", track.metadata.title))
+                })?;
+                let position =
+                    current.then(|| lib.session().map(|v| v.position.as_millis() as u64));
+                lyrics::print(json, &track, &found, position.transpose()?)?;
             }
         }
         Cmd::Backend(BackendCmd::List) => {
@@ -720,6 +784,7 @@ fn run_host(
     db: &std::path::Path,
     json: bool,
     no_audio: bool,
+    no_mpris: bool,
     run_for: Option<std::time::Duration>,
 ) -> Result<(), Failure> {
     let Some(_lock) = host::HostLock::acquire(db).map_err(|e| Failure::Other(e.to_string()))?
@@ -738,12 +803,26 @@ fn run_host(
         std::process::id(),
         if no_audio { "no audio" } else { "audio on" }
     );
-    let mut host = host::Host::new(playback);
+    let mpris = if no_mpris {
+        None
+    } else {
+        match mpris::Mpris::start("weave") {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("MPRIS is unavailable ({e}); continuing without desktop media controls");
+                None
+            }
+        }
+    };
+    let mut host = host::Host::new(playback).with_mpris(mpris);
     loop {
         for event in host.tick(lib)? {
             host::emit(json, host.elapsed(), &event);
         }
-        if lib.host_quit_requested()? || run_for.is_some_and(|limit| host.elapsed() >= limit) {
+        if host.should_quit()
+            || lib.host_quit_requested()?
+            || run_for.is_some_and(|limit| host.elapsed() >= limit)
+        {
             break;
         }
         std::thread::sleep(host::TICK);
@@ -751,4 +830,97 @@ fn run_host(
     lib.clear_host_quit()?;
     eprintln!("playback host stopped");
     Ok(())
+}
+
+/// `1:30`, `1:02:03`, `90s`, `1m30s`, or relative to `current` with a leading `+` / `-`.
+fn parse_position(input: &str, current: std::time::Duration) -> Result<std::time::Duration, Error> {
+    use std::time::Duration;
+    let bad = |m: String| Error::InvalidInput(m);
+    let absolute = |s: &str| -> Result<Duration, Error> {
+        if s.contains(':') {
+            let parts: Vec<&str> = s.split(':').collect();
+            if parts.len() > 3
+                || parts
+                    .iter()
+                    .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(bad(format!("invalid position \"{s}\" (try 1:30 or 90s)")));
+            }
+            let secs = parts.iter().try_fold(0u64, |acc, p| {
+                acc.checked_mul(60)
+                    .and_then(|a| a.checked_add(p.parse().ok()?))
+            });
+            return secs
+                .map(Duration::from_secs)
+                .ok_or_else(|| bad(format!("position \"{s}\" is too large")));
+        }
+        parse_span(s).map_err(bad)
+    };
+    match input.trim().as_bytes().first() {
+        Some(b'+') => Ok(current.saturating_add(absolute(input.trim()[1..].trim())?)),
+        Some(b'-') => Ok(current.saturating_sub(absolute(input.trim()[1..].trim())?)),
+        _ => absolute(input.trim()),
+    }
+}
+
+/// `80` or `80%` to 0.0-1.0.
+fn parse_volume(input: &str) -> Result<f32, Error> {
+    let n: u8 = input
+        .trim()
+        .trim_end_matches('%')
+        .parse()
+        .map_err(|_| Error::InvalidInput(format!("invalid volume \"{input}\" (0-100)")))?;
+    if n > 100 {
+        return Err(Error::InvalidInput(
+            "volume must be between 0 and 100".into(),
+        ));
+    }
+    Ok(f32::from(n) / 100.0)
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    #[test]
+    fn positions_absolute_and_relative() {
+        let at = secs(100);
+        assert_eq!(parse_position("1:30", at).unwrap(), secs(90));
+        assert_eq!(parse_position("1:02:03", at).unwrap(), secs(3723));
+        assert_eq!(parse_position("90s", at).unwrap(), secs(90));
+        assert_eq!(parse_position("1m30s", at).unwrap(), secs(90));
+        assert_eq!(parse_position("0:00", at).unwrap(), Duration::ZERO);
+        assert_eq!(parse_position("0s", at).unwrap(), Duration::ZERO);
+        assert_eq!(parse_position("+10s", at).unwrap(), secs(110));
+        assert_eq!(parse_position("-30s", at).unwrap(), secs(70));
+        assert_eq!(
+            parse_position("-5m", at).unwrap(),
+            Duration::ZERO,
+            "never before the start"
+        );
+        assert_eq!(parse_position("+0:30", at).unwrap(), secs(130));
+    }
+
+    #[test]
+    fn bad_positions_are_rejected_and_a_bare_number_needs_a_unit() {
+        for bad in ["", "abc", "1:", ":30", "1:2:3:4", "12", "+", "1.5s"] {
+            assert!(parse_position(bad, secs(0)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn volume_is_a_percentage() {
+        assert_eq!(parse_volume("80").unwrap(), 0.8);
+        assert_eq!(parse_volume("100%").unwrap(), 1.0);
+        assert_eq!(parse_volume("0").unwrap(), 0.0);
+        for bad in ["101", "-1", "abc", "", "5.5"] {
+            assert!(parse_volume(bad).is_err(), "{bad}");
+        }
+    }
 }

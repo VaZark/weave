@@ -371,6 +371,7 @@ pub fn print_session(
             ("Repeat", v.state.repeat.to_string()),
             ("End of queue", v.state.end_of_queue.to_string()),
             ("Time", time_label(v)),
+            ("Volume", format!("{}%", (v.state.volume * 100.0).round())),
             ("Sleep timer", sleep_label(v)),
         ]);
         if let Some(running) = host_running {

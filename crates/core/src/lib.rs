@@ -18,7 +18,7 @@ mod track;
 pub use backend::{
     Availability, Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, ScannedTrack,
 };
-pub use duration::parse_duration;
+pub use duration::{parse_duration, parse_span};
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, Sort, SortField, normalize_tag};
 pub use lyrics::{LyricLine, Lyrics};

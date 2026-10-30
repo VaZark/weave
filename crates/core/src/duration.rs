@@ -1,8 +1,18 @@
 use std::time::Duration;
 
 /// Parses `45s`, `30m`, `2h`, `1h30m`, `1h 30m 15s`. Every number needs a unit, so a bare
-/// `90` is an error rather than a guess between seconds and minutes.
+/// `90` is an error rather than a guess between seconds and minutes. Zero is an error too:
+/// use this for delays and timers.
 pub fn parse_duration(input: &str) -> Result<Duration, String> {
+    let d = parse_span(input)?;
+    if d.is_zero() {
+        return Err("duration must be greater than zero".into());
+    }
+    Ok(d)
+}
+
+/// Like `parse_duration` but allows zero (`0s`), for positions such as "the start".
+pub fn parse_span(input: &str) -> Result<Duration, String> {
     let s: String = input.chars().filter(|c| !c.is_whitespace()).collect();
     if s.is_empty() {
         return Err("empty duration".into());
@@ -38,15 +48,7 @@ pub fn parse_duration(input: &str) -> Result<Duration, String> {
             "invalid duration \"{input}\": missing unit after {digits} (try {digits}s, {digits}m or {digits}h)"
         ));
     }
-    checked(Some(total), input)
-}
-
-fn checked(secs: Option<u64>, input: &str) -> Result<Duration, String> {
-    match secs {
-        Some(0) => Err("duration must be greater than zero".into()),
-        Some(s) => Ok(Duration::from_secs(s)),
-        None => Err(format!("duration \"{input}\" is too large")),
-    }
+    Ok(Duration::from_secs(total))
 }
 
 #[cfg(test)]
@@ -61,6 +63,14 @@ mod tests {
         assert_eq!(secs("1h30m"), 5400);
         assert_eq!(secs("1h 30m 15s"), 5415);
         assert_eq!(secs("45S"), 45);
+    }
+
+    #[test]
+    fn spans_allow_zero_but_durations_do_not() {
+        assert_eq!(parse_span("0s").unwrap(), Duration::ZERO);
+        assert_eq!(parse_span("1m30s").unwrap().as_secs(), 90);
+        assert!(parse_span("0").is_err(), "a unit is still required");
+        assert!(parse_duration("0s").is_err());
     }
 
     #[test]
