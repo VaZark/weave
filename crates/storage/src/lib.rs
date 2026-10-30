@@ -286,6 +286,21 @@ impl Storage {
             .collect())
     }
 
+    /// Every source of a track as `(backend_id, external_id)`, oldest first.
+    pub fn sources(&self, track_id: &str) -> Result<Vec<(String, String)>> {
+        let track_id = self.resolve_id(track_id)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT backend_id, external_id FROM sources WHERE track_id = ?1 ORDER BY rowid",
+            )
+            .map_err(db_err)?;
+        stmt.query_map([track_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)
+    }
+
     /// External reference of a track's source for `backend_id`.
     pub fn source_ref(&self, track_id: &str, backend_id: &str) -> Result<Option<String>> {
         let track_id = self.resolve_id(track_id)?;

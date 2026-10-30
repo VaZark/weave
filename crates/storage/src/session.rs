@@ -10,35 +10,49 @@ fn corrupt(what: &str, e: String) -> Error {
     Error::Storage(format!("corrupt player state ({what}): {e}"))
 }
 
+/// Raw `player_state` row, before parsing the text enums.
+struct StateRow {
+    status: String,
+    repeat: String,
+    shuffle: bool,
+    end_of_queue: String,
+    sleep_until: Option<i64>,
+    sleep_stop_after: bool,
+    stop_after_track: bool,
+    current_position: Option<i64>,
+    volume: f64,
+    position_ms: i64,
+    position_at: i64,
+    start_seq: i64,
+    seek_seq: i64,
+}
+
 impl Storage {
     pub fn load_queue(&self) -> Result<Queue> {
-        let (status, repeat, shuffle, end, sleep, soft, stop_after, current): (
-            String,
-            String,
-            bool,
-            String,
-            Option<i64>,
-            bool,
-            bool,
-            Option<i64>,
-        ) = self
+        let row = self
             .conn
             .query_row(
                 "SELECT status, repeat, shuffle, end_of_queue, sleep_until, sleep_soft,
-                        stop_after_track, current_position
+                        stop_after_track, current_position, volume, position_ms, position_at,
+                        start_seq, seek_seq
                  FROM player_state WHERE id = 1",
                 [],
                 |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                    ))
+                    Ok(StateRow {
+                        status: r.get(0)?,
+                        repeat: r.get(1)?,
+                        shuffle: r.get(2)?,
+                        end_of_queue: r.get(3)?,
+                        sleep_until: r.get(4)?,
+                        sleep_stop_after: r.get(5)?,
+                        stop_after_track: r.get(6)?,
+                        current_position: r.get(7)?,
+                        volume: r.get(8)?,
+                        position_ms: r.get(9)?,
+                        position_at: r.get(10)?,
+                        start_seq: r.get(11)?,
+                        seek_seq: r.get(12)?,
+                    })
                 },
             )
             .map_err(db_err)?;
@@ -61,16 +75,26 @@ impl Storage {
         Ok(Queue {
             order,
             state: PlayerState {
-                status: status.parse().map_err(|e| corrupt("status", e))?,
-                repeat: repeat.parse().map_err(|e| corrupt("repeat", e))?,
-                shuffle,
-                end_of_queue: end.parse().map_err(|e| corrupt("end_of_queue", e))?,
-                sleep: sleep.map(|at_ms| SleepTimer {
+                status: row.status.parse().map_err(|e| corrupt("status", e))?,
+                repeat: row.repeat.parse().map_err(|e| corrupt("repeat", e))?,
+                shuffle: row.shuffle,
+                end_of_queue: row
+                    .end_of_queue
+                    .parse()
+                    .map_err(|e| corrupt("end_of_queue", e))?,
+                sleep: row.sleep_until.map(|at_ms| SleepTimer {
                     at_ms,
-                    stop_after: soft,
+                    stop_after: row.sleep_stop_after,
                 }),
-                stop_after_track: stop_after,
-                current: current.and_then(|p| rows.iter().position(|r| r.0 == p)),
+                stop_after_track: row.stop_after_track,
+                current: row
+                    .current_position
+                    .and_then(|p| rows.iter().position(|r| r.0 == p)),
+                volume: row.volume as f32,
+                position_ms: row.position_ms.max(0) as u64,
+                position_at_ms: row.position_at,
+                start_seq: row.start_seq.max(0) as u64,
+                seek_seq: row.seek_seq.max(0) as u64,
             },
             items: rows.into_iter().map(|r| TrackId(r.1)).collect(),
         })
@@ -112,7 +136,8 @@ impl Storage {
         let s = &queue.state;
         tx.execute(
             "UPDATE player_state SET status = ?1, repeat = ?2, shuffle = ?3, end_of_queue = ?4,
-                 sleep_until = ?5, sleep_soft = ?6, stop_after_track = ?7, current_position = ?8
+                 sleep_until = ?5, sleep_soft = ?6, stop_after_track = ?7, current_position = ?8,
+                 volume = ?9, position_ms = ?10, position_at = ?11, start_seq = ?12, seek_seq = ?13
              WHERE id = 1",
             params![
                 s.status.as_str(),
@@ -123,9 +148,53 @@ impl Storage {
                 s.sleep.is_some_and(|t| t.stop_after),
                 s.stop_after_track,
                 s.current.map(|c| c as i64),
+                s.volume as f64,
+                s.position_ms as i64,
+                s.position_at_ms,
+                s.start_seq as i64,
+                s.seek_seq as i64,
             ],
         )
         .map_err(db_err)?;
         tx.commit().map_err(db_err)
+    }
+
+    /// A host's report of where playback really is. Ignored (returns `false`) unless the
+    /// session is still on the same track start (`start_seq`), so a slow report can never
+    /// overwrite the position of a newer track. Touches only the position anchor.
+    pub fn report_position(
+        &mut self,
+        start_seq: u64,
+        position_ms: u64,
+        at_ms: i64,
+    ) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE player_state SET position_ms = ?1, position_at = ?2
+                 WHERE id = 1 AND start_seq = ?3",
+                params![position_ms as i64, at_ms, start_seq as i64],
+            )
+            .map_err(db_err)?;
+        Ok(changed == 1)
+    }
+
+    /// Ask the playback host to exit (`true`), or clear the request (`false`).
+    pub fn set_host_quit(&mut self, quit: bool) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE player_state SET host_quit = ?1 WHERE id = 1",
+                [quit],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn host_quit_requested(&self) -> Result<bool> {
+        self.conn
+            .query_row("SELECT host_quit FROM player_state WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .map_err(db_err)
     }
 }

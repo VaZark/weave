@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Audio output through rodio (symphonia decoders, cpal). Needs the ALSA development files
+# on Linux. Without it the backend still indexes files and reads lyrics.
+audio = ["dep:rodio"]
+
 [dependencies]
 lofty = "0.22"
+rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-all"], optional = true }
 walkdir = "2"
 weave-core.workspace = true
 

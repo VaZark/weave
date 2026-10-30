@@ -292,6 +292,6 @@ weave/
 
 ## Non-goals for MVP
 
-Cloud accounts, public tag sharing, file rewriting, a general-purpose query DSL, and mandatory background services.
+Cloud accounts, public tag sharing, file rewriting and a general-purpose query DSL.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to build and run it locally, and [credits.md](credits.md).

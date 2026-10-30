@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+# Audio output (see weave-local).
+audio = ["weave-local/audio"]
 sqlite-from-source = ["weave-storage/sqlite-from-source"]
 
 [dependencies]

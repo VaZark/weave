@@ -61,7 +61,7 @@ pub enum SleepSetting {
     },
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
     pub status: PlayStatus,
     pub repeat: RepeatMode,
@@ -74,6 +74,35 @@ pub struct PlayerState {
     pub stop_after_track: bool,
     /// Index into `Queue::items` of the current track.
     pub current: Option<usize>,
+    /// 0.0 (mute) to 1.0.
+    pub volume: f32,
+    /// Position anchor: where playback was at `position_at_ms` (unix milliseconds). While
+    /// playing, the real position is this plus the time elapsed since the anchor.
+    pub position_ms: u64,
+    pub position_at_ms: i64,
+    /// Bumped every time a track starts (or restarts); a playback host restarts on change.
+    pub start_seq: u64,
+    /// Bumped on every seek request; a playback host seeks to `position_ms` on change.
+    pub seek_seq: u64,
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self {
+            status: PlayStatus::default(),
+            repeat: RepeatMode::default(),
+            shuffle: false,
+            end_of_queue: EndOfQueue::default(),
+            sleep: None,
+            stop_after_track: false,
+            current: None,
+            volume: 1.0,
+            position_ms: 0,
+            position_at_ms: 0,
+            start_seq: 0,
+            seek_seq: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +134,38 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Where playback is now, in milliseconds.
+    pub fn position_ms(&self, now_ms: i64) -> u64 {
+        let elapsed = if self.state.status == PlayStatus::Playing {
+            (now_ms - self.state.position_at_ms).max(0) as u64
+        } else {
+            0
+        };
+        self.state.position_ms.saturating_add(elapsed)
+    }
+
+    /// Re-anchor the position (also used when a host reports the real one).
+    pub fn set_position(&mut self, position_ms: u64, now_ms: i64) {
+        self.state.position_ms = position_ms;
+        self.state.position_at_ms = now_ms;
+    }
+
+    /// A track has just started: restart from zero and tell hosts to (re)start it.
+    pub fn mark_started(&mut self, now_ms: i64) {
+        self.state.start_seq += 1;
+        self.set_position(0, now_ms);
+    }
+
+    /// Ask hosts to jump to `position_ms` in the current track.
+    pub fn request_seek(&mut self, position_ms: u64, now_ms: i64) -> Result<()> {
+        if self.state.current.is_none() {
+            return Err(Error::InvalidInput("nothing is queued".into()));
+        }
+        self.state.seek_seq += 1;
+        self.set_position(position_ms, now_ms);
+        Ok(())
+    }
+
     /// Stopped is also the end of any pending stop-after-track.
     fn halt(&mut self) {
         self.state.status = PlayStatus::Stopped;
@@ -876,6 +937,65 @@ mod tests {
                 && q.state
                     .sleep
                     .is_some_and(|t| t.at_ms == 9_000 && t.stop_after)
+        );
+    }
+
+    #[test]
+    fn position_advances_only_while_playing() {
+        let (mut q, _) = started(&["a"]);
+        q.mark_started(1_000);
+        assert_eq!(q.position_ms(1_000), 0);
+        assert_eq!(q.position_ms(3_500), 2_500, "elapsed since the anchor");
+        q.set_position(2_500, 3_500);
+        q.pause().unwrap();
+        assert_eq!(q.position_ms(99_000), 2_500, "frozen while paused");
+        assert_eq!(
+            q.position_ms(0),
+            2_500,
+            "a clock behind the anchor never goes negative"
+        );
+    }
+
+    #[test]
+    fn mark_started_counts_starts_and_resets_the_position() {
+        let (mut q, _) = started(&["a"]);
+        q.set_position(5_000, 0);
+        q.mark_started(10);
+        q.mark_started(20);
+        assert_eq!(
+            (
+                q.state.start_seq,
+                q.state.position_ms,
+                q.state.position_at_ms
+            ),
+            (2, 0, 20)
+        );
+    }
+
+    #[test]
+    fn seek_requests_need_a_current_track_and_are_counted() {
+        let mut q = Queue::default();
+        assert!(q.request_seek(1_000, 0).is_err());
+        let (mut q, _) = started(&["a"]);
+        q.request_seek(42_000, 7).unwrap();
+        q.request_seek(43_000, 8).unwrap();
+        assert_eq!(
+            (
+                q.state.seek_seq,
+                q.state.position_ms,
+                q.state.position_at_ms
+            ),
+            (2, 43_000, 8)
+        );
+        assert_eq!(q.state.start_seq, 0, "a seek is not a restart");
+    }
+
+    #[test]
+    fn a_fresh_session_is_stopped_at_full_volume() {
+        let s = PlayerState::default();
+        assert_eq!(
+            (s.status, s.volume, s.start_seq, s.seek_seq),
+            (PlayStatus::Stopped, 1.0, 0, 0)
         );
     }
 

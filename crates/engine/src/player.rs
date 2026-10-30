@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use weave_core::{
-    Advance, AdvanceReason, EndOfQueue, Error, Page, PlayStatus, PlayerState, Queue, RepeatMode,
-    Result, SleepSetting, Track, TrackId,
+    Advance, AdvanceReason, Backend, CapabilityGroup, EndOfQueue, Error, Lyrics, Page, PlayStatus,
+    Playback, PlayerState, Queue, RepeatMode, Result, SleepSetting, SourceRef, Track, TrackId,
 };
 
 use crate::{Library, autoplay};
@@ -22,6 +22,8 @@ pub struct SessionView {
     pub tracks: Vec<Track>,
     /// Time left on the sleep timer, if one is set.
     pub sleep_remaining: Option<Duration>,
+    /// Where playback is in the current track.
+    pub position: Duration,
 }
 
 impl SessionView {
@@ -45,8 +47,17 @@ impl Library {
     /// `Queue::apply_sleep`). Also reports whether it did.
     fn load_session_checked(&mut self) -> Result<(Queue, bool)> {
         let mut queue = self.storage.load_queue()?;
-        let fired = queue.apply_sleep(self.now_ms());
+        let now = self.now_ms();
+        // If the timer stops playback, the position freezes where it was at the deadline.
+        let at_deadline = queue.state.sleep.map(|t| {
+            let at = t.at_ms.min(now);
+            (queue.position_ms(at), at)
+        });
+        let fired = queue.apply_sleep(now);
         if fired {
+            if let (PlayStatus::Stopped, Some((pos, at))) = (queue.state.status, at_deadline) {
+                queue.set_position(pos, at);
+            }
             self.storage.save_queue(&queue)?;
         }
         Ok((queue, fired))
@@ -71,6 +82,9 @@ impl Library {
 
     /// Save after an operation that started a track.
     fn commit_started(&mut self, queue: &mut Queue) -> Result<SessionView> {
+        if queue.state.status != PlayStatus::Stopped && queue.state.current.is_some() {
+            queue.mark_started(self.now_ms());
+        }
         self.schedule_stop(queue)?;
         self.commit(queue)
     }
@@ -85,6 +99,7 @@ impl Library {
             state: queue.state.clone(),
             tracks: self.storage.tracks_by_slugs(&slugs)?,
             sleep_remaining,
+            position: Duration::from_millis(queue.position_ms(self.now_ms())),
         })
     }
 
@@ -143,6 +158,89 @@ impl Library {
             .state
             .sleep
             .map(|t| Duration::from_millis((t.at_ms - self.now_ms()).max(0) as u64)))
+    }
+
+    // --- hosts: what a playback host reads and reports ---------------------------
+
+    /// The session state, after applying a sleep timer that came due. Cheap enough to poll.
+    pub fn player_state(&mut self) -> Result<PlayerState> {
+        Ok(self.load_session()?.state)
+    }
+
+    /// Where playback is in the current track according to the session, in milliseconds.
+    pub fn session_position_ms(&mut self) -> Result<u64> {
+        let queue = self.load_session()?;
+        Ok(queue.position_ms(self.now_ms()))
+    }
+
+    /// The current track, for a host that is about to start it.
+    pub fn current_track_if_any(&mut self) -> Result<Option<Track>> {
+        let queue = self.load_session()?;
+        queue
+            .current_track()
+            .map(|id| self.storage.track(&id.0))
+            .transpose()
+    }
+
+    /// The source a playback backend can play for a track.
+    pub fn playback_source(&self, track_id: &str) -> Result<SourceRef> {
+        let playable = self.local.capabilities().iter().any(|c| {
+            c.group == CapabilityGroup::Playback && c.state.supported && c.state.available
+        });
+        self.storage
+            .sources(track_id)?
+            .into_iter()
+            .find(|(backend, _)| playable && backend == self.local.id())
+            .map(|(backend_id, external_id)| SourceRef {
+                backend_id,
+                external_id,
+            })
+            .ok_or_else(|| Error::InvalidInput(format!("no playable source for \"{track_id}\"")))
+    }
+
+    /// A player for the host to drive (needs the `audio` feature and an output device).
+    pub fn open_playback(&self) -> Result<Box<dyn Playback>> {
+        #[cfg(feature = "audio")]
+        {
+            self.local.playback()
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            Err(Error::Backend("this build has no audio support".into()))
+        }
+    }
+
+    /// Ask the playback host to exit. Only meaningful while one is running.
+    pub fn request_host_quit(&mut self) -> Result<()> {
+        self.storage.set_host_quit(true)
+    }
+
+    pub fn host_quit_requested(&self) -> Result<bool> {
+        self.storage.host_quit_requested()
+    }
+
+    /// Withdraw a quit request (a starting host does this, so an old request cannot kill it).
+    pub fn clear_host_quit(&mut self) -> Result<()> {
+        self.storage.set_host_quit(false)
+    }
+
+    /// Where the host really is. Ignored (`false`) if the track was started again since.
+    pub fn report_position(&mut self, start_seq: u64, position: Duration) -> Result<bool> {
+        let now = self.now_ms();
+        self.storage
+            .report_position(start_seq, position.as_millis() as u64, now)
+    }
+
+    /// Synchronized or plain lyrics for a track, if any of its sources has them.
+    pub fn lyrics(&self, track_id: &str) -> Result<Option<Lyrics>> {
+        for (backend, external_id) in self.storage.sources(track_id)? {
+            if backend == self.local.id()
+                && let Some(l) = self.local.lyrics(&external_id)?
+            {
+                return Ok(Some(l));
+            }
+        }
+        Ok(None)
     }
 
     // --- starting playback -------------------------------------------------
@@ -251,7 +349,9 @@ impl Library {
 
     pub fn pause(&mut self) -> Result<SessionView> {
         let mut queue = self.load_session()?;
+        let (now, pos) = (self.now_ms(), queue.position_ms(self.now_ms()));
         queue.pause()?;
+        queue.set_position(pos, now);
         self.commit(&queue)
     }
 
@@ -262,12 +362,15 @@ impl Library {
         if restarting {
             return self.commit_started(&mut queue);
         }
+        queue.state.position_at_ms = self.now_ms(); // the position was frozen while paused
         self.commit(&queue)
     }
 
     pub fn stop(&mut self) -> Result<SessionView> {
         let mut queue = self.load_session()?;
+        let (now, pos) = (self.now_ms(), queue.position_ms(self.now_ms()));
         queue.stop();
+        queue.set_position(pos, now);
         self.commit(&queue)
     }
 
@@ -330,6 +433,29 @@ impl Library {
     pub fn set_end_of_queue(&mut self, mode: EndOfQueue) -> Result<SessionView> {
         let mut queue = self.load_session()?;
         queue.state.end_of_queue = mode;
+        self.commit(&queue)
+    }
+
+    /// Jump to a position in the current track (clamped to its length when known).
+    pub fn seek(&mut self, to: Duration) -> Result<SessionView> {
+        let mut queue = self.load_session()?;
+        let mut ms = to.as_millis() as u64;
+        if let Some(id) = queue.current_track()
+            && let Some(len) = self.storage.track(&id.0)?.metadata.duration_ms
+        {
+            ms = ms.min(len);
+        }
+        queue.request_seek(ms, self.now_ms())?;
+        self.commit(&queue)
+    }
+
+    /// 0.0 (mute) to 1.0.
+    pub fn set_volume(&mut self, volume: f32) -> Result<SessionView> {
+        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
+            return Err(Error::InvalidInput("volume must be between 0 and 1".into()));
+        }
+        let mut queue = self.load_session()?;
+        queue.state.volume = volume;
         self.commit(&queue)
     }
 
@@ -913,6 +1039,265 @@ mod tests {
         let v = lib.session().unwrap();
         assert!(v.state.sleep.is_some_and(|t| t.stop_after) && v.sleep_remaining.is_some());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn position_follows_the_clock_and_freezes_when_paused_or_stopped() {
+        let (mut lib, clock) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.next().unwrap();
+        advance_clock(&clock, 10);
+        assert_eq!(lib.session().unwrap().position, Duration::from_secs(10));
+
+        lib.pause().unwrap();
+        advance_clock(&clock, 60);
+        assert_eq!(
+            lib.session().unwrap().position,
+            Duration::from_secs(10),
+            "frozen while paused"
+        );
+
+        lib.resume().unwrap();
+        advance_clock(&clock, 5);
+        assert_eq!(lib.session().unwrap().position, Duration::from_secs(15));
+
+        lib.stop().unwrap();
+        advance_clock(&clock, 60);
+        assert_eq!(
+            lib.session().unwrap().position,
+            Duration::from_secs(15),
+            "kept after a stop"
+        );
+    }
+
+    #[test]
+    fn every_track_start_bumps_the_start_counter_and_resets_the_position() {
+        let (mut lib, clock) = library(3);
+        let seq = |lib: &mut Library| lib.player_state().unwrap().start_seq;
+        lib.queue_add(&[id(1), id(2), id(3)], false).unwrap();
+        assert_eq!(seq(&mut lib), 0, "queueing starts nothing");
+
+        type Start = Box<dyn Fn(&mut Library)>;
+        let starts: Vec<(&str, Start)> = vec![
+            (
+                "next",
+                Box::new(|l| {
+                    l.next().unwrap();
+                }),
+            ),
+            (
+                "next again",
+                Box::new(|l| {
+                    l.next().unwrap();
+                }),
+            ),
+            (
+                "previous",
+                Box::new(|l| {
+                    l.previous().unwrap();
+                }),
+            ),
+            (
+                "jump",
+                Box::new(|l| {
+                    l.queue_jump(3).unwrap();
+                }),
+            ),
+            (
+                "play",
+                Box::new(|l| {
+                    l.play_track(&id(1)).unwrap();
+                }),
+            ),
+            (
+                "resume after stop",
+                Box::new(|l| {
+                    l.stop().unwrap();
+                    l.resume().unwrap();
+                }),
+            ),
+            (
+                "repeat-song replay",
+                Box::new(|l| {
+                    l.set_repeat(RepeatMode::Song).unwrap();
+                    l.track_ended().unwrap();
+                }),
+            ),
+        ];
+        let mut expected = 0;
+        for (name, start) in starts {
+            advance_clock(&clock, 30);
+            start(&mut lib);
+            expected += 1;
+            let v = lib.session().unwrap();
+            assert_eq!(v.state.start_seq, expected, "{name}");
+            assert_eq!(
+                v.position,
+                Duration::ZERO,
+                "{name}: a new track starts at zero"
+            );
+        }
+
+        let before = seq(&mut lib);
+        lib.pause().unwrap();
+        lib.resume().unwrap();
+        lib.seek(Duration::from_secs(5)).unwrap();
+        lib.set_volume(0.5).unwrap();
+        lib.stop().unwrap();
+        assert_eq!(
+            seq(&mut lib),
+            before,
+            "pause, resume, seek, volume and stop are not starts"
+        );
+    }
+
+    #[test]
+    fn a_stop_at_the_end_of_the_queue_is_not_a_start() {
+        let (mut lib, _) = library(1);
+        lib.play_track(&id(1)).unwrap();
+        let before = lib.player_state().unwrap().start_seq;
+        let v = lib.track_ended().unwrap();
+        assert_eq!(v.state.status, PlayStatus::Stopped);
+        assert_eq!(v.state.start_seq, before);
+    }
+
+    #[test]
+    fn seek_moves_the_position_counts_and_clamps_to_the_track_length() {
+        let (mut lib, clock) = library(1);
+        assert!(lib.seek(Duration::from_secs(5)).is_err(), "nothing queued");
+        lib.play_track(&id(1)).unwrap();
+        let v = lib.seek(Duration::from_secs(42)).unwrap();
+        assert_eq!((v.position, v.state.seek_seq), (Duration::from_secs(42), 1));
+        advance_clock(&clock, 3);
+        assert_eq!(
+            lib.session().unwrap().position,
+            Duration::from_secs(45),
+            "keeps running from there"
+        );
+
+        let v = lib.seek(Duration::from_secs(10_000)).unwrap();
+        assert_eq!(
+            v.position,
+            Duration::from_millis(TRACK_MS),
+            "clamped to the 3 minute track"
+        );
+        assert_eq!(v.state.seek_seq, 2);
+    }
+
+    #[test]
+    fn volume_is_validated_and_persisted() {
+        let (mut lib, _) = library(1);
+        assert_eq!(lib.player_state().unwrap().volume, 1.0);
+        assert_eq!(lib.set_volume(0.3).unwrap().state.volume, 0.3);
+        for bad in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(lib.set_volume(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            lib.player_state().unwrap().volume,
+            0.3,
+            "bad values change nothing"
+        );
+    }
+
+    #[test]
+    fn a_host_position_report_is_ignored_once_the_track_started_again() {
+        let (mut lib, clock) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.next().unwrap();
+        let seq = lib.player_state().unwrap().start_seq;
+        advance_clock(&clock, 4);
+        assert!(
+            lib.report_position(seq, Duration::from_millis(3_900))
+                .unwrap()
+        );
+        assert_eq!(
+            lib.session().unwrap().position,
+            Duration::from_millis(3_900)
+        );
+
+        lib.next().unwrap();
+        assert!(
+            !lib.report_position(seq, Duration::from_secs(99)).unwrap(),
+            "stale start"
+        );
+        assert_eq!(lib.session().unwrap().position, Duration::ZERO);
+    }
+
+    #[test]
+    fn a_sleep_stop_freezes_the_position_at_the_deadline() {
+        let (mut lib, clock) = library(1);
+        lib.play_track(&id(1)).unwrap();
+        lib.set_sleep(timer(60, false)).unwrap();
+        advance_clock(&clock, 600);
+        let v = lib.session().unwrap();
+        assert_eq!(v.state.status, PlayStatus::Stopped);
+        assert_eq!(v.position, Duration::from_secs(60), "not 600 s");
+    }
+
+    fn real_files() -> (Library, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("weave-real-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // header + 1 s of silence, as a valid mono 16-bit 8 kHz WAV
+        let data = 16_000u32;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF");
+        wav.extend((36 + data).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16_000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data.to_le_bytes());
+        wav.extend(std::iter::repeat_n(0u8, data as usize));
+        std::fs::write(dir.join("song.wav"), &wav).unwrap();
+        std::fs::write(dir.join("other.wav"), &wav).unwrap();
+        std::fs::write(dir.join("song.lrc"), "[00:01.00]first\n[00:02.00]second").unwrap();
+        let mut lib = Library::open_in_memory().unwrap();
+        assert_eq!(lib.import(&dir).unwrap().added, 2);
+        (lib, dir)
+    }
+
+    #[test]
+    fn lyrics_and_playback_sources_come_from_the_local_backend() {
+        let (lib, dir) = real_files();
+        let all = lib
+            .search(&FilterSpec::default(), Page::ALL)
+            .unwrap()
+            .tracks;
+        let song = all.iter().find(|t| t.metadata.title == "song").unwrap();
+        let other = all.iter().find(|t| t.metadata.title == "other").unwrap();
+
+        let l = lib.lyrics(&song.id.0).unwrap().unwrap();
+        assert!(l.synced && l.lines.len() == 2);
+        assert_eq!(lib.lyrics(&other.id.0).unwrap(), None);
+        assert!(matches!(lib.lyrics("nope"), Err(Error::NotFound(_))));
+
+        let source = lib.playback_source(&song.id.0);
+        if cfg!(feature = "audio") {
+            let s = source.unwrap();
+            assert!(s.backend_id == "local" && s.external_id.ends_with("song.wav"));
+        } else {
+            assert!(
+                matches!(source, Err(Error::InvalidInput(_))),
+                "no audio support, nothing is playable"
+            );
+            assert!(matches!(lib.open_playback(), Err(Error::Backend(_))));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sources_of_other_backends_are_not_playable_here() {
+        let (lib, _) = library(1);
+        assert!(
+            matches!(lib.playback_source(&id(1)), Err(Error::InvalidInput(_))),
+            "a fake backend"
+        );
+        assert_eq!(lib.lyrics(&id(1)).unwrap(), None);
     }
 
     fn tagged_library() -> Library {

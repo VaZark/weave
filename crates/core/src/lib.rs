@@ -7,6 +7,8 @@ mod backend;
 mod duration;
 mod error;
 mod filter;
+mod lyrics;
+mod playback;
 mod playlist;
 mod queue;
 mod rng;
@@ -19,6 +21,8 @@ pub use backend::{
 pub use duration::parse_duration;
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, Sort, SortField, normalize_tag};
+pub use lyrics::{LyricLine, Lyrics};
+pub use playback::{Playback, SourceRef};
 pub use playlist::{Playlist, PlaylistKind};
 pub use queue::{
     Advance, AdvanceReason, EndOfQueue, PlayStatus, PlayerState, Queue, RepeatMode, SleepSetting,

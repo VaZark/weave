@@ -10,8 +10,8 @@ macro_rules! outln {
 
 #[cfg(debug_assertions)]
 mod dev;
+mod host;
 mod output;
-mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -45,6 +45,9 @@ struct Cli {
     /// Add an ID column (the slug used to address tracks and playlists) to tables.
     #[arg(long, global = true)]
     show_ids: bool,
+    /// Never start the playback host automatically.
+    #[arg(long, global = true, env = "WEAVE_NO_HOST")]
+    no_host: bool,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -136,16 +139,18 @@ enum Cmd {
         #[arg(long)]
         stop_after: bool,
     },
-    /// Run in the foreground and enforce the sleep timer on time, reporting session changes.
-    /// Optional: nothing starts it for you. (The audio player in 0.a4 will be this kind of host.)
-    Watch {
-        /// How often to re-read the session for changes made by other commands.
-        #[arg(long, default_value = "1s", value_name = "DURATION")]
-        interval: String,
-        /// Exit after this long instead of running until interrupted.
+    /// Run the playback host in the foreground: it plays the session, applies the sleep timer on
+    /// time and logs what happens. Commands that start playback launch it for you.
+    Host {
+        /// Follow the session without producing sound.
+        #[arg(long)]
+        no_audio: bool,
+        /// Exit after this long instead of running until `quit` or Ctrl-C.
         #[arg(long = "for", value_name = "DURATION")]
         run_for: Option<String>,
     },
+    /// Stop the playback host.
+    Quit,
     /// Inspect backends.
     #[command(subcommand)]
     Backend(BackendCmd),
@@ -381,6 +386,7 @@ impl From<FilterArgs> for FilterSpec {
     }
 }
 
+#[derive(Debug)]
 enum Failure {
     Engine(Error),
     Other(String),
@@ -424,14 +430,42 @@ fn main() -> ExitCode {
     }
 }
 
-const NO_AUDIO_YET: &str =
-    "note: no audio output yet (planned for 0.a4); this updates the playback session only";
+/// After a command that left the session playing: make sure a host is there to play it.
+fn start_host_if_playing(db: &std::path::Path, cli: &HostPolicy, v: &weave_engine::SessionView) {
+    use weave_core::PlayStatus;
+    if cli.no_host || !cfg!(feature = "audio") || v.state.status != PlayStatus::Playing {
+        return;
+    }
+    match host::ensure_running(db) {
+        Ok(Some(log)) if !cli.json => {
+            eprintln!("started the playback host (log: {})", log.display())
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("weave-player: could not start the playback host: {e}"),
+    }
+}
+
+struct HostPolicy {
+    no_host: bool,
+    json: bool,
+}
 
 fn run(cli: Cli) -> Result<(), Failure> {
     let json = cli.json;
     let show_ids = cli.show_ids;
-    let mut lib = Library::open(&cli.db.unwrap_or_else(default_db))?;
-    let session = |v: &weave_engine::SessionView| print_session(json, show_ids, v);
+    let policy = HostPolicy {
+        no_host: cli.no_host,
+        json,
+    };
+    let db = cli.db.unwrap_or_else(default_db);
+    let mut lib = Library::open(&db)?;
+    let session = |v: &weave_engine::SessionView| print_session(json, show_ids, None, v);
+    // Print the session, then start a host if it is playing and none runs.
+    let playing = |v: &weave_engine::SessionView| -> Result<(), Failure> {
+        print_session(json, show_ids, None, v)?;
+        start_host_if_playing(&db, &policy, v);
+        Ok(())
+    };
 
     match cli.command {
         Cmd::Import { path } => {
@@ -544,11 +578,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             })?;
         }
         Cmd::Playlist(PlaylistCmd::Play { name, append }) => {
-            let v = lib.play_playlist(&name, append)?;
-            session(&v)?;
-            if !json {
-                eprintln!("{NO_AUDIO_YET}");
-            }
+            playing(&lib.play_playlist(&name, append)?)?;
         }
         Cmd::Playlist(PlaylistCmd::List) => print_playlists(json, show_ids, &lib.playlists()?)?,
 
@@ -567,22 +597,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Queue(QueueCmd::Move { from, to }) => {
             print_queue(json, show_ids, &lib.queue_move(from, to)?)?
         }
-        Cmd::Queue(QueueCmd::Jump { position }) => session(&lib.queue_jump(position)?)?,
+        Cmd::Queue(QueueCmd::Jump { position }) => playing(&lib.queue_jump(position)?)?,
         Cmd::Queue(QueueCmd::Clear) => session(&lib.queue_clear()?)?,
         Cmd::Queue(QueueCmd::End { mode }) => session(&lib.set_end_of_queue(mode)?)?,
 
-        Cmd::Play { track_id } => {
-            session(&lib.play_track(&track_id)?)?;
-            if !json {
-                eprintln!("{NO_AUDIO_YET}");
-            }
-        }
+        Cmd::Play { track_id } => playing(&lib.play_track(&track_id)?)?,
         Cmd::Pause => session(&lib.pause()?)?,
-        Cmd::Resume => session(&lib.resume()?)?,
+        Cmd::Resume => playing(&lib.resume()?)?,
         Cmd::Stop => session(&lib.stop()?)?,
-        Cmd::Next => session(&lib.next()?)?,
-        Cmd::Prev => session(&lib.previous()?)?,
-        Cmd::Now => session(&lib.session()?)?,
+        Cmd::Next => playing(&lib.next()?)?,
+        Cmd::Prev => playing(&lib.previous()?)?,
+        Cmd::Now => print_session(json, show_ids, Some(host::is_running(&db)), &lib.session()?)?,
         Cmd::Shuffle { on } => session(&lib.set_shuffle(on)?)?,
         Cmd::Repeat { mode } => session(&lib.set_repeat(mode)?)?,
         Cmd::Sleep { after, stop_after } => {
@@ -600,11 +625,29 @@ fn run(cli: Cli) -> Result<(), Failure> {
             session(&lib.set_sleep(setting)?)?;
         }
 
-        Cmd::Watch { interval, run_for } => {
-            let parse = |s: &str| parse_duration(s).map_err(Error::InvalidInput);
-            let interval = parse(&interval)?;
-            let run_for = run_for.as_deref().map(parse).transpose()?;
-            watch::run(&mut lib, json, interval, run_for)?;
+        Cmd::Host { no_audio, run_for } => {
+            let run_for = run_for
+                .as_deref()
+                .map(|s| parse_duration(s).map_err(Error::InvalidInput))
+                .transpose()?;
+            run_host(&mut lib, &db, json, no_audio, run_for)?;
+        }
+        Cmd::Quit => {
+            if !host::is_running(&db) {
+                outln!("no playback host is running");
+            } else {
+                lib.request_host_quit()?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while host::is_running(&db) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if host::is_running(&db) {
+                    return Err(Failure::Other(
+                        "the playback host did not stop in time".into(),
+                    ));
+                }
+                outln!("playback host stopped");
+            }
         }
         Cmd::Backend(BackendCmd::List) => {
             let bs = lib.backends();
@@ -669,5 +712,43 @@ fn run(cli: Cli) -> Result<(), Failure> {
         #[cfg(debug_assertions)]
         Cmd::Dev(DevCmd::FinishTrack) => session(&lib.track_ended()?)?,
     }
+    Ok(())
+}
+
+fn run_host(
+    lib: &mut Library,
+    db: &std::path::Path,
+    json: bool,
+    no_audio: bool,
+    run_for: Option<std::time::Duration>,
+) -> Result<(), Failure> {
+    let Some(_lock) = host::HostLock::acquire(db).map_err(|e| Failure::Other(e.to_string()))?
+    else {
+        eprintln!("a playback host is already running");
+        return Ok(());
+    };
+    lib.clear_host_quit()?;
+    let playback = if no_audio {
+        None
+    } else {
+        Some(lib.open_playback()?)
+    };
+    eprintln!(
+        "playback host started (pid {}, {})",
+        std::process::id(),
+        if no_audio { "no audio" } else { "audio on" }
+    );
+    let mut host = host::Host::new(playback);
+    loop {
+        for event in host.tick(lib)? {
+            host::emit(json, host.elapsed(), &event);
+        }
+        if lib.host_quit_requested()? || run_for.is_some_and(|limit| host.elapsed() >= limit) {
+            break;
+        }
+        std::thread::sleep(host::TICK);
+    }
+    lib.clear_host_quit()?;
+    eprintln!("playback host stopped");
     Ok(())
 }

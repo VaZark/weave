@@ -825,6 +825,10 @@ fn session_round_trips_queue_order_and_state() {
         1_000,
     );
     q.state.stop_after_track = true;
+    q.state.volume = 0.25;
+    q.set_position(12_345, 99);
+    q.state.start_seq = 7;
+    q.state.seek_seq = 3;
     q.jump(2).unwrap();
     s.save_queue(&q).unwrap();
 
@@ -849,4 +853,31 @@ fn saving_a_queue_with_an_unknown_track_fails_without_changing_the_saved_one() {
     q.append(vec![TrackId("ghost".into())], &mut rng);
     assert!(matches!(s.save_queue(&q), Err(Error::NotFound(_))));
     assert_eq!(s.load_queue().unwrap().items, [TrackId(a)]);
+}
+
+#[test]
+fn sources_are_listed_in_the_order_they_were_added() {
+    let mut s = Storage::open_in_memory().unwrap();
+    s.import_tracks("local", &[scanned("/a.mp3", "A", "x", None)])
+        .unwrap();
+    let a = all(&s, &FilterSpec::default())[0].id.0.clone();
+    assert_eq!(
+        s.sources(&a).unwrap(),
+        [("local".to_string(), "/a.mp3".to_string())]
+    );
+    assert!(matches!(s.sources("nope"), Err(Error::NotFound(_))));
+}
+
+#[test]
+fn host_quit_request_is_a_separate_flag() {
+    let mut s = Storage::open_in_memory().unwrap();
+    assert!(!s.host_quit_requested().unwrap());
+    s.set_host_quit(true).unwrap();
+    assert!(s.host_quit_requested().unwrap());
+    // saving the session must not clear it
+    let q = s.load_queue().unwrap();
+    s.save_queue(&q).unwrap();
+    assert!(s.host_quit_requested().unwrap());
+    s.set_host_quit(false).unwrap();
+    assert!(!s.host_quit_requested().unwrap());
 }

@@ -295,6 +295,19 @@ fn sleep_label(v: &SessionView) -> String {
     }
 }
 
+fn clock(ms: u64) -> String {
+    format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)
+}
+
+fn time_label(v: &SessionView) -> String {
+    let Some(t) = v.current() else { return dash() };
+    let pos = clock(v.position.as_millis() as u64);
+    match t.metadata.duration_ms {
+        Some(len) => format!("{pos} / {}", clock(len)),
+        None => pos,
+    }
+}
+
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
 }
@@ -315,6 +328,8 @@ fn session_json(v: &SessionView, with_tracks: bool) -> serde_json::Value {
         "shuffle": v.state.shuffle,
         "repeat": v.state.repeat,
         "end_of_queue": v.state.end_of_queue,
+        "position_ms": v.position.as_millis() as u64,
+        "volume": v.state.volume,
         "sleep_remaining_secs": v.sleep_remaining.map(|d| d.as_secs()),
         "sleep_stop_after": v.state.sleep.map(|t| t.stop_after),
         "stop_after_track": v.state.stop_after_track,
@@ -326,8 +341,17 @@ fn session_json(v: &SessionView, with_tracks: bool) -> serde_json::Value {
 }
 
 /// The "now playing" summary, shared by `now` and every command that changes the session.
-pub fn print_session(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Failure> {
-    out(json, &session_json(v, false), || {
+pub fn print_session(
+    json: bool,
+    show_ids: bool,
+    host_running: Option<bool>,
+    v: &SessionView,
+) -> Result<(), Failure> {
+    let mut j = session_json(v, false);
+    if let Some(running) = host_running {
+        j["host_running"] = serde_json::json!(running);
+    }
+    out(json, &j, || {
         let current = v.current();
         let mut rows = vec![
             ("Status", v.state.status.to_string()),
@@ -346,8 +370,15 @@ pub fn print_session(json: bool, show_ids: bool, v: &SessionView) -> Result<(), 
             ("Shuffle", on_off(v.state.shuffle).into()),
             ("Repeat", v.state.repeat.to_string()),
             ("End of queue", v.state.end_of_queue.to_string()),
+            ("Time", time_label(v)),
             ("Sleep timer", sleep_label(v)),
         ]);
+        if let Some(running) = host_running {
+            rows.push((
+                "Host",
+                if running { "running" } else { "not running" }.into(),
+            ));
+        }
         for (k, val) in rows {
             outln!("{k:<13} {val}");
         }
