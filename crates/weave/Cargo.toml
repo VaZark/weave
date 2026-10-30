@@ -1,0 +1,26 @@
+[package]
+name = "weave"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local-first music library, queue and playback engine, to embed in players"
+
+[features]
+# Audio output through rodio (needs the ALSA development files on Linux).
+audio = ["weave-engine/audio"]
+# Desktop media controls over D-Bus (MPRIS): media keys, GNOME/KDE widgets, playerctl.
+mpris = ["dep:mpris-server", "dep:async-io", "dep:futures-lite", "dep:async-channel"]
+# Compile SQLite from source and link it statically (default: the system SQLite).
+sqlite-from-source = ["weave-engine/sqlite-from-source"]
+
+[[example]]
+name = "embedded_player"
+required-features = ["audio"]
+
+[dependencies]
+async-channel = { version = "2", optional = true }
+async-io = { version = "2", optional = true }
+futures-lite = { version = "2", optional = true }
+mpris-server = { version = "0.11", optional = true }
+weave-core.workspace = true
+weave-engine.workspace = true

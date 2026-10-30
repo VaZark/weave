@@ -7,7 +7,7 @@
 1. Play local music without accounts or network access.
 2. Manage custom tags and source-neutral metadata.
 3. Create dynamic playlists from structured filters.
-4. Expose the same features through a CLI and GPUI desktop application.
+4. Expose the same features through a CLI and as an embeddable library that other players (GUI frontends are separate projects) use as their backend.
 5. Support capability-based backends, including optional third-party plugins in the future.
 
 ## Features and CLI
@@ -85,7 +85,7 @@
 ```mermaid
 flowchart TD
     CLI[CLI] --> API[Shared Rust engine]
-    GUI[GPUI desktop] --> API
+    APPS[Players embedding the library] --> API
     PLAYER[Playback host] --> API
     PLAYER --> MPRIS[MPRIS / D-Bus]
     API --> DB[(SQLite: canonical library)]
@@ -185,7 +185,7 @@ erDiagram
 ### Playback session
 
 The queue, cursor and modes are an engine feature (`weave_core::Queue`, orchestrated by `Library`), shared by the CLI,
-the playback host and the future GUI.
+the embedded player and any other player that embeds the library.
 
 - **Playback host:** a resident process (`weave-player host`) that plays the session through the `Playback` capability
   of a backend (rodio for `local`), serves MPRIS and applies timers. Commands only edit the persisted session (queue,
@@ -267,6 +267,25 @@ Rules:
 - New entities get a slug-based ID from the start; a backend's `id()` must itself be a slug (tested).
 - Slugs are safe in URLs, shells and SQL literals, and queries are parameterized regardless.
 
+### Library and CLI
+
+Two separate artifacts are built from the workspace: the `weave` **library** (`cargo build -p weave`) and the
+`weave-player` **CLI** (`cargo build -p weave-player`). The library contains no CLI code or dependencies; the CLI
+depends on `weave` and nothing else in the workspace, so whatever the CLI can do, an embedding player can do.
+
+- **`Library`** is a handle on one library database: tracks, tags, playlists, favorites, ratings, filters, the
+  now-playing queue, lyrics, sleep timer. Several handles, in one or more processes, can be open at once; the session
+  lives in the database.
+- **`Player`** plays the session in the embedding process, on its own thread with its own connection: audio
+  (`Audio::Device`, `Audio::Off`, or the embedder's own `Audio::Custom` output), the real position, advancing when a
+  track ends, the sleep timer on time, and with `mpris` the desktop media controls. It reports typed `PlayerEvent`s on a
+  channel. Dropping it stops it. Only one player runs per library across processes (a lock file), so an embedding app
+  and the CLI's host exclude each other: the CLI keeps working against the same library, and the app's player does
+  the playing.
+- **Features**, none on by default: `audio`, `mpris`, `sqlite-from-source`. The `weave::core` module has the domain
+  types.
+- Rust only, and unstable until 0.1. Wrapping it in a C ABI for non-Rust players is a possible later step.
+
 ### Backend contract
 
 ```rust
@@ -296,14 +315,14 @@ pub trait Backend: Send + Sync {
 ```text
 weave/
 ├── crates/
+│   ├── weave/          # The library to embed: facade over the crates below + the embedded Player
 │   ├── core/           # Types, filters, backend contracts
 │   ├── engine/         # Library, playlists, playback session orchestration
 │   └── storage/        # SQLite, migrations
 ├── backends/
-│   └── local/          # File import and playback
+│   └── local/          # File import, lyrics and playback
 ├── apps/
-│   ├── cli/
-│   └── desktop/        # GPUI
+│   └── cli/            # weave-player: a frontend over the `weave` library only
 └── docs/
     ├── goals.md
     ├── agents.md
@@ -318,12 +337,12 @@ weave/
 | 0.a2  | Static/dynamic playlists, sorting, limits, favorites, ratings                                                                                                    |
 | 0.a3  | queueing, stop or continue at end of queue (similar tags and avg bpm), sleep timer, queue management and persistence, shuffle, repeat (this song, this playlist) |
 | 0.a4  | MPRIS, local playback, synchronized lyrics                                                                                                                       |
-| 0.a5  | Second backend, capability discovery, external plugin contract : Jellyfin integration - playback, playlist sync, save song source to source-neutral library      |
-| 0.1   | Spotify integration                                                                                                                                              |
-| 0.2   | GPUI library browser, tag editor, smart playlist builder                                                                                                         |
+| 0.a5  | library/embedded build. Two separate build artifacts possible "library" and "cli"                                                                                |
+| 0.a6  | Second backend, capability discovery, external plugin contract : Spotify integration - playback, playlist sync, save song source to source-neutral library       |
 
 ## Non-goals for MVP
 
 Cloud accounts, public tag sharing, file rewriting and a general-purpose query DSL.
+GUI frontends should be a separate project that embed this library.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to build and run it locally, and [credits.md](credits.md).

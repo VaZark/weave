@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use weave_core::{Lyrics, PlayStatus, Track};
-use weave_engine::Library;
+use weave::Library;
+use weave::core::{Lyrics, PlayStatus, Track};
 
 use crate::Failure;
 use crate::output::print_json;

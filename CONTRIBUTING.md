@@ -13,7 +13,7 @@ conventions every change must respect. This page covers getting a working checko
   without the `audio` feature.
 - Git. No database server or account is required.
 
-The GPUI desktop app is not built yet (planned for 0.2); the CLI, the engine and the playback host exist today.
+Weave is a library (`weave`) that other players embed, plus the `weave-player` CLI built on it. GUIs are separate projects.
 
 ## Get the code and build
 
@@ -29,10 +29,17 @@ Without installing, run it with `cargo run -p weave-player -- <args>`.
 
 ## Build rules
 
+Two artifacts, built separately:
+
+- The library: `cargo build -p weave` (add `--features audio,mpris`). It has no CLI code or dependencies. Try the
+  embedding API with `cargo run -p weave --example embedded_player --features audio,mpris -- ~/Music`.
+- The CLI: `cargo build -p weave-player`. It depends on `weave` only.
+
 - Default: links the system SQLite (3.14.0 or newer, checked at startup).
 - `--features sqlite-from-source`: compiles SQLite and links it statically. Set it on the binary, e.g.
   `cargo build -p weave-player --features sqlite-from-source`.
-- Default features `audio` (rodio, needs ALSA headers) and `mpris` (D-Bus media controls); build with
+- The library has no default features; its features are `audio` (rodio, needs ALSA headers), `mpris` (D-Bus media
+  controls) and `sqlite-from-source`. The CLI turns `audio` and `mpris` on by default; build it with
   `--no-default-features` for a binary that cannot play sound or register with the desktop.
 - `weave-player dev ...` exists only in debug builds.
 
@@ -100,15 +107,16 @@ weave-player import ~/Music
 ## Project layout
 
 ```text
+crates/weave/      the library to embed: re-exports the crates below and runs the embedded Player
 crates/core/       types, FilterSpec, track slugs, backend contracts
 crates/storage/    SQLite schema, migrations, query building
 crates/engine/     the single API frontends call
 backends/local/    file scanning (audio detected by content, not extension)
-apps/cli/          the `weave-player` binary (apps/cli/src/dev.rs is debug-only)
+apps/cli/          the `weave-player` binary, a frontend over `weave` only (src/dev.rs is debug-only)
 ```
 
-Frontends call the engine and never touch the database directly, and filtering or playlist rules live in the
-engine, never only in a frontend.
+Frontends call the library and never touch the database directly, and filtering, playback or playlist rules live in
+the library, never only in a frontend.
 
 ## Making a change
 

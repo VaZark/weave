@@ -4,7 +4,7 @@ This file guides coding agents and human contributors working on Weave. Read `go
 
 ## Mission
 
-Build an open-source, local-first, source-neutral music management engine used by both a CLI and a Rust/GPUI desktop app. Treat arbitrary user tags and continuously evaluated smart playlists as core features, not optional enhancements.
+Build an open-source, local-first, source-neutral music management engine used by a CLI and, as an embeddable library, by other players (GUI frontends are separate projects). Treat arbitrary user tags and continuously evaluated smart playlists as core features, not optional enhancements.
 
 ## Non-negotiable invariants
 
@@ -12,7 +12,7 @@ Build an open-source, local-first, source-neutral music management engine used b
 2. **Slug IDs:** Every ID users, scripts, frontends or plugins see is a slug (lowercase, readable, assigned once, unique). Internal surrogate keys never leak. New entities get a slug-based ID from the start; see Identifiers in `goals.md`.
 3. **User annotations are protected:** Enrichment and backend sync must not overwrite local tags, ratings or metadata overrides without an explicit user action.
 4. **Backends are capability-driven:** Do not hardcode Spotify or `local` special cases into the query, metadata or playlist domain model. The local backend is bundled, but follows shared contracts.
-5. **One engine API:** Never implement filtering, persistence rules or playlist semantics only inside CLI or GPUI.
+5. **One engine API:** Never implement filtering, persistence rules, playback or playlist semantics only inside a frontend. The CLI depends on the `weave` library crate and nothing else in the workspace; whatever a second player would need lives in the library.
 6. **Dynamic playlists are queries:** Saved dynamic (smart) playlists retain filter definitions, with their sort and limit, and refresh against current canonical library state. Manual playlists are explicit ordered lists; never mix the two models.
 7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
 8. **Backend boundaries:** Plugins cannot directly mutate the canonical SQLite database. All changes pass engine validation, provenance and merge policies.
@@ -26,15 +26,15 @@ Build an open-source, local-first, source-neutral music management engine used b
 3. Implement `FilterSpec` and query evaluation; cover all/any/none, empty groups, Unicode tags, missing BPM, and inclusive boundaries.
 4. Add CLI commands with stable, scriptable output and meaningful exit codes.
 5. Save smart playlist definitions and test live membership updates on edit/import.
-6. Add GPUI library, tag editor and smart playlist builder on the same engine API.
+6. Keep the `weave` library and its embedded player sufficient for any frontend; GUIs are separate projects that embed it.
 7. Provide local playback and queue control before optional lyrics; then validate a second backend implementation.
 8. Build installable plugin runtime only after the backend contract is exercised by multiple implementations.
 
 ## Coding conventions
 
-- Language: Rust for engine, CLI and desktop; use `clap` for CLI parsing and SQLite for storage (system library by default, minimum 3.14.0; the opt-in `sqlite-from-source` feature compiles and statically links it).
+- Language: Rust for the library and the CLI; use `clap` for CLI parsing and SQLite for storage (system library by default, minimum 3.14.0; the opt-in `sqlite-from-source` feature compiles and statically links it).
 - Respect the specs defined in `goals.md`
-- Keep the domain model independent of GPUI, SQL details and backend SDKs.
+- Keep the domain model independent of any UI, SQL details and backend SDKs.
 - Prefer small explicit types, typed errors and transparent operations over magic configuration.
 - Use transactions for multi-table mutations, migrations for schema changes and tests for data integrity.
 - Use fixtures and mocks for remote backends; integration tests must not require real Spotify credentials.

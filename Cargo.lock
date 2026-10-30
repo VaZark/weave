@@ -1716,6 +1716,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "weave"
+version = "0.0.1"
+dependencies = [
+ "async-channel",
+ "async-io",
+ "futures-lite",
+ "mpris-server",
+ "weave-core",
+ "weave-engine",
+]
+
+[[package]]
 name = "weave-core"
 version = "0.0.1"
 dependencies = [
@@ -1747,15 +1759,10 @@ dependencies = [
 name = "weave-player"
 version = "0.0.1"
 dependencies = [
- "async-channel",
- "async-io",
  "clap",
- "futures-lite",
- "mpris-server",
  "serde",
  "serde_json",
- "weave-core",
- "weave-engine",
+ "weave",
 ]
 
 [[package]]

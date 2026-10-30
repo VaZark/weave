@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use weave_core::{PlayStatus, PlayerState};
 
 use super::*;
@@ -42,6 +40,24 @@ fn follower_joins_a_session_that_is_already_playing_at_its_position() {
         actions[1],
         Action::Start(40_000),
         "a host started late resumes in place"
+    );
+}
+
+#[test]
+fn follower_plays_a_track_it_noticed_a_tick_late_from_its_beginning() {
+    let mut f = Follower::default();
+    assert_eq!(
+        f.step(&state(PlayStatus::Playing, 1, 0), 100)[1],
+        Action::Start(0)
+    );
+    assert_eq!(
+        f.step(&state(PlayStatus::Playing, 2, 0), 999)[0],
+        Action::Start(0)
+    );
+    assert_eq!(
+        f.step(&state(PlayStatus::Playing, 3, 0), 1_000)[0],
+        Action::Start(1_000),
+        "from a second in, a late player resumes in place"
     );
 }
 
@@ -101,7 +117,7 @@ mod remote {
     use weave_core::{Metadata, RepeatMode, ScannedTrack};
 
     use super::*;
-    use crate::mpris::Remote;
+    use crate::player::mpris::Remote;
 
     fn lib() -> (Library, Rc<Cell<i64>>) {
         let clock = Rc::new(Cell::new(1_000_000));
@@ -253,7 +269,7 @@ mod remote {
 #[cfg(feature = "audio")]
 mod fake_player {
     use std::cell::{Cell, RefCell};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
     use weave_core::{RepeatMode, ScannedTrack, SleepSetting, SourceRef};
@@ -377,7 +393,7 @@ mod fake_player {
             format!("unknown-{title}-local")
         }
 
-        fn tick(&mut self) -> Vec<Event> {
+        fn tick(&mut self) -> Vec<PlayerEvent> {
             self.host
                 .tick(&mut self.lib)
                 .unwrap_or_else(|_| panic!("tick failed"))
@@ -524,10 +540,7 @@ mod fake_player {
         r.advance(31);
         let events = r.tick();
         assert_eq!(r.take_calls(), ["stop"]);
-        assert!(
-            events.iter().any(|e| e.name == "sleep_stopped"),
-            "{events:?}"
-        );
+        assert!(events.contains(&PlayerEvent::SleepStopped), "{events:?}");
     }
 
     fn add_unplayable(r: &mut Rig, title: &str) -> String {
@@ -552,7 +565,7 @@ mod fake_player {
         assert!(
             events
                 .iter()
-                .any(|e| e.name == "error" && e.text.contains("cannot play")),
+                .any(|e| matches!(e, PlayerEvent::Error(m) if m.contains("cannot play"))),
             "{events:?}"
         );
         r.tick();
@@ -585,7 +598,7 @@ mod fake_player {
         assert!(
             events
                 .iter()
-                .any(|e| e.name == "error" && e.text.contains("device went away")),
+                .any(|e| matches!(e, PlayerEvent::Error(m) if m.contains("device went away"))),
             "{events:?}"
         );
     }
@@ -605,31 +618,4 @@ mod fake_player {
             "nothing ends a track without audio"
         );
     }
-}
-
-// --- the lock -----------------------------------------------------------------------------------
-
-#[test]
-fn only_one_host_can_hold_the_lock_and_it_is_released_on_drop() {
-    let db = std::env::temp_dir().join(format!("weave-lock-{}.db", std::process::id()));
-    assert!(!is_running(&db), "no lock file yet");
-    let first = HostLock::acquire(&db)
-        .unwrap()
-        .expect("first host gets the lock");
-    assert!(is_running(&db));
-    assert!(
-        HostLock::acquire(&db).unwrap().is_none(),
-        "a second host is refused"
-    );
-    drop(first);
-    assert!(!is_running(&db));
-    assert!(HostLock::acquire(&db).unwrap().is_some(), "free again");
-    let _ = std::fs::remove_file(lock_path(&db));
-}
-
-#[test]
-fn sibling_paths_sit_next_to_the_database() {
-    let db = Path::new("/data/weave/library.db");
-    assert_eq!(lock_path(db), Path::new("/data/weave/library.db.host.lock"));
-    assert_eq!(log_path(db), Path::new("/data/weave/library.db.host.log"));
 }

@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use weave_core::{FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, Track};
-use weave_engine::SessionView;
+use weave::SessionView;
+use weave::core::{FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, Track};
 
 use crate::{Failure, PageArgs};
 

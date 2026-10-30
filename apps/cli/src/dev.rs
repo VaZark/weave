@@ -1,7 +1,7 @@
 //! Debug-build-only helpers. Compiled out of release builds.
 
-use weave_core::{FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, track_slug};
-use weave_engine::Library;
+use weave::Library;
+use weave::core::{FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, track_slug};
 
 /// Not a registered backend: seeded tracks have no files behind them.
 const SEED_BACKEND: &str = "seed";
@@ -164,9 +164,9 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
         }
     }
 
-    let created = |r: weave_core::Result<weave_core::Playlist>| match r {
+    let created = |r: weave::core::Result<weave::core::Playlist>| match r {
         Ok(_) => Ok(1),
-        Err(weave_core::Error::AlreadyExists(_)) => Ok(0),
+        Err(weave::core::Error::AlreadyExists(_)) => Ok(0),
         Err(e) => Err(e),
     };
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -253,7 +253,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weave_core::Page;
+    use weave::core::Page;
 
     #[test]
     fn seed_is_idempotent_and_populates_everything() {

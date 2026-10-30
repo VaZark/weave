@@ -6,6 +6,7 @@ members = [
   "crates/core",
   "crates/engine",
   "crates/storage",
+  "crates/weave",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 weave-core = { path = "crates/core" }
+weave = { path = "crates/weave" }
 weave-engine = { path = "crates/engine" }
 weave-local = { path = "backends/local" }
 weave-storage = { path = "crates/storage" }
