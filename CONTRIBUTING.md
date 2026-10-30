@@ -83,7 +83,7 @@ weave-player search --tag-all bachata,90s --bpm-min 90
 weave-player playlist list
 weave-player playlist show "Bachata 90s"
 weave-player play playlist road-trip --shuffle   # fill the queue (seeded tracks have no files, so nothing plays)
-weave-player play shuffle --tag-all bachata   # a shuffled pick from the library
+weave-player play random --tag-all bachata   # a random order of what matches
 weave-player queue show
 weave-player now
 ```

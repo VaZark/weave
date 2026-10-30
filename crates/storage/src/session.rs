@@ -2,7 +2,7 @@
 //! so it is stored and loaded whole, inside one transaction.
 
 use rusqlite::params;
-use weave_core::{Error, PlayerState, Queue, QueueSource, Result, SleepTimer, TrackId};
+use weave_core::{Error, PlayerState, Queue, Result, SleepTimer, TrackId};
 
 use crate::{Storage, db_err};
 
@@ -20,7 +20,6 @@ struct StateRow {
     sleep_stop_after: bool,
     stop_after_track: bool,
     current_position: Option<i64>,
-    source: String,
     volume: f64,
     position_ms: i64,
     position_at: i64,
@@ -34,7 +33,7 @@ impl Storage {
             .conn
             .query_row(
                 "SELECT status, repeat, shuffle, end_of_queue, sleep_until, sleep_soft,
-                        stop_after_track, current_position, source, volume, position_ms,
+                        stop_after_track, current_position, volume, position_ms,
                         position_at, start_seq, seek_seq
                  FROM player_state WHERE id = 1",
                 [],
@@ -48,12 +47,11 @@ impl Storage {
                         sleep_stop_after: r.get(5)?,
                         stop_after_track: r.get(6)?,
                         current_position: r.get(7)?,
-                        source: r.get(8)?,
-                        volume: r.get(9)?,
-                        position_ms: r.get(10)?,
-                        position_at: r.get(11)?,
-                        start_seq: r.get(12)?,
-                        seek_seq: r.get(13)?,
+                        volume: r.get(8)?,
+                        position_ms: r.get(9)?,
+                        position_at: r.get(10)?,
+                        start_seq: r.get(11)?,
+                        seek_seq: r.get(12)?,
                     })
                 },
             )
@@ -92,8 +90,6 @@ impl Storage {
                 current: row
                     .current_position
                     .and_then(|p| rows.iter().position(|r| r.0 == p)),
-                source: serde_json::from_str::<QueueSource>(&row.source)
-                    .map_err(|e| corrupt("source", e.to_string()))?,
                 volume: row.volume as f32,
                 position_ms: row.position_ms.max(0) as u64,
                 position_at_ms: row.position_at,
@@ -141,8 +137,7 @@ impl Storage {
         tx.execute(
             "UPDATE player_state SET status = ?1, repeat = ?2, shuffle = ?3, end_of_queue = ?4,
                  sleep_until = ?5, sleep_soft = ?6, stop_after_track = ?7, current_position = ?8,
-                 source = ?9, volume = ?10, position_ms = ?11, position_at = ?12, start_seq = ?13,
-                 seek_seq = ?14
+                 volume = ?9, position_ms = ?10, position_at = ?11, start_seq = ?12, seek_seq = ?13
              WHERE id = 1",
             params![
                 s.status.as_str(),
@@ -153,7 +148,6 @@ impl Storage {
                 s.sleep.is_some_and(|t| t.stop_after),
                 s.stop_after_track,
                 s.current.map(|c| c as i64),
-                serde_json::to_string(&s.source).map_err(|e| Error::Storage(e.to_string()))?,
                 s.volume as f64,
                 s.position_ms as i64,
                 s.position_at_ms,

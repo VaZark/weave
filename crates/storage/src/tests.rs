@@ -826,13 +826,6 @@ fn session_round_trips_queue_order_and_state() {
     );
     q.state.stop_after_track = true;
     q.state.volume = 0.25;
-    q.state.source = weave_core::QueueSource::Search {
-        filter: Box::new(FilterSpec {
-            tag_all: tags(&["bachata"]),
-            bpm_min: Some(90.0),
-            ..Default::default()
-        }),
-    };
     q.set_position(12_345, 99);
     q.state.start_seq = 7;
     q.state.seek_seq = 3;
@@ -887,4 +880,135 @@ fn host_quit_request_is_a_separate_flag() {
     assert!(s.host_quit_requested().unwrap());
     s.set_host_quit(false).unwrap();
     assert!(!s.host_quit_requested().unwrap());
+}
+
+/// The stored play order of a manual playlist, as slugs, read straight from the table.
+fn stored_order(s: &Storage, playlist: &str) -> (Vec<i64>, Vec<String>) {
+    let mut stmt = s
+        .conn
+        .prepare(
+            "SELECT p.play_order, t.slug FROM playlist_tracks p JOIN tracks t ON t.id = p.track_id
+             WHERE p.playlist_id = ?1 ORDER BY p.play_order",
+        )
+        .unwrap();
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([playlist], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    rows.into_iter().unzip()
+}
+
+#[test]
+fn a_manual_playlists_play_order_is_contiguous_through_adds_removals_and_moves() {
+    let mut s = annotated();
+    let (a, b, c, d) = (id(&s, "a"), id(&s, "b"), id(&s, "c"), id(&s, "d"));
+    s.create_manual_playlist("Mix", None).unwrap();
+    s.playlist_add("mix", &[c.clone(), a.clone(), d.clone()])
+        .unwrap();
+    s.playlist_add("mix", &[b.clone(), a.clone()]).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix"),
+        (
+            vec![0, 1, 2, 3],
+            vec![c.clone(), a.clone(), d.clone(), b.clone()]
+        )
+    );
+
+    // removing from the middle closes the gap instead of leaving a hole
+    s.playlist_remove("mix", std::slice::from_ref(&a)).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix"),
+        (vec![0, 1, 2], vec![c.clone(), d.clone(), b.clone()])
+    );
+    s.playlist_add("mix", std::slice::from_ref(&a)).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix").0,
+        [0, 1, 2, 3],
+        "and the next track gets the next number"
+    );
+
+    // moving rewrites the numbers around it
+    s.playlist_move("mix", 3, 0).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix"),
+        (
+            vec![0, 1, 2, 3],
+            vec![a.clone(), c.clone(), d.clone(), b.clone()]
+        )
+    );
+    s.playlist_move("mix", 0, 2).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix").1,
+        [c.clone(), d.clone(), a.clone(), b.clone()]
+    );
+    s.playlist_move("mix", 1, 1).unwrap();
+    assert_eq!(
+        stored_order(&s, "mix").1,
+        [c, d, a, b],
+        "moving onto itself changes nothing"
+    );
+
+    let shown = s.manual_playlist_tracks("mix", Page::ALL).unwrap();
+    assert_eq!(
+        names(&shown.tracks),
+        ["C", "D", "A", "B"],
+        "the listing follows the play order"
+    );
+}
+
+#[test]
+fn moving_in_a_playlist_validates_positions_and_kind() {
+    let mut s = annotated();
+    s.create_manual_playlist("Mix", None).unwrap();
+    s.create_playlist("Dyn", None, &FilterSpec::default())
+        .unwrap();
+    s.playlist_add("mix", &[id(&s, "a"), id(&s, "b")]).unwrap();
+    assert!(matches!(
+        s.playlist_move("mix", 0, 2),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        s.playlist_move("mix", 5, 0),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(
+        matches!(s.playlist_move("dyn", 0, 0), Err(Error::InvalidInput(_))),
+        "dynamic playlists are ordered by their sort"
+    );
+    assert!(matches!(
+        s.playlist_move("nope", 0, 0),
+        Err(Error::NotFound(_))
+    ));
+    assert_eq!(
+        stored_order(&s, "mix").1.len(),
+        2,
+        "failed moves change nothing"
+    );
+}
+
+#[test]
+fn a_dynamic_playlists_order_is_total_and_repeatable() {
+    let mut s = annotated();
+    // equal sort keys everywhere: only the fixed tiebreak can order them
+    s.conn
+        .execute("UPDATE track_metadata SET year = 2000", [])
+        .unwrap();
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Year,
+            descending: false,
+        }),
+        ..Default::default()
+    };
+    s.create_playlist("Same year", None, &f).unwrap();
+    let once = all(&s, &s.playlist("same-year").unwrap().filter);
+    let again = all(&s, &s.playlist("same-year").unwrap().filter);
+    assert_eq!(once, again);
+    let default_order = all(&s, &FilterSpec::default());
+    assert_eq!(
+        names(&once),
+        names(&default_order),
+        "ties fall back to artist, album, title"
+    );
 }

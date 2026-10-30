@@ -27,8 +27,8 @@ use weave_core::{
 use weave_engine::Library;
 
 use output::{
-    out, print_columns, print_json, print_page, print_playlist, print_playlists, print_queue,
-    print_session,
+    out, print_columns, print_json, print_page, print_playlist, print_playlist_tracks,
+    print_playlists, print_queue, print_session,
 };
 
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter/state.
@@ -114,8 +114,8 @@ enum Cmd {
     /// Show and edit the play queue.
     #[command(subcommand)]
     Queue(QueueCmd),
-    /// Start playing a single track, a playlist, or a shuffle of what some filters match.
-    /// The queue then plays that one source: tracks cannot be added to a playlist or a search queue.
+    /// Start playing a single track, a playlist, or a random order of what some filters match.
+    /// Whatever starts it, it is the same now-playing queue: tracks can be added to it afterwards.
     #[command(subcommand)]
     Play(PlayCmd),
     /// Pause the current track.
@@ -211,18 +211,18 @@ enum DevCmd {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum PlayCmd {
-    /// Play one track (a manual queue of one).
+    /// Play one track, in list order (shuffle off).
     Track { track_id: String },
-    /// Play a playlist from the start, or shuffled from a random track with --shuffle.
+    /// Play a playlist in its own order, or shuffled from a random track with --shuffle.
     Playlist {
         name: String,
-        /// Shuffle it (turns shuffle on; without this flag the current shuffle mode is kept).
+        /// Turn shuffle on. Without it the playlist plays in list order (shuffle is turned off).
         #[arg(long)]
         shuffle: bool,
     },
     /// Play everything matching the filters (the whole library if none) in random order, from a
     /// random track, with shuffle on.
-    Shuffle {
+    Random {
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -242,7 +242,13 @@ enum PlaylistCmd {
         #[command(flatten)]
         filter: FilterArgs,
     },
-    /// Show a playlist's tracks (evaluates the saved filters of a dynamic one).
+    /// Move a track of a manual playlist to another place in its play order (1-based positions).
+    Move {
+        name: String,
+        from: usize,
+        to: usize,
+    },
+    /// Show a playlist's tracks with their play order (evaluates the saved filters of a dynamic one).
     Show {
         name: String,
         #[command(flatten)]
@@ -277,13 +283,12 @@ enum PlaylistCmd {
 enum QueueCmd {
     /// Show the queue.
     Show,
-    /// Add tracks, and/or the current tracks of a playlist (manual or dynamic) as plain tracks, to a
-    /// manual queue. A queue playing a playlist or a search refuses additions: `queue clear` or
-    /// `play track` first.
+    /// Add tracks, and/or the current tracks of a playlist (manual or dynamic), to the queue. A
+    /// playlist is only a way to pick tracks: they are added as plain tracks.
     Add {
         #[arg(required_unless_present = "playlist")]
         track_ids: Vec<String>,
-        /// Add this playlist's tracks. They are appended as tracks; the queue does not become the playlist.
+        /// Add this playlist's current tracks, in the playlist's order.
         #[arg(long)]
         playlist: Option<String>,
         /// Insert after the current track instead of at the end.
@@ -329,6 +334,15 @@ struct PageArgs {
 }
 
 impl PageArgs {
+    /// Everything on one page, for commands that show a whole list.
+    fn everything() -> Self {
+        PageArgs {
+            page: 1,
+            per_page: 50,
+            all: true,
+        }
+    }
+
     fn page(self) -> Page {
         if self.all {
             Page::ALL
@@ -613,7 +627,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Cmd::Playlist(PlaylistCmd::Show { name, page }) => {
             let (_, result) = lib.playlist_tracks(&name, page.page())?;
-            print_page(json, show_ids, page, &result)?;
+            print_playlist_tracks(json, show_ids, page, &result)?;
+        }
+        Cmd::Playlist(PlaylistCmd::Move { name, from, to }) => {
+            lib.playlist_move(&name, from, to)?;
+            let (_, result) = lib.playlist_tracks(&name, Page::ALL)?;
+            print_playlist_tracks(json, show_ids, PageArgs::everything(), &result)?;
         }
         Cmd::Playlist(PlaylistCmd::Add { name, track_ids }) => {
             let n = lib.playlist_add(&name, &track_ids)?;
@@ -651,7 +670,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Play(what) => playing(&match what {
             PlayCmd::Track { track_id } => lib.play_track(&track_id)?,
             PlayCmd::Playlist { name, shuffle } => lib.play_playlist(&name, shuffle)?,
-            PlayCmd::Shuffle { filter } => lib.play_shuffle(filter.into())?,
+            PlayCmd::Random { filter } => lib.play_random(filter.into())?,
         })?,
         Cmd::Pause => session(&lib.pause()?)?,
         Cmd::Resume => playing(&lib.resume()?)?,
@@ -937,9 +956,9 @@ mod arg_tests {
         };
         assert!(shuffle);
 
-        let Cmd::Play(PlayCmd::Shuffle { filter }) = parse(&[
+        let Cmd::Play(PlayCmd::Random { filter }) = parse(&[
             "play",
-            "shuffle",
+            "random",
             "--tag-all",
             "bachata,90s",
             "--bpm-min",
@@ -959,12 +978,12 @@ mod arg_tests {
         );
         assert!(
             matches!(
-                parse(&["play", "shuffle"]).unwrap().command,
-                Cmd::Play(PlayCmd::Shuffle { .. })
+                parse(&["play", "random"]).unwrap().command,
+                Cmd::Play(PlayCmd::Random { .. })
             ),
             "filters are optional"
         );
-        assert!(parse(&["play", "shuffle", "--favorite", "--rating-min", "4"]).is_ok());
+        assert!(parse(&["play", "random", "--favorite", "--rating-min", "4"]).is_ok());
     }
 
     #[test]
@@ -973,7 +992,10 @@ mod arg_tests {
             parse(&["play", "a-track-local"]).is_err(),
             "a track needs `play track`"
         );
-        assert!(parse(&["play", "random"]).is_err());
+        assert!(
+            parse(&["play", "shuffle"]).is_err(),
+            "it is `play random` now"
+        );
         assert!(parse(&["playlist", "play", "mix"]).is_err());
         assert!(
             parse(&["play"]).is_err(),
@@ -987,7 +1009,17 @@ mod arg_tests {
             parse(&["play", "track", "a", "b"]).is_err(),
             "one track only"
         );
-        assert!(parse(&["play", "shuffle", "--shuffle"]).is_err());
+        assert!(
+            parse(&["play", "random", "--shuffle"]).is_err(),
+            "random is always shuffled"
+        );
+    }
+
+    #[test]
+    fn playlist_move_takes_two_positions() {
+        assert!(parse(&["playlist", "move", "mix", "3", "1"]).is_ok());
+        assert!(parse(&["playlist", "move", "mix", "3"]).is_err());
+        assert!(parse(&["playlist", "move", "mix", "x", "1"]).is_err());
     }
 
     #[test]

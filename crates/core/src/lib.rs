@@ -25,8 +25,8 @@ pub use lyrics::{LyricLine, Lyrics};
 pub use playback::{Playback, SourceRef};
 pub use playlist::{Playlist, PlaylistKind};
 pub use queue::{
-    Advance, AdvanceReason, EndOfQueue, PlayStatus, PlayerState, Queue, QueueSource, RepeatMode,
-    SleepSetting, SleepTimer,
+    Advance, AdvanceReason, EndOfQueue, PlayStatus, PlayerState, Queue, RepeatMode, SleepSetting,
+    SleepTimer,
 };
 pub use rng::Rng;
 pub use slug::{playlist_slug, slugify, track_slug};

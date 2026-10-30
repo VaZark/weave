@@ -3,9 +3,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use weave_core::{
-    FilterSpec, PlayStatus, Playlist, PlaylistKind, QueueSource, SearchResult, Track,
-};
+use weave_core::{FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, Track};
 use weave_engine::SessionView;
 
 use crate::{Failure, PageArgs};
@@ -32,18 +30,45 @@ pub fn print_page(
     args: PageArgs,
     r: &SearchResult,
 ) -> Result<(), Failure> {
+    print_page_numbered(json, show_ids, args, r, false)
+}
+
+/// A playlist's tracks with their canonical play order (1-based, continuing across pages).
+pub fn print_playlist_tracks(
+    json: bool,
+    show_ids: bool,
+    args: PageArgs,
+    r: &SearchResult,
+) -> Result<(), Failure> {
+    print_page_numbered(json, show_ids, args, r, true)
+}
+
+fn print_page_numbered(
+    json: bool,
+    show_ids: bool,
+    args: PageArgs,
+    r: &SearchResult,
+    numbered: bool,
+) -> Result<(), Failure> {
     let (page, per_page) = if args.all {
         (1, r.total.max(1))
     } else {
         (args.page as usize, args.per_page as usize)
     };
     let pages = r.total.div_ceil(per_page).max(1);
+    let first = (page - 1) * per_page + 1;
     if json {
+        let mut tracks = serde_json::json!(r.tracks);
+        if numbered {
+            for (i, t) in tracks.as_array_mut().into_iter().flatten().enumerate() {
+                t["play_order"] = serde_json::json!(first + i);
+            }
+        }
         return print_json(&serde_json::json!({
-            "total": r.total, "page": page, "pages": pages, "per_page": per_page, "tracks": r.tracks,
+            "total": r.total, "page": page, "pages": pages, "per_page": per_page, "tracks": tracks,
         }));
     }
-    print_table(&r.tracks, show_ids);
+    print_table(&r.tracks, show_ids, numbered.then_some(first));
     // Footer goes to stderr so stdout stays a clean table.
     if !args.all && pages > 1 {
         let hint = if page < pages {
@@ -82,8 +107,8 @@ fn rating_cell(t: &Track) -> String {
     t.rating.map_or_else(dash, |r| r.to_string())
 }
 
-fn print_table(tracks: &[Track], show_ids: bool) {
-    let rows = tracks
+fn print_table(tracks: &[Track], show_ids: bool, first_order: Option<usize>) {
+    let mut rows: Vec<Vec<String>> = tracks
         .iter()
         .map(|t| {
             let m = &t.metadata;
@@ -101,15 +126,17 @@ fn print_table(tracks: &[Track], show_ids: bool) {
             ]
         })
         .collect();
+    let mut headers = vec![
+        "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "RATING", "FAV", "TAGS",
+    ];
+    if let Some(first) = first_order {
+        headers.insert(0, "#");
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.insert(0, (first + i).to_string());
+        }
+    }
     let ids: Vec<String> = tracks.iter().map(|t| t.id.0.clone()).collect();
-    print_columns(
-        &[
-            "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "RATING", "FAV", "TAGS",
-        ],
-        rows,
-        &[],
-        show_ids.then_some(&ids[..]),
-    );
+    print_columns(&headers, rows, &[], show_ids.then_some(&ids[..]));
 }
 
 /// Left-aligned table with a header row. Columns are capped at 32 characters
@@ -297,16 +324,6 @@ fn sleep_label(v: &SessionView) -> String {
     }
 }
 
-fn source_label(v: &SessionView) -> String {
-    match &v.state.source {
-        QueueSource::Manual => "manual".into(),
-        QueueSource::Playlist { id } => {
-            format!("playlist {}", v.source_name.as_deref().unwrap_or(id))
-        }
-        QueueSource::Search { filter } => format!("search {}", describe(filter)),
-    }
-}
-
 fn clock(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)
 }
@@ -334,8 +351,6 @@ fn track_label(t: &Track) -> String {
 fn session_json(v: &SessionView, with_tracks: bool) -> serde_json::Value {
     let mut j = serde_json::json!({
         "status": v.state.status,
-        "source": v.state.source,
-        "source_name": v.source_name,
         "position": v.state.current.map(|c| c + 1),
         "length": v.tracks.len(),
         "current": v.current(),
@@ -374,7 +389,6 @@ pub fn print_session(
         if show_ids {
             rows.push(("ID", current.map_or_else(dash, |t| t.id.0.clone())));
         }
-        rows.push(("Source", source_label(v)));
         rows.extend([
             (
                 "Position",
@@ -439,9 +453,8 @@ pub fn print_queue(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Fa
         show_ids.then_some(&ids[..]),
     );
     eprintln!(
-        "{} track(s) · source: {} · shuffle {} · repeat {} · end of queue: {}",
+        "{} track(s) · shuffle {} · repeat {} · end of queue: {}",
         v.tracks.len(),
-        source_label(v),
         on_off(v.state.shuffle),
         v.state.repeat,
         v.state.end_of_queue

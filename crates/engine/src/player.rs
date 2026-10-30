@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use weave_core::{
     Advance, AdvanceReason, Backend, CapabilityGroup, EndOfQueue, Error, FilterSpec, Lyrics, Page,
-    PlayStatus, Playback, PlayerState, Queue, QueueSource, RepeatMode, Result, SleepSetting,
-    SourceRef, Track, TrackId,
+    PlayStatus, Playback, PlayerState, Queue, RepeatMode, Result, SleepSetting, SourceRef, Track,
+    TrackId,
 };
 
 use crate::{Library, autoplay};
@@ -25,8 +25,6 @@ pub struct SessionView {
     pub sleep_remaining: Option<Duration>,
     /// Where playback is in the current track.
     pub position: Duration,
-    /// The display name of the playlist when the queue's source is one.
-    pub source_name: Option<String>,
 }
 
 impl SessionView {
@@ -103,15 +101,7 @@ impl Library {
             tracks: self.storage.tracks_by_slugs(&slugs)?,
             sleep_remaining,
             position: Duration::from_millis(queue.position_ms(self.now_ms())),
-            source_name: self.source_name(&queue.state.source),
         })
-    }
-
-    fn source_name(&self, source: &QueueSource) -> Option<String> {
-        match source {
-            QueueSource::Playlist { id } => self.storage.playlist(id).ok().map(|p| p.name),
-            _ => None,
-        }
     }
 
     fn commit(&mut self, queue: &Queue) -> Result<SessionView> {
@@ -245,19 +235,18 @@ impl Library {
 
     // --- starting playback -------------------------------------------------
 
-    /// Replace the queue with one track and start it (a manual queue).
+    /// Replace the queue with one track and start it, in list order (shuffle off).
     pub fn play_track(&mut self, id: &str) -> Result<SessionView> {
         let track = self.resolve(&[id.to_string()])?;
         let mut queue = self.load_session()?;
+        queue.state.shuffle = false;
         queue.replace(track, &mut self.rng);
-        queue.state.source = QueueSource::Manual;
         self.commit_started(&mut queue)
     }
 
-    /// Replace the queue with a playlist's current tracks and start it, in order or (`shuffle`)
-    /// shuffled from a random track. The queue then belongs to that playlist: tracks cannot be
-    /// added to it by hand (it can still be reordered and trimmed). Without `shuffle` the current
-    /// shuffle mode is left as it is.
+    /// Replace the queue with a playlist's current tracks in the playlist's own order and
+    /// start it: in that order, or (`shuffle`) shuffled from a random track. Shuffle is set
+    /// either way, so without the flag the playlist plays in list order.
     pub fn play_playlist(&mut self, name: &str, shuffle: bool) -> Result<SessionView> {
         let (playlist, result) = self.playlist_tracks(name, Page::ALL)?;
         if result.tracks.is_empty() {
@@ -267,22 +256,18 @@ impl Library {
             )));
         }
         let mut queue = self.load_session()?;
-        if shuffle {
-            queue.state.shuffle = true;
-        }
+        queue.state.shuffle = shuffle;
         queue.replace(
             result.tracks.into_iter().map(|t| t.id).collect(),
             &mut self.rng,
         );
-        queue.state.source = QueueSource::Playlist { id: playlist.id };
         self.commit_started(&mut queue)
     }
 
     /// Replace the queue with what a filter matches right now (the filter's own sort and limit
     /// apply first) and start it shuffled, from a random track.
-    pub fn play_shuffle(&mut self, filter: FilterSpec) -> Result<SessionView> {
-        let filter = filter.normalized();
-        let matches = self.storage.search(&filter, Page::ALL)?;
+    pub fn play_random(&mut self, filter: FilterSpec) -> Result<SessionView> {
+        let matches = self.storage.search(&filter.normalized(), Page::ALL)?;
         if matches.tracks.is_empty() {
             return Err(Error::InvalidInput(
                 "nothing in the library matches those filters".into(),
@@ -294,9 +279,6 @@ impl Library {
             matches.tracks.into_iter().map(|t| t.id).collect(),
             &mut self.rng,
         );
-        queue.state.source = QueueSource::Search {
-            filter: Box::new(filter),
-        };
         self.commit_started(&mut queue)
     }
 
@@ -304,10 +286,8 @@ impl Library {
 
     /// Add tracks, and/or the current tracks of a playlist (manual or dynamic), to the end of the
     /// queue or right after the current one (`next`). A playlist is only a way to pick tracks:
-    /// they are added as plain tracks and the queue does not become that playlist's. Everything
-    /// is resolved first, so a bad ID or playlist name changes nothing. Returns how many tracks
-    /// were added. A queue started from a playlist or a search does not take additions: clear
-    /// it, or play a track, to start a manual queue.
+    /// they are added as plain tracks, in the playlist's order. Everything is resolved first, so
+    /// a bad ID or playlist name changes nothing. Returns how many tracks were added.
     pub fn queue_add(
         &mut self,
         ids: &[String],
@@ -327,13 +307,6 @@ impl Library {
         }
         let n = tracks.len();
         let mut queue = self.load_session()?;
-        if queue.state.source != QueueSource::Manual && !queue.is_empty() {
-            return Err(Error::InvalidInput(format!(
-                "the queue is playing {}; adding tracks would mix sources \
-                 (run `queue clear`, or play a track to start a manual queue)",
-                self.describe_source(&queue.state.source)
-            )));
-        }
         if next {
             queue.insert_next(tracks, &mut self.rng);
         } else {
@@ -341,19 +314,6 @@ impl Library {
         }
         self.commit(&queue)?;
         Ok(n)
-    }
-
-    fn describe_source(&self, source: &QueueSource) -> String {
-        match source {
-            QueueSource::Manual => "a manual queue".into(),
-            QueueSource::Playlist { id } => {
-                format!(
-                    "playlist \"{}\"",
-                    self.source_name(source).unwrap_or_else(|| id.clone())
-                )
-            }
-            QueueSource::Search { .. } => "a search".into(),
-        }
     }
 
     /// Remove by 1-based positions.
@@ -642,44 +602,30 @@ mod tests {
         lib.playlist_add("mix", &[id(3), id(1)]).unwrap();
         let v = lib.play_playlist("Mix", false).unwrap();
         assert_eq!((titles(&v), now(&v)), (vec!["t3", "t1"], Some("t3")));
-        assert_eq!(v.state.source, QueueSource::Playlist { id: "mix".into() });
-        assert_eq!(v.source_name.as_deref(), Some("Mix"));
     }
 
     #[test]
-    fn a_queue_has_one_source_and_hand_picked_tracks_do_not_mix_in() {
-        let (mut lib, _) = library(3);
+    fn it_is_all_one_now_playing_queue_so_tracks_can_be_added_to_it_whatever_started_it() {
+        let (mut lib, _) = library(4);
         lib.create_manual_playlist("Mix", None).unwrap();
         lib.playlist_add("mix", &[id(1), id(2)]).unwrap();
-        lib.play_playlist("mix", false).unwrap();
 
-        for next in [false, true] {
-            let err = lib.queue_add(&[id(3)], None, next).unwrap_err().to_string();
-            assert!(
-                err.contains("playlist \"Mix\"") && err.contains("queue clear"),
-                "{err}"
-            );
-        }
+        lib.play_playlist("mix", false).unwrap();
+        lib.queue_add(&[id(3)], None, false).unwrap();
+        lib.queue_add(&[id(4)], None, true).unwrap();
         assert_eq!(
             titles(&lib.session().unwrap()),
-            ["t1", "t2"],
-            "nothing was added"
+            ["t1", "t4", "t2", "t3"],
+            "hand-picked tracks join a playlist's queue, after the current one with --next"
         );
 
-        // starting a track makes it a manual queue again; so does clearing
-        lib.play_track(&id(3)).unwrap();
-        assert_eq!(lib.session().unwrap().state.source, QueueSource::Manual);
+        lib.play_random(FilterSpec::default()).unwrap();
         lib.queue_add(&[id(1)], None, false).unwrap();
-        lib.play_playlist("mix", false).unwrap();
-        lib.queue_clear().unwrap();
-        lib.queue_add(&[id(3)], None, false).unwrap();
-        assert_eq!(titles(&lib.session().unwrap()), ["t3"]);
-
-        // removing every track also ends the playlist's hold on the queue
-        lib.play_playlist("mix", false).unwrap();
-        lib.queue_remove(&[1, 2]).unwrap();
-        assert_eq!(lib.session().unwrap().state.source, QueueSource::Manual);
-        lib.queue_add(&[id(3)], None, false).unwrap();
+        assert_eq!(
+            lib.session().unwrap().tracks.len(),
+            5,
+            "also after a random play"
+        );
     }
 
     #[test]
@@ -1402,19 +1348,16 @@ mod tests {
     }
 
     #[test]
-    fn play_shuffle_queues_every_match_in_random_order_from_a_random_start() {
+    fn play_random_queues_every_match_in_random_order_from_a_random_start() {
         let mut starts = std::collections::HashSet::new();
         let mut orders = std::collections::HashSet::new();
         for seed in 0..40 {
             let mut lib = library_with_tags(seed);
-            let v = lib.play_shuffle(bachata()).unwrap();
+            let v = lib.play_random(bachata()).unwrap();
             let mut queued = titles(&v);
             queued.sort();
             assert_eq!(queued, ["t1", "t2", "t3"], "only what the filter matches");
             assert!(v.state.shuffle && v.state.status == PlayStatus::Playing);
-            assert!(
-                matches!(&v.state.source, QueueSource::Search { filter } if filter.tag_all == ["bachata"])
-            );
             starts.insert(now(&v).unwrap().to_string());
 
             // one round plays each track exactly once
@@ -1435,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn play_shuffle_applies_the_filters_sort_and_limit_first() {
+    fn play_random_applies_the_filters_sort_and_limit_first() {
         let mut lib = library_with_tags(3);
         let filter = FilterSpec {
             sort: Some(weave_core::Sort {
@@ -1445,7 +1388,7 @@ mod tests {
             limit: Some(2),
             ..bachata()
         };
-        let v = lib.play_shuffle(filter).unwrap();
+        let v = lib.play_random(filter).unwrap();
         let mut queued = titles(&v);
         queued.sort();
         assert_eq!(queued, ["t2", "t3"], "the top two by title, descending");
@@ -1459,35 +1402,18 @@ mod tests {
             tag_all: vec!["metal".into()],
             ..Default::default()
         };
-        assert!(matches!(
-            lib.play_shuffle(none),
-            Err(Error::InvalidInput(_))
-        ));
+        assert!(matches!(lib.play_random(none), Err(Error::InvalidInput(_))));
         let bad = FilterSpec {
             bpm_min: Some(9.0),
             bpm_max: Some(1.0),
             ..Default::default()
         };
-        assert!(matches!(
-            lib.play_shuffle(bad),
-            Err(Error::InvalidFilter(_))
-        ));
+        assert!(matches!(lib.play_random(bad), Err(Error::InvalidFilter(_))));
         assert_eq!(titles(&lib.session().unwrap()), ["t4"]);
     }
 
     #[test]
-    fn a_search_queue_does_not_take_hand_picked_tracks_either() {
-        let mut lib = library_with_tags(1);
-        lib.play_shuffle(bachata()).unwrap();
-        let err = lib
-            .queue_add(&[id(4)], None, false)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("a search"), "{err}");
-    }
-
-    #[test]
-    fn a_playlist_may_fall_through_to_recommendations_without_changing_its_source() {
+    fn a_playlist_falls_through_to_recommendations_at_its_end() {
         let mut lib = tagged_library();
         lib.create_manual_playlist("Mix", None).unwrap();
         lib.playlist_add("mix", &["x-seed-fake".into()]).unwrap();
@@ -1501,12 +1427,6 @@ mod tests {
             "similar tracks were appended: {:?}",
             titles(&v)
         );
-        assert_eq!(v.state.source, QueueSource::Playlist { id: "mix".into() });
-        assert!(
-            lib.queue_add(&["x-untagged-fake".into()], None, false)
-                .is_err(),
-            "still not open to hand-picked tracks"
-        );
     }
 
     fn playlist_lib(seed: u64) -> Library {
@@ -1517,59 +1437,75 @@ mod tests {
     }
 
     #[test]
-    fn the_shuffle_flag_shuffles_a_playlist_from_a_random_start_and_its_absence_changes_nothing() {
+    fn the_shuffle_flag_shuffles_a_playlist_from_a_random_start() {
         let mut starts = std::collections::HashSet::new();
         for seed in 0..40 {
             let mut lib = playlist_lib(seed);
             let v = lib.play_playlist("mix", true).unwrap();
             assert!(v.state.shuffle);
-            assert_eq!(v.state.source, QueueSource::Playlist { id: "mix".into() });
             let mut queued = titles(&v);
             queued.sort();
             assert_eq!(queued, ["t1", "t2", "t3"]);
             starts.insert(now(&v).unwrap().to_string());
         }
         assert_eq!(starts.len(), 3, "any track can open it");
+    }
 
+    #[test]
+    fn without_the_flag_a_playlist_plays_in_its_own_order_whatever_the_shuffle_mode_was() {
         let mut lib = playlist_lib(1);
-        let v = lib.play_playlist("mix", false).unwrap();
-        assert_eq!(
-            (v.state.shuffle, titles(&v), now(&v)),
-            (false, vec!["t3", "t1", "t2"], Some("t3"))
-        );
         lib.set_shuffle(true).unwrap();
+        let v = lib.play_playlist("mix", false).unwrap();
         assert!(
-            lib.play_playlist("mix", false).unwrap().state.shuffle,
-            "the mode you set stays on"
+            !v.state.shuffle,
+            "starting a playlist without --shuffle turns shuffle off"
         );
-        lib.set_shuffle(false).unwrap();
-        assert!(
-            !lib.play_playlist("mix", false).unwrap().state.shuffle,
-            "and off"
+        assert_eq!((titles(&v), now(&v)), (vec!["t3", "t1", "t2"], Some("t3")));
+        let mut order = vec![now(&v).unwrap().to_string()];
+        while let Ok(v) = lib.next() {
+            if v.state.status == PlayStatus::Stopped {
+                break;
+            }
+            order.push(now(&v).unwrap().to_string());
+        }
+        assert_eq!(
+            order,
+            ["t3", "t1", "t2"],
+            "the playlist's order, every time"
         );
     }
 
     #[test]
-    fn a_playlist_queue_can_be_reordered_trimmed_and_jumped_around() {
+    fn play_track_and_play_random_set_the_shuffle_mode_too() {
+        let mut lib = playlist_lib(1);
+        lib.set_shuffle(true).unwrap();
+        assert!(!lib.play_track(&id(1)).unwrap().state.shuffle);
+        assert!(
+            lib.play_random(FilterSpec::default())
+                .unwrap()
+                .state
+                .shuffle
+        );
+        assert!(!lib.play_playlist("mix", false).unwrap().state.shuffle);
+        lib.play_random(FilterSpec::default()).unwrap();
+        assert!(lib.play_playlist("mix", true).unwrap().state.shuffle);
+    }
+
+    #[test]
+    fn a_queue_started_from_a_playlist_can_be_reordered_trimmed_and_jumped_around() {
         let mut lib = playlist_lib(1);
         lib.play_playlist("mix", false).unwrap();
-        let source = QueueSource::Playlist { id: "mix".into() };
 
         let v = lib.queue_move(3, 1).unwrap();
         assert_eq!(titles(&v), ["t2", "t3", "t1"]);
-        assert_eq!(v.state.source, source);
         let v = lib.queue_jump(3).unwrap();
-        assert_eq!(
-            (now(&v), v.state.source.clone()),
-            (Some("t1"), source.clone())
-        );
+        assert_eq!(now(&v), Some("t1"));
         let v = lib.queue_remove(&[1]).unwrap();
         assert_eq!(titles(&v), ["t3", "t1"]);
-        assert_eq!(v.state.source, source, "still that playlist's queue");
     }
 
     #[test]
-    fn adding_a_playlist_appends_its_tracks_as_plain_tracks_to_a_manual_queue() {
+    fn adding_a_playlist_appends_its_tracks_as_plain_tracks() {
         let mut lib = playlist_lib(1);
         lib.queue_add(&[id(4)], None, false).unwrap();
         let n = lib.queue_add(&[], Some("mix"), false).unwrap();
@@ -1579,11 +1515,6 @@ mod tests {
             titles(&v),
             ["t4", "t3", "t1", "t2"],
             "in the playlist's own order, after what was there"
-        );
-        assert_eq!(
-            v.state.source,
-            QueueSource::Manual,
-            "the queue is not that playlist's"
         );
 
         // tracks and a playlist together, and after the current track
@@ -1615,7 +1546,6 @@ mod tests {
         lib.queue_clear().unwrap();
         lib.queue_add(&[], Some("top"), false).unwrap();
         assert_eq!(titles(&lib.session().unwrap()), ["t4", "t3"]);
-        assert_eq!(lib.session().unwrap().state.source, QueueSource::Manual);
     }
 
     #[test]
@@ -1633,22 +1563,6 @@ mod tests {
         ));
         assert!(lib.queue_add(&["nope".into()], Some("mix"), false).is_err());
         assert_eq!(titles(&lib.session().unwrap()), ["t4"]);
-    }
-
-    #[test]
-    fn adding_anything_to_a_playlist_or_search_queue_is_still_refused() {
-        let mut lib = playlist_lib(1);
-        lib.play_playlist("mix", false).unwrap();
-        for next in [false, true] {
-            assert!(lib.queue_add(&[id(4)], None, next).is_err());
-            assert!(
-                lib.queue_add(&[], Some("mix"), next).is_err(),
-                "not even a playlist"
-            );
-        }
-        assert_eq!(titles(&lib.session().unwrap()), ["t3", "t1", "t2"]);
-        lib.play_shuffle(bachata()).unwrap();
-        assert!(lib.queue_add(&[], Some("mix"), false).is_err());
     }
 
     fn tagged_library() -> Library {

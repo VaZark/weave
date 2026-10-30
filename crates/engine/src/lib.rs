@@ -141,6 +141,15 @@ impl Library {
         self.storage.playlist_remove(name, track_ids)
     }
 
+    /// Move a track of a manual playlist to another place in its play order (1-based positions).
+    pub fn playlist_move(&mut self, name: &str, from: usize, to: usize) -> Result<()> {
+        let index = |p: usize| {
+            p.checked_sub(1)
+                .ok_or_else(|| Error::InvalidInput("playlist positions start at 1".into()))
+        };
+        self.storage.playlist_move(name, index(from)?, index(to)?)
+    }
+
     pub fn playlists(&self) -> Result<Vec<Playlist>> {
         self.storage.playlists()
     }
@@ -360,6 +369,47 @@ mod tests {
         .unwrap();
         assert_eq!(titles(&lib, "dynamic").len(), 4);
         assert_eq!(titles(&lib, "manual").len(), 2);
+    }
+
+    #[test]
+    fn a_manual_playlists_play_order_can_be_changed_and_playing_follows_it() {
+        let mut lib = lib_with(&["a", "b", "c"]);
+        lib.create_manual_playlist("Mix", None).unwrap();
+        lib.playlist_add(
+            "mix",
+            &["x-a-fake".into(), "x-b-fake".into(), "x-c-fake".into()],
+        )
+        .unwrap();
+        lib.playlist_move("mix", 3, 1).unwrap();
+        let titles = |lib: &Library| -> Vec<String> {
+            let (_, r) = lib.playlist_tracks("mix", Page::ALL).unwrap();
+            r.tracks.into_iter().map(|t| t.metadata.title).collect()
+        };
+        assert_eq!(titles(&lib), ["c", "a", "b"]);
+
+        lib.play_playlist("mix", false).unwrap();
+        let queued: Vec<_> = lib
+            .session()
+            .unwrap()
+            .tracks
+            .into_iter()
+            .map(|t| t.metadata.title)
+            .collect();
+        assert_eq!(
+            queued,
+            ["c", "a", "b"],
+            "the queue starts in the playlist's order"
+        );
+
+        assert!(
+            matches!(lib.playlist_move("mix", 0, 1), Err(Error::InvalidInput(_))),
+            "positions start at 1"
+        );
+        assert!(matches!(
+            lib.playlist_move("mix", 1, 4),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(titles(&lib), ["c", "a", "b"], "failed moves change nothing");
     }
 
     #[test]
