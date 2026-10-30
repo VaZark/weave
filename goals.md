@@ -15,7 +15,7 @@
 | Feature               | CLI                                                           | Behavior                                                       |
 | --------------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
 | Import music          | `weave import ~/Music`                                        | Index files without modifying them; prevent duplicate imports. |
-| List tracks           | `weave list`                                                  | Show track IDs and metadata; `--json` for structured output.   |
+| List tracks           | `weave list [--page N --limit N \| --all]`                    | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. IDs may be shortened to a unique prefix. |
 | Play                  | `weave play <track-id>`                                       | Play an available local source.                                |
 | Playback controls     | `weave pause`, `weave resume`, `weave next`                   | Control the active playback session.                           |
 | Current track         | `weave now`                                                   | Show playback state and track details.                         |
@@ -28,7 +28,7 @@
 | Exclude tags          | `weave search --tag-none remix,live`                          | Exclude tracks with any specified tag.                         |
 | BPM range             | `weave search --bpm-min 90 --bpm-max 140`                     | Inclusive bounds; unknown BPM does not match.                  |
 | Combined filters      | `weave search --tag-all bachata --tag-none live --bpm-min 90` | Apply every provided filter group.                             |
-| Metadata search       | `weave search --artist "Romeo Santos"`                        | Filter by indexed metadata fields.                             |
+| Metadata search       | `weave search --artist "Romeo Santos" --year-min 1990`        | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`. |
 | Create smart playlist | `weave playlist create "Bachata 90s" --tag-all bachata,90s`   | Save filters, not track membership.                            |
 | Show playlist         | `weave playlist show "Bachata 90s"`                           | Evaluate its saved filters.                                    |
 | Update playlist       | `weave playlist update "Bachata 90s" --bpm-min 90`            | Change specified filters; retain others.                       |
@@ -42,7 +42,7 @@
 - `--tag-all a,b`: all listed tags must match.
 - `--tag-any a,b`: at least one must match.
 - `--tag-none a,b`: none may match.
-- `--bpm-min N` / `--bpm-max N`: inclusive range.
+- `--bpm-min N` / `--bpm-max N`, `--year-min N` / `--year-max N`: inclusive ranges.
 - Different filter groups combine implicitly with AND; omitted groups do not restrict results.
 - Reject invalid range bounds and use parameterized SQL
 - Tags match case-insensitively, preserving display spelling.
@@ -113,6 +113,7 @@ erDiagram
 ```
 
 - `TRACK.id` is independent of filesystem paths and service IDs.
+- Descriptive metadata (title, artist, album, album artist, genre, composer, year, track/disc number, duration, BPM) lives in an indexed `TRACK_METADATA` table (one row per track, with lowercased copies for filtering and ordering); `TRACK` holds identity only.
 - A track may have multiple sources.
 - Smart playlists persist filters and resolve membership on demand.
 - Use migrations, transactions, and indexes for tags and source mappings.

@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
-use weave_core::{Error, FilterSpec, Track};
+use weave_core::{Error, FilterSpec, Page, SearchResult, Track};
 use weave_engine::{Library, SmartPlaylist};
 
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter, 5 unsupported.
@@ -25,9 +25,14 @@ enum Cmd {
     /// Index audio files without modifying them.
     Import { path: PathBuf },
     /// List tracks.
-    List,
+    List(PageArgs),
     /// Search by tags, BPM and metadata.
-    Search(FilterArgs),
+    Search {
+        #[command(flatten)]
+        filter: FilterArgs,
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// Add tags to a track (or the current track).
     Add { track_id: Option<String>, #[arg(long = "tag", required = true, value_delimiter = ',')] tags: Vec<String> },
     /// Remove tags from a track.
@@ -57,7 +62,11 @@ enum PlaylistCmd {
     /// Save a dynamic playlist: filters, not membership.
     Create { name: String, #[command(flatten)] filter: FilterArgs },
     /// Evaluate a playlist's saved filters.
-    Show { name: String },
+    Show {
+        name: String,
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// Change the specified filters; retain the others.
     Update { name: String, #[command(flatten)] filter: FilterArgs },
     /// Queue the current matches (0.a2).
@@ -70,6 +79,25 @@ enum PlaylistCmd {
 enum BackendCmd {
     List,
     Show { id: String },
+}
+
+#[derive(Args, Clone, Copy)]
+struct PageArgs {
+    /// Page number, starting at 1.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    page: u32,
+    /// Tracks per page.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..))]
+    limit: u32,
+    /// Print every match instead of one page.
+    #[arg(long, conflicts_with_all = ["page", "limit"])]
+    all: bool,
+}
+
+impl PageArgs {
+    fn page(self) -> Page {
+        if self.all { Page::ALL } else { Page::numbered(self.page as usize, self.limit as usize) }
+    }
 }
 
 #[derive(Args, Default)]
@@ -93,6 +121,12 @@ struct FilterArgs {
     artist: Option<String>,
     #[arg(long)]
     album: Option<String>,
+    #[arg(long)]
+    genre: Option<String>,
+    #[arg(long)]
+    year_min: Option<i32>,
+    #[arg(long)]
+    year_max: Option<i32>,
 }
 
 impl From<FilterArgs> for FilterSpec {
@@ -106,6 +140,9 @@ impl From<FilterArgs> for FilterSpec {
             title: a.title,
             artist: a.artist,
             album: a.album,
+            genre: a.genre,
+            year_min: a.year_min,
+            year_max: a.year_max,
         }
         .normalized()
     }
@@ -178,8 +215,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 println!("imported {} new, {} already indexed", s.added, s.skipped)
             })?;
         }
-        Cmd::List => print_tracks(json, &lib.search(&FilterSpec::default())?)?,
-        Cmd::Search(f) => print_tracks(json, &lib.search(&f.into())?)?,
+        Cmd::List(p) => print_page(json, p, &lib.search(&FilterSpec::default(), p.page())?)?,
+        Cmd::Search { filter, page } => print_page(json, page, &lib.search(&filter.into(), page.page())?)?,
         Cmd::Add { track_id: Some(id), tags } => {
             let n = lib.add_tags(&id, &tags)?;
             out(json, &serde_json::json!({ "added": n }), || println!("added {n} tag(s)"))?;
@@ -200,15 +237,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let p = lib.update_playlist(&name, filter.into())?;
             print_playlist(json, &p)?;
         }
-        Cmd::Playlist(PlaylistCmd::Show { name }) => {
-            let (p, tracks) = lib.playlist_tracks(&name)?;
-            if json {
-                print_json(&serde_json::json!({
-                    "name": p.name, "filter": p.filter, "tracks": tracks,
-                }))?;
-            } else {
-                print_tracks(false, &tracks)?;
-            }
+        Cmd::Playlist(PlaylistCmd::Show { name, page }) => {
+            let (_, result) = lib.playlist_tracks(&name, page.page())?;
+            print_page(json, page, &result)?;
         }
         Cmd::Playlist(PlaylistCmd::List) => {
             let ps = lib.playlists()?;
@@ -261,19 +292,70 @@ fn out<T: Serialize>(json: bool, v: &T, text: impl FnOnce()) -> Result<(), Failu
     if json { print_json(v) } else { text(); Ok(()) }
 }
 
-fn print_tracks(json: bool, tracks: &[Track]) -> Result<(), Failure> {
-    out(json, &tracks, || {
-        for t in tracks {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                t.id,
-                t.artist.as_deref().unwrap_or("-"),
-                t.album.as_deref().unwrap_or("-"),
-                t.title,
-                t.bpm.map_or("-".into(), |b| format!("{b}")),
-            );
-        }
-    })
+fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failure> {
+    let (page, per_page) = if args.all { (1, r.total.max(1)) } else { (args.page as usize, args.limit as usize) };
+    let pages = r.total.div_ceil(per_page).max(1);
+    if json {
+        return print_json(&serde_json::json!({
+            "total": r.total, "page": page, "pages": pages, "per_page": per_page, "tracks": r.tracks,
+        }));
+    }
+    print_table(&r.tracks);
+    // Footer goes to stderr so stdout stays a clean table.
+    if !args.all && pages > 1 {
+        let hint = if page < pages { format!("; next: --page {}", page + 1) } else { String::new() };
+        eprintln!("page {page} of {pages} ({} tracks){hint}", r.total);
+    } else {
+        eprintln!("{} track(s)", r.total);
+    }
+    Ok(())
+}
+
+fn print_table(tracks: &[Track]) {
+    const HEADERS: [&str; 9] = ["ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"];
+    let dash = || "-".to_string();
+    let rows: Vec<[String; 9]> = tracks
+        .iter()
+        .map(|t| {
+            let m = &t.metadata;
+            [
+                t.id.0.chars().take(8).collect(),
+                m.title.clone(),
+                m.artist.clone().unwrap_or_else(dash),
+                m.album.clone().unwrap_or_else(dash),
+                m.genre.clone().unwrap_or_else(dash),
+                m.year.map_or_else(dash, |y| y.to_string()),
+                m.bpm.map_or_else(dash, |b| format!("{b}")),
+                m.duration_ms.map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)),
+                if t.tags.is_empty() { dash() } else { t.tags.join(",") },
+            ]
+        })
+        .collect();
+
+    const MAX: usize = 32;
+    let width = |i: usize| {
+        rows.iter().map(|r| r[i].chars().count()).chain([HEADERS[i].len()]).max().unwrap().min(MAX)
+    };
+    let widths: Vec<usize> = (0..9).map(width).collect();
+    let line = |cells: &[&str]| {
+        let parts: Vec<String> = cells
+            .iter()
+            .zip(&widths)
+            .map(|(c, w)| {
+                let c = if c.chars().count() > *w {
+                    c.chars().take(w - 1).chain(['…']).collect::<String>()
+                } else {
+                    c.to_string()
+                };
+                format!("{c:<w$}")
+            })
+            .collect();
+        println!("{}", parts.join("  ").trim_end());
+    };
+    line(&HEADERS);
+    for r in &rows {
+        line(&r.each_ref().map(String::as_str));
+    }
 }
 
 fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
@@ -291,7 +373,9 @@ fn describe(f: &FilterSpec) -> String {
     }
     if let Some(v) = f.bpm_min { parts.push(format!("--bpm-min {v}")); }
     if let Some(v) = f.bpm_max { parts.push(format!("--bpm-max {v}")); }
-    for (k, v) in [("title", &f.title), ("artist", &f.artist), ("album", &f.album)] {
+    if let Some(v) = f.year_min { parts.push(format!("--year-min {v}")); }
+    if let Some(v) = f.year_max { parts.push(format!("--year-max {v}")); }
+    for (k, v) in [("title", &f.title), ("artist", &f.artist), ("album", &f.album), ("genre", &f.genre)] {
         if let Some(v) = v { parts.push(format!("--{k} {v:?}")); }
     }
     if parts.is_empty() { "(all tracks)".into() } else { parts.join(" ") }

@@ -35,6 +35,36 @@ const MIGRATIONS: &[&str] = &[
          normalized_name TEXT NOT NULL UNIQUE,
          filter_spec     TEXT NOT NULL
      );",
+    // Descriptive metadata moves to its own indexed table. `*_norm` columns hold
+    // the lowercased value so filters and ordering never compute per row.
+    "CREATE TABLE track_metadata (
+         track_id     TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+         title        TEXT NOT NULL,
+         title_norm   TEXT NOT NULL,
+         artist       TEXT,
+         artist_norm  TEXT,
+         album        TEXT,
+         album_norm   TEXT,
+         album_artist TEXT,
+         genre        TEXT,
+         genre_norm   TEXT,
+         composer     TEXT,
+         year         INTEGER,
+         track_number INTEGER,
+         disc_number  INTEGER,
+         duration_ms  INTEGER,
+         bpm          REAL
+     );
+     INSERT INTO track_metadata (track_id, title, title_norm, artist, artist_norm, album, album_norm, bpm)
+         SELECT id, title, ulower(title), artist, ulower(artist), album, ulower(album), bpm FROM tracks;
+     ALTER TABLE tracks DROP COLUMN title;
+     ALTER TABLE tracks DROP COLUMN artist;
+     ALTER TABLE tracks DROP COLUMN album;
+     ALTER TABLE tracks DROP COLUMN bpm;
+     CREATE INDEX meta_sort   ON track_metadata(artist_norm, album_norm, title_norm, track_id);
+     CREATE INDEX meta_bpm    ON track_metadata(bpm);
+     CREATE INDEX meta_year   ON track_metadata(year);
+     CREATE INDEX meta_genre  ON track_metadata(genre_norm);",
 ];
 
 pub fn run(conn: &mut Connection) -> Result<()> {

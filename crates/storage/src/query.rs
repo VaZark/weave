@@ -14,6 +14,12 @@ pub fn register_functions(conn: &Connection) -> Result<()> {
     .map_err(|e| Error::Storage(e.to_string()))
 }
 
+pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, m.composer, \
+                           m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm";
+
+/// Matches the `meta_sort` index, so paging does not need a sort step.
+pub const ORDER: &str = " ORDER BY m.artist_norm, m.album_norm, m.title_norm, m.track_id";
+
 fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
@@ -23,18 +29,18 @@ fn tag_keys(tags: &[String]) -> Vec<Value> {
 }
 
 const TAGGED: &str = "SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-                      WHERE tt.track_id = t.id AND g.normalized_name IN";
+                      WHERE tt.track_id = m.track_id AND g.normalized_name IN";
 
-/// Expects an already-normalized, validated filter.
-pub fn build(f: &FilterSpec) -> (String, Vec<Value>) {
-    let mut sql = String::from("SELECT t.id, t.title, t.artist, t.album, t.bpm FROM tracks t WHERE 1=1");
+/// ` FROM … WHERE …` over `track_metadata m`. Expects a normalized, validated filter.
+pub fn from_where(f: &FilterSpec) -> (String, Vec<Value>) {
+    let mut sql = String::from(" FROM track_metadata m WHERE 1=1");
     let mut args: Vec<Value> = Vec::new();
 
     if !f.tag_all.is_empty() {
         // Tags are deduplicated by normalize(), so the distinct count must equal the list length.
         sql += &format!(
             " AND (SELECT COUNT(DISTINCT g.normalized_name) FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-               WHERE tt.track_id = t.id AND g.normalized_name IN ({})) = ?",
+               WHERE tt.track_id = m.track_id AND g.normalized_name IN ({})) = ?",
             placeholders(f.tag_all.len())
         );
         args.extend(tag_keys(&f.tag_all));
@@ -48,21 +54,28 @@ pub fn build(f: &FilterSpec) -> (String, Vec<Value>) {
         sql += &format!(" AND NOT EXISTS ({TAGGED} ({}))", placeholders(f.tag_none.len()));
         args.extend(tag_keys(&f.tag_none));
     }
-    // NULL bpm compares as NULL, so unknown BPM never matches a bound.
-    if let Some(min) = f.bpm_min {
-        sql += " AND t.bpm >= ?";
-        args.push(Value::Real(min));
+    // NULL compares as NULL, so unknown BPM/year never matches a bound.
+    for (col, op, v) in [
+        ("bpm", ">=", f.bpm_min.map(Value::Real)),
+        ("bpm", "<=", f.bpm_max.map(Value::Real)),
+        ("year", ">=", f.year_min.map(|y| Value::Integer(y.into()))),
+        ("year", "<=", f.year_max.map(|y| Value::Integer(y.into()))),
+    ] {
+        if let Some(v) = v {
+            sql += &format!(" AND m.{col} {op} ?");
+            args.push(v);
+        }
     }
-    if let Some(max) = f.bpm_max {
-        sql += " AND t.bpm <= ?";
-        args.push(Value::Real(max));
-    }
-    for (col, val) in [("title", &f.title), ("artist", &f.artist), ("album", &f.album)] {
+    for (col, val) in [
+        ("title_norm", &f.title),
+        ("artist_norm", &f.artist),
+        ("album_norm", &f.album),
+        ("genre_norm", &f.genre),
+    ] {
         if let Some(v) = val {
-            sql += &format!(" AND instr(ulower(t.{col}), ?) > 0");
+            sql += &format!(" AND instr(m.{col}, ?) > 0");
             args.push(Value::Text(v.trim().to_lowercase()));
         }
     }
-    sql += " ORDER BY ulower(t.artist), ulower(t.album), ulower(t.title), t.id";
     (sql, args)
 }

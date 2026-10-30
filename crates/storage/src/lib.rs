@@ -6,7 +6,11 @@ mod query;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use weave_core::{Error, FilterSpec, Result, ScannedTrack, Track, TrackId, normalize_tag};
+use std::collections::HashMap;
+
+use weave_core::{
+    Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId, normalize_tag,
+};
 
 fn db_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
@@ -68,11 +72,8 @@ impl Storage {
                 continue;
             }
             let id = uuid::Uuid::new_v4().simple().to_string();
-            tx.execute(
-                "INSERT INTO tracks (id, title, artist, album, bpm) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, t.title, t.artist, t.album, t.bpm],
-            )
-            .map_err(db_err)?;
+            tx.execute("INSERT INTO tracks (id) VALUES (?1)", [&id]).map_err(db_err)?;
+            insert_metadata(&tx, &id, &t.metadata)?;
             tx.execute(
                 "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
                 params![uuid::Uuid::new_v4().simple().to_string(), id, backend_id, t.external_id],
@@ -84,46 +85,120 @@ impl Storage {
         Ok(stats)
     }
 
-    pub fn search(&self, filter: &FilterSpec) -> Result<Vec<Track>> {
+    /// Matching tracks in a stable order (artist, album, title), one page at a time.
+    pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
         filter.validate()?;
-        let (sql, args) = query::build(&filter.clone().normalized());
-        let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt
+        let (from_where, mut args) = query::from_where(&filter.clone().normalized());
+
+        let total: i64 = self
+            .conn
+            .query_row(
+                &format!("SELECT COUNT(*){from_where}"),
+                rusqlite::params_from_iter(args.iter()),
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+
+        let mut sql = format!("SELECT {}{from_where}{}", query::COLUMNS, query::ORDER);
+        if let Some(limit) = page.limit {
+            sql += " LIMIT ? OFFSET ?";
+            args.push((limit as i64).into());
+            args.push((page.offset as i64).into());
+        } else if page.offset > 0 {
+            sql += " LIMIT -1 OFFSET ?";
+            args.push((page.offset as i64).into());
+        }
+        let tracks = self.fetch(&sql, args)?;
+        Ok(SearchResult { total: total as usize, tracks })
+    }
+
+    /// Resolve a full ID or unique prefix to a track.
+    pub fn track(&self, id: &str) -> Result<Track> {
+        let id = self.resolve_id(id)?;
+        let sql = format!("SELECT {} FROM track_metadata m WHERE m.track_id = ?", query::COLUMNS);
+        self.fetch(&sql, vec![id.into()])?
+            .pop()
+            .ok_or_else(|| Error::NotFound("track".into()))
+    }
+
+    fn resolve_id(&self, prefix: &str) -> Result<String> {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Err(Error::InvalidInput("track id cannot be empty".into()));
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tracks WHERE substr(id, 1, length(?1)) = ?1 LIMIT 2")
+            .map_err(db_err)?;
+        let ids: Vec<String> = stmt
+            .query_map([prefix], |r| r.get(0))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)?;
+        match ids.len() {
+            0 => Err(Error::NotFound(format!("track {prefix}"))),
+            1 => Ok(ids.into_iter().next().unwrap()),
+            _ => Err(Error::InvalidInput(format!("track id prefix \"{prefix}\" is ambiguous"))),
+        }
+    }
+
+    /// Run a `COLUMNS` query and attach tags with one extra query for the whole page.
+    fn fetch(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<Vec<Track>> {
+        let mut stmt = self.conn.prepare(sql).map_err(db_err)?;
+        let mut tracks: Vec<Track> = stmt
             .query_map(rusqlite::params_from_iter(args), |r| {
                 Ok(Track {
                     id: TrackId(r.get(0)?),
-                    title: r.get(1)?,
-                    artist: r.get(2)?,
-                    album: r.get(3)?,
-                    bpm: r.get(4)?,
-                })
-            })
-            .map_err(db_err)?;
-        rows.collect::<std::result::Result<_, _>>().map_err(db_err)
-    }
-
-    pub fn track(&self, id: &str) -> Result<Track> {
-        self.conn
-            .query_row(
-                "SELECT id, title, artist, album, bpm FROM tracks WHERE id = ?1",
-                [id],
-                |r| {
-                    Ok(Track {
-                        id: TrackId(r.get(0)?),
+                    metadata: Metadata {
                         title: r.get(1)?,
                         artist: r.get(2)?,
                         album: r.get(3)?,
-                        bpm: r.get(4)?,
-                    })
-                },
-            )
-            .optional()
+                        album_artist: r.get(4)?,
+                        genre: r.get(5)?,
+                        composer: r.get(6)?,
+                        year: r.get(7)?,
+                        track_number: r.get(8)?,
+                        disc_number: r.get(9)?,
+                        duration_ms: r.get(10)?,
+                        bpm: r.get(11)?,
+                    },
+                    tags: Vec::new(),
+                })
+            })
             .map_err(db_err)?
-            .ok_or_else(|| Error::NotFound(format!("track {id}")))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)?;
+        if tracks.is_empty() {
+            return Ok(tracks);
+        }
+
+        let marks = vec!["?"; tracks.len()].join(",");
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT tt.track_id, g.name FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
+                 WHERE tt.track_id IN ({marks}) ORDER BY g.normalized_name"
+            ))
+            .map_err(db_err)?;
+        let mut by_track: HashMap<String, Vec<String>> = HashMap::new();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(tracks.iter().map(|t| &t.id.0)), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(db_err)?;
+        for row in rows {
+            let (id, name) = row.map_err(db_err)?;
+            by_track.entry(id).or_default().push(name);
+        }
+        for t in &mut tracks {
+            t.tags = by_track.remove(&t.id.0).unwrap_or_default();
+        }
+        Ok(tracks)
     }
 
     /// External reference of a track's source for `backend_id`.
     pub fn source_ref(&self, track_id: &str, backend_id: &str) -> Result<Option<String>> {
+        let track_id = self.resolve_id(track_id)?;
         self.conn
             .query_row(
                 "SELECT external_id FROM sources WHERE track_id = ?1 AND backend_id = ?2",
@@ -136,7 +211,8 @@ impl Storage {
 
     /// Add tags (deduplicated, case-insensitive). Returns how many were newly applied.
     pub fn add_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
-        self.track(track_id)?;
+        let track_id = self.resolve_id(track_id)?;
+        let track_id = track_id.as_str();
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut added = 0;
         for name in names {
@@ -159,7 +235,8 @@ impl Storage {
 
     /// Remove tag associations. Returns how many were removed.
     pub fn remove_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
-        self.track(track_id)?;
+        let track_id = self.resolve_id(track_id)?;
+        let track_id = track_id.as_str();
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut removed = 0;
         for name in names {
@@ -176,7 +253,8 @@ impl Storage {
     }
 
     pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
-        self.track(track_id)?;
+        let track_id = self.resolve_id(track_id)?;
+        let track_id = track_id.as_str();
         let mut stmt = self
             .conn
             .prepare(
@@ -243,6 +321,36 @@ impl Storage {
             .map_err(db_err)?;
         Ok(())
     }
+}
+
+fn insert_metadata(tx: &Transaction, id: &str, m: &Metadata) -> Result<()> {
+    let norm = |v: &Option<String>| v.as_ref().map(|s| s.to_lowercase());
+    tx.execute(
+        "INSERT INTO track_metadata
+           (track_id, title, title_norm, artist, artist_norm, album, album_norm, album_artist,
+            genre, genre_norm, composer, year, track_number, disc_number, duration_ms, bpm)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            id,
+            m.title,
+            m.title.to_lowercase(),
+            m.artist,
+            norm(&m.artist),
+            m.album,
+            norm(&m.album),
+            m.album_artist,
+            m.genre,
+            norm(&m.genre),
+            m.composer,
+            m.year,
+            m.track_number,
+            m.disc_number,
+            m.duration_ms.map(|d| d as i64),
+            m.bpm,
+        ],
+    )
+    .map_err(db_err)?;
+    Ok(())
 }
 
 fn ensure_tag(tx: &Transaction, display: &str, norm: &str) -> Result<i64> {

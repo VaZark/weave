@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::Metadata;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityGroup {
@@ -50,8 +52,5 @@ pub trait Backend: Send + Sync {
 pub struct ScannedTrack {
     /// Stable backend-specific reference (for `local`, the canonical file path).
     pub external_id: String,
-    pub title: String,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub bpm: Option<f64>,
+    pub metadata: Metadata,
 }

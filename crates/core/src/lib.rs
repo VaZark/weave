@@ -10,4 +10,4 @@ pub use backend::{
 };
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, normalize_tag};
-pub use track::{Tag, Track, TrackId};
+pub use track::{Metadata, Page, SearchResult, Tag, Track, TrackId};

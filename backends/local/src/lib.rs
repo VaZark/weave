@@ -6,7 +6,9 @@ use lofty::file::TaggedFileExt;
 use lofty::prelude::*;
 use lofty::tag::ItemKey;
 use walkdir::WalkDir;
-use weave_core::{Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, Error, Result, ScannedTrack};
+use weave_core::{
+    Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, Error, Metadata, Result, ScannedTrack,
+};
 
 pub const BACKEND_ID: &str = "local";
 
@@ -63,21 +65,35 @@ fn read_track(path: &Path) -> ScannedTrack {
         .to_string_lossy()
         .into_owned();
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut track = ScannedTrack { external_id, title: stem, artist: None, album: None, bpm: None };
+    let mut m = Metadata { title: stem, ..Default::default() };
 
-    let Ok(file) = lofty::read_from_path(path) else { return track };
-    let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) else { return track };
-    if let Some(t) = tag.title().filter(|t| !t.trim().is_empty()) {
-        track.title = t.into_owned();
+    if let Ok(file) = lofty::read_from_path(path) {
+        let ms = file.properties().duration().as_millis() as u64;
+        m.duration_ms = (ms > 0).then_some(ms);
+        if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
+            let text = |v: Option<std::borrow::Cow<str>>| {
+                v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            };
+            let item = |k: ItemKey| text(tag.get_string(&k).map(Into::into));
+            if let Some(t) = text(tag.title()) {
+                m.title = t;
+            }
+            m.artist = text(tag.artist());
+            m.album = text(tag.album());
+            m.genre = text(tag.genre());
+            m.album_artist = item(ItemKey::AlbumArtist);
+            m.composer = item(ItemKey::Composer);
+            m.year = tag.year().and_then(|y| i32::try_from(y).ok());
+            m.track_number = tag.track();
+            m.disc_number = tag.disk();
+            m.bpm = [ItemKey::Bpm, ItemKey::IntegerBpm]
+                .into_iter()
+                .filter_map(item)
+                .find_map(|s| s.parse::<f64>().ok())
+                .filter(|b| b.is_finite() && *b > 0.0);
+        }
     }
-    track.artist = tag.artist().map(|s| s.into_owned()).filter(|s| !s.trim().is_empty());
-    track.album = tag.album().map(|s| s.into_owned()).filter(|s| !s.trim().is_empty());
-    track.bpm = [ItemKey::Bpm, ItemKey::IntegerBpm]
-        .iter()
-        .filter_map(|k| tag.get_string(k))
-        .find_map(|s| s.trim().parse::<f64>().ok())
-        .filter(|b| b.is_finite() && *b > 0.0);
-    track
+    ScannedTrack { external_id, metadata: m }
 }
 
 #[cfg(test)]
@@ -93,7 +109,7 @@ mod tests {
 
         let tracks = LocalBackend.scan(&dir).unwrap();
         assert_eq!(tracks.len(), 1);
-        assert_eq!(tracks[0].title, "Song One");
+        assert_eq!(tracks[0].metadata.title, "Song One");
         assert_eq!(std::fs::read(dir.join("sub/Song One.MP3")).unwrap(), b"not really audio");
         std::fs::remove_dir_all(dir).unwrap();
     }

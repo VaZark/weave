@@ -20,6 +20,9 @@ pub struct FilterSpec {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub genre: Option<String>,
+    pub year_min: Option<i32>,
+    pub year_max: Option<i32>,
 }
 
 impl FilterSpec {
@@ -37,7 +40,7 @@ impl FilterSpec {
                 true
             });
         }
-        for field in [&mut self.title, &mut self.artist, &mut self.album] {
+        for field in [&mut self.title, &mut self.artist, &mut self.album, &mut self.genre] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
             }
@@ -62,6 +65,13 @@ impl FilterSpec {
                 "bpm-min ({min}) is greater than bpm-max ({max})"
             )));
         }
+        if let (Some(min), Some(max)) = (self.year_min, self.year_max)
+            && min > max
+        {
+            return Err(Error::InvalidFilter(format!(
+                "year-min ({min}) is greater than year-max ({max})"
+            )));
+        }
         Ok(())
     }
 
@@ -83,6 +93,9 @@ impl FilterSpec {
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
+        self.genre = update.genre.or(self.genre);
+        self.year_min = update.year_min.or(self.year_min);
+        self.year_max = update.year_max.or(self.year_max);
         self
     }
 }
@@ -101,6 +114,12 @@ mod tests {
     fn accepts_equal_bounds() {
         let f = FilterSpec { bpm_min: Some(90.0), bpm_max: Some(90.0), ..Default::default() };
         assert!(f.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_inverted_year_range() {
+        let f = FilterSpec { year_min: Some(2000), year_max: Some(1990), ..Default::default() };
+        assert!(f.validate().is_err());
     }
 
     #[test]

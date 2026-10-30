@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use weave_core::{Backend, CapabilityDescriptor, Error, FilterSpec, Result, Track};
+use weave_core::{Backend, CapabilityDescriptor, Error, FilterSpec, Page, Result, SearchResult, Track};
 use weave_local::LocalBackend;
 use weave_storage::Storage;
 
@@ -34,8 +34,8 @@ impl Library {
         self.storage.import_tracks(self.local.id(), &scanned)
     }
 
-    pub fn search(&self, filter: &FilterSpec) -> Result<Vec<Track>> {
-        self.storage.search(filter)
+    pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
+        self.storage.search(filter, page)
     }
 
     pub fn track(&self, id: &str) -> Result<Track> {
@@ -71,10 +71,10 @@ impl Library {
     }
 
     /// Resolve membership against current library state.
-    pub fn playlist_tracks(&self, name: &str) -> Result<(SmartPlaylist, Vec<Track>)> {
+    pub fn playlist_tracks(&self, name: &str, page: Page) -> Result<(SmartPlaylist, SearchResult)> {
         let p = self.storage.playlist(name)?;
-        let tracks = self.storage.search(&p.filter)?;
-        Ok((p, tracks))
+        let result = self.storage.search(&p.filter, page)?;
+        Ok((p, result))
     }
 
     /// Change the specified filters; retain the others.
