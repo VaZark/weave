@@ -124,6 +124,7 @@ mod remote {
         lib.import_scanned("fake", &tracks).unwrap();
         lib.queue_add(
             &["x-a-fake".into(), "x-b-fake".into(), "x-c-fake".into()],
+            None,
             false,
         )
         .unwrap();
@@ -434,7 +435,9 @@ mod fake_player {
     #[test]
     fn a_finished_track_is_reported_to_the_engine_and_the_next_one_starts() {
         let mut r = Rig::new();
-        r.lib.queue_add(&[r.id("a"), r.id("b")], false).unwrap();
+        r.lib
+            .queue_add(&[r.id("a"), r.id("b")], None, false)
+            .unwrap();
         r.lib.next().unwrap();
         r.tick();
         r.take_calls();
@@ -543,7 +546,7 @@ mod fake_player {
     fn a_track_that_cannot_be_played_is_skipped_with_an_error_event() {
         let mut r = Rig::new();
         let bad = add_unplayable(&mut r, "x");
-        r.lib.queue_add(&[bad, r.id("a")], false).unwrap();
+        r.lib.queue_add(&[bad, r.id("a")], None, false).unwrap();
         r.lib.next().unwrap();
         let events = r.tick();
         assert!(
@@ -564,7 +567,7 @@ mod fake_player {
     fn a_queue_with_nothing_playable_stops_instead_of_looping() {
         let mut r = Rig::new();
         let ids = [add_unplayable(&mut r, "x"), add_unplayable(&mut r, "y")];
-        r.lib.queue_add(&ids, false).unwrap();
+        r.lib.queue_add(&ids, None, false).unwrap();
         r.lib.set_repeat(RepeatMode::Playlist).unwrap();
         r.lib.next().unwrap();
         for _ in 0..10 {
