@@ -56,7 +56,7 @@ Debug builds include a developer command that fills the library with fake tracks
 files are read, and release builds do not contain it.
 
 ```bash
-weave-player dev seed                # 60 tracks, tags, and 3 smart playlists
+weave-player dev seed                # 60 tracks with tags, favorites, ratings and 6 playlists
 weave-player dev seed --count 100    # up to 100
 ```
 
@@ -68,7 +68,13 @@ weave-player list --show-ids    # --show-ids adds the slug ID column
 weave-player search --tag-all bachata,90s --bpm-min 90
 weave-player playlist list
 weave-player playlist show "Bachata 90s"
+weave-player playlist play road-trip   # fill the queue (no audio yet; session state only)
+weave-player queue show
+weave-player now
 ```
+
+In a debug build, `weave-player dev finish-track` simulates the current track ending by itself, which is what the
+playback backend will report; use it to try repeat, shuffle and `queue end continue`.
 
 To import real music instead (files are only read, never modified):
 

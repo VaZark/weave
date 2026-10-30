@@ -14,31 +14,44 @@
 
 | Feature               | CLI                                                                                     | Behavior                                                                                                                                 |
 | --------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Import music          | `weave-player import ~/Music`                                                           | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports.                              |
-| List tracks           | `weave-player list [--page N --limit N \| --all]`                                       | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. Add `--show-ids` for the slug ID column. |
-| Play                  | `weave-player play <track-id>`                                                          | Play an available local source.                                                                                                          |
-| Playback controls     | `weave-player pause`, `weave-player resume`, `weave-player next`                        | Control the active playback session.                                                                                                     |
-| Current track         | `weave-player now`                                                                      | Show playback state and track details.                                                                                                   |
-| Add tags              | `weave-player add --tag bachata`                                                        | Tag the current track.                                                                                                                   |
-| Add tags to track     | `weave-player add <track-id> --tag bachata,90s`                                         | Add multiple tags, without duplicates.                                                                                                   |
-| Remove tags           | `weave-player remove <track-id> --tag bachata`                                          | Remove tag associations.                                                                                                                 |
-| Show tags             | `weave-player tags <track-id>`                                                          | List a track's custom tags.                                                                                                              |
-| Match all tags        | `weave-player search --tag-all bachata,90s`                                             | Require every tag.                                                                                                                       |
-| Match any tags        | `weave-player search --tag-any bachata,zouk`                                            | Require at least one tag.                                                                                                                |
-| Exclude tags          | `weave-player search --tag-none remix,live`                                             | Exclude tracks with any specified tag.                                                                                                   |
-| BPM range             | `weave-player search --bpm-min 90 --bpm-max 140`                                        | Inclusive bounds; unknown BPM does not match.                                                                                            |
-| Combined filters      | `weave-player search --tag-all bachata --tag-none live --bpm-min 90`                    | Apply every provided filter group.                                                                                                       |
-| Metadata search       | `weave-player search --artist "Romeo Santos" --year-min 1990`                           | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`.                                           |
-| Create smart playlist | `weave-player playlist create "Bachata 90s" --description "Slow" --tag-all bachata,90s` | Save filters, not track membership.                                                                                                      |
-| Show playlist         | `weave-player playlist show "Bachata 90s"`                                              | Evaluate its saved filters.                                                                                                              |
-| Update playlist       | `weave-player playlist update "Bachata 90s" --bpm-min 90`                               | Change specified filters; retain others.                                                                                                 |
-| Play playlist         | `weave-player playlist play "Bachata 90s"`                                              | Queue current matching tracks.                                                                                                           |
-| List playlists        | `weave-player playlist list`                                                            | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                             |
-| List backends         | `weave-player backend list`                                                             | Show registered backends and capabilities.                                                                                               |
-| Inspect backend       | `weave-player backend show local`                                                       | Show capabilities and availability.                                                                                                      |
+| Import music | `weave-player import ~/Music` | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports. |
+| List tracks | `weave-player list [--sort FIELD [--desc]] [--limit N] [--page N --per-page N \| --all]` | Paged table (default 50 per page) with column titles, metadata, rating, favorite and tags; `--json` for structured output. Add `--show-ids` for the slug ID column. |
+| Sorting and limits | `weave-player search --sort rating --desc --limit 20` | `--sort` is one of title, artist, album, genre, year, bpm, duration, rating, added; unknown values sort last in either direction. `--limit` keeps at most N matches before paging. |
+| Favorites | `weave-player favorite <track-id>...`, `weave-player unfavorite <track-id>...` | Mark or unmark tracks; `search --favorite` / `--not-favorite` filters on it. |
+| Ratings | `weave-player rate <track-id> 4` | 1 to 5 stars; `0` clears. `search --rating-min 4` (and `--rating-max`) filter; unrated tracks never match a bound. |
+| Play | `weave-player play <track-id>` | Replace the queue with this track and start it (session state; audio output arrives in 0.a4). |
+| Playback controls | `weave-player pause`, `resume`, `stop`, `next`, `prev` | Control the playback session. `next` starts an idle queue; `resume` also restarts the current track after a stop. |
+| Current track | `weave-player now` | Show status, current track, queue position, shuffle, repeat, end-of-queue mode and sleep timer. |
+| Add tags | `weave-player add --tag bachata` | Tag the current track. |
+| Add tags to track | `weave-player add <track-id> --tag bachata,90s` | Add multiple tags, without duplicates. |
+| Remove tags | `weave-player remove <track-id> --tag bachata` | Remove tag associations. |
+| Show tags | `weave-player tags <track-id>` | List a track's custom tags. |
+| Match all tags | `weave-player search --tag-all bachata,90s` | Require every tag. |
+| Match any tags | `weave-player search --tag-any bachata,zouk` | Require at least one tag. |
+| Exclude tags | `weave-player search --tag-none remix,live` | Exclude tracks with any specified tag. |
+| BPM range | `weave-player search --bpm-min 90 --bpm-max 140` | Inclusive bounds; unknown BPM does not match. |
+| Combined filters | `weave-player search --tag-all bachata --tag-none live --bpm-min 90` | Apply every provided filter group. |
+| Metadata search | `weave-player search --artist "Romeo Santos" --year-min 1990` | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`. |
+| Create dynamic playlist | `weave-player playlist create "Bachata 90s" --description "Slow" --tag-all bachata,90s --sort bpm --limit 50` | Save filters, sort and limit, not track membership. |
+| Create manual playlist | `weave-player playlist create "Road trip" --manual` | An ordered list of tracks you choose. |
+| Edit manual playlist | `weave-player playlist add "Road trip" <track-id>...`, `playlist remove ...` | Append (skipping duplicates) or remove tracks; only manual playlists. |
+| Show playlist | `weave-player playlist show "Bachata 90s"` | Manual: tracks in saved order. Dynamic: evaluate the saved filters, sort and limit. |
+| Update playlist | `weave-player playlist update "Bachata 90s" --bpm-min 90` | Change specified filters of a dynamic playlist; retain others. |
+| Play playlist | `weave-player playlist play "Bachata 90s" [--append]` | Replace the queue with the playlist's current tracks and start it, or add them to the end. |
+| List playlists | `weave-player playlist list` | Table of NAME, DESCRIPTION, TYPE (`dynamic` or `manual`) and RULESET. |
+| Show queue | `weave-player queue show` | Numbered queue with the current track marked. |
+| Queue tracks | `weave-player queue add <track-id>... [--playlist NAME] [--next]` | Append to the queue, or insert right after the current track with `--next`. |
+| Manage queue | `weave-player queue remove <pos>...`, `queue move <from> <to>`, `queue jump <pos>`, `queue clear` | Positions are 1-based as shown by `queue show`. The queue and its position persist between runs. |
+| Shuffle | `weave-player shuffle on` | Play the queue in random order, current track first; each track plays once per round. |
+| Repeat | `weave-player repeat off\|song\|playlist` | `song` replays the current track when it ends (skipping still moves on); `playlist` loops the whole queue. |
+| End of queue | `weave-player queue end stop\|continue` | `stop` ends playback; `continue` appends similar tracks (shared tags, BPM near the queue's average) and keeps going. |
+| Sleep timer | `weave-player sleep 30m`, `weave-player sleep off` | Stop playback after a delay (`45s`, `30m`, `1h30m`; a bare number is minutes). |
+| List backends | `weave-player backend list` | Show registered backends and capabilities. |
+| Inspect backend | `weave-player backend show local` | Show capabilities and availability. |
 
 ### Output conventions
 
+- Paging uses `--page` and `--per-page`; `--limit` is the cap on matches.
 - Tables omit the long slug IDs by default; the global `--show-ids` flag adds a leading `ID` column to every table
   (`list`, `search`, `playlist list`, `playlist show`) and to `playlist create|update` output.
 - `--json` always includes IDs.
@@ -48,7 +61,9 @@
 - `--tag-all a,b`: all listed tags must match.
 - `--tag-any a,b`: at least one must match.
 - `--tag-none a,b`: none may match.
-- `--bpm-min N` / `--bpm-max N`, `--year-min N` / `--year-max N`: inclusive ranges.
+- `--bpm-min N` / `--bpm-max N`, `--year-min N` / `--year-max N`, `--rating-min N` / `--rating-max N`: inclusive ranges.
+- `--favorite` / `--not-favorite`: restrict on the favorite flag.
+- `--sort FIELD [--desc]` and `--limit N` are part of the same specification, so saved playlists keep them.
 - Different filter groups combine implicitly with AND; omitted groups do not restrict results.
 - Reject invalid range bounds and use parameterized SQL
 - Tags match case-insensitively, preserving display spelling.
@@ -90,12 +105,29 @@ erDiagram
     TRACK ||--o{ SOURCE : has
     TRACK ||--o{ TRACK_TAG : tagged
     TAG ||--o{ TRACK_TAG : applies_to
+    TRACK ||--o| TRACK_ANNOTATION : annotated
+    TRACK ||--o| TRACK_METADATA : described
+    PLAYLIST ||--o{ PLAYLIST_TRACK : "manual only"
+    TRACK ||--o{ PLAYLIST_TRACK : listed_in
+    TRACK ||--o{ QUEUE_ITEM : queued
     TRACK {
         string id PK "internal key; public ID is the slug"
         string slug UK
+        int added_at
+    }
+    TRACK_METADATA {
+        string track_id PK
         string title
         string artist
+        string album
+        string genre
+        int year
         float bpm
+    }
+    TRACK_ANNOTATION {
+        string track_id PK
+        bool favorite
+        int rating "1-5, null = unrated"
     }
     SOURCE {
         string id PK
@@ -112,10 +144,29 @@ erDiagram
         string track_id FK
         string tag_id FK
     }
-    SMART_PLAYLIST {
+    PLAYLIST {
         string id PK "slug"
         string name
-        json filter_spec
+        string kind "dynamic | manual"
+        json filter_spec "filters, sort, limit; empty for manual"
+    }
+    PLAYLIST_TRACK {
+        string playlist_id FK
+        string track_id FK
+        int position
+    }
+    QUEUE_ITEM {
+        int position PK "list order"
+        string track_id FK
+        int play_rank "play order (shuffle)"
+    }
+    PLAYER_STATE {
+        string status "stopped | playing | paused"
+        string repeat "off | song | playlist"
+        bool shuffle
+        string end_of_queue "stop | continue"
+        int sleep_until
+        int current_position
     }
 ```
 
@@ -123,9 +174,35 @@ erDiagram
 - Every public ID is a slug; see [Identifiers](#identifiers). Tracks and playlists store theirs as `slug`/`id` columns.
 - Descriptive metadata (title, artist, album, album artist, genre, composer, year, track/disc number, duration, BPM) lives in an indexed `TRACK_METADATA` table (one row per track, with lowercased copies for filtering and ordering); `TRACK` holds identity only.
 - A track may have multiple sources.
-- Smart playlists persist filters and resolve membership on demand.
+- Dynamic playlists persist filters (with sort and limit) and resolve membership on demand; manual playlists persist an ordered list of tracks.
+- Favorites and ratings live in `TRACK_ANNOTATION`, apart from source-derived metadata, so enrichment and sync never overwrite them.
+- The play queue and player state are single-row/single-queue tables (`QUEUE_ITEM`, `PLAYER_STATE`), written whole in one transaction after every operation.
 - Until 0.1 the schema is a single squashed migration; older databases are rejected (delete and re-import). After 0.1 migrations are append-only.
 - Use migrations, transactions, and indexes for tags and source mappings.
+
+### Playback session
+
+The queue, cursor and modes are an engine feature (`weave_core::Queue`, orchestrated by `Library`), shared by the CLI
+and the future GUI. 0.a3 covers the state and rules; actual audio output arrives with the local playback backend in
+0.a4, which will follow this state and report when a track ends (`Library::track_ended`).
+
+- **No background process.** The session is persisted after every operation, so separate `weave-player` runs share
+  it. The sleep timer is a stored deadline checked whenever the session is read or changed: once it has passed,
+  playback is stopped (the position is kept) and the timer cleared.
+- **Queue:** an ordered list that may contain duplicates, plus a play order. Without shuffle the play order is the
+  list order. `queue add --next` inserts right after the current track in both orders. Removing the current track
+  moves to what would have played next. Positions in commands are 1-based.
+- **Shuffle:** a random permutation with the current track first, so each track plays once per round. Tracks added
+  while shuffled land randomly among those still to come. With repeat-playlist, each new round is reshuffled and does
+  not start with the track that just played.
+- **Repeat:** `song` replays the current track when it ends but not when the user skips; `playlist` loops the queue;
+  `previous` at the start wraps while looping.
+- **End of queue:** `stop` stops on the last track. `continue` builds a filter from the last 20 queued tracks
+  (their most common tags, and the average BPM +-10%, at least +-5), takes matching tracks that are not already queued,
+  ranks them by shared tags (weighted by how common each tag is in the queue), then by BPM distance, and appends up to
+  5. Without usable tags or BPM, or with no candidates, it stops.
+- Transport commands that make no sense in the current state (pausing when nothing plays) fail with exit code 4 and
+  change nothing.
 
 ### Identifiers
 
@@ -182,7 +259,7 @@ pub trait Backend: Send + Sync {
 weave/
 ├── crates/
 │   ├── core/           # Types, filters, backend contracts
-│   ├── engine/         # Library, playlists, playback orchestration
+│   ├── engine/         # Library, playlists, playback session orchestration
 │   └── storage/        # SQLite, migrations
 ├── backends/
 │   └── local/          # File import and playback

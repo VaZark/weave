@@ -13,7 +13,7 @@ Build an open-source, local-first, source-neutral music management engine used b
 3. **User annotations are protected:** Enrichment and backend sync must not overwrite local tags, ratings or metadata overrides without an explicit user action.
 4. **Backends are capability-driven:** Do not hardcode Spotify or `local` special cases into the query, metadata or playlist domain model. The local backend is bundled, but follows shared contracts.
 5. **One engine API:** Never implement filtering, persistence rules or playlist semantics only inside CLI or GPUI.
-6. **Playlists are queries:** Saved smart playlists retain filter definitions and refresh against current canonical library state.
+6. **Dynamic playlists are queries:** Saved dynamic (smart) playlists retain filter definitions, with their sort and limit, and refresh against current canonical library state. Manual playlists are explicit ordered lists; never mix the two models.
 7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
 8. **Backend boundaries:** Plugins cannot directly mutate the canonical SQLite database. All changes pass engine validation, provenance and merge policies.
 9. **Compliant integration:** Verify current service terms and capabilities before implementing remote playback, lyrics overlays, content mixing or playlist export.
@@ -40,7 +40,7 @@ Build an open-source, local-first, source-neutral music management engine used b
 - Use fixtures and mocks for remote backends; integration tests must not require real Spotify credentials.
 - Document new capability contracts and version compatibility; model `supported`, `authorized`, and `available` separately.
 - Avoid introducing a mandatory daemon, hosted account or cloud database for the MVP.
-- Use clear terminology: `backend`, `capability`, `recording`, `source reference`, `tag`, `filter`, and `smart playlist`.
+- Use clear terminology: `backend`, `capability`, `recording`, `source reference`, `tag`, `filter`, `smart playlist` (dynamic), `manual playlist`, `queue` and `session`.
 
 ## Definition of done
 

@@ -1,7 +1,11 @@
-//! SQLite persistence: migrations, canonical library tables and filter evaluation.
+//! SQLite persistence: migrations, the canonical library, playlists, annotations and the
+//! persisted playback session.
 
+mod annotations;
 mod migrations;
+mod playlists;
 mod query;
+mod session;
 
 use std::path::Path;
 
@@ -10,19 +14,11 @@ use std::collections::HashMap;
 
 use weave_core::{
     Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId,
-    normalize_tag, playlist_slug, slugify, track_slug,
+    normalize_tag, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
     Error::Storage(e.to_string())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SmartPlaylist {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub filter: FilterSpec,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -36,7 +32,7 @@ pub struct ImportStats {
 pub const MIN_SQLITE_VERSION: i32 = 3_014_000;
 
 pub struct Storage {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Storage {
@@ -104,7 +100,7 @@ impl Storage {
                 ),
             )?;
             tx.execute(
-                "INSERT INTO tracks (id, slug) VALUES (?1, ?2)",
+                "INSERT INTO tracks (id, slug, added_at) VALUES (?1, ?2, CAST(strftime('%s', 'now') AS INTEGER))",
                 [&id, &slug],
             )
             .map_err(db_err)?;
@@ -120,52 +116,77 @@ impl Storage {
         Ok(stats)
     }
 
-    /// Matching tracks in a stable order (artist, album, title), one page at a time.
+    /// Matching tracks in the filter's sort order (default: artist, album, title), one
+    /// page at a time. `filter.limit` caps the matches before paging.
     pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
+        let filter = filter.clone().normalized();
         filter.validate()?;
-        let (from_where, mut args) = query::from_where(&filter.clone().normalized());
+        let (where_sql, mut args) = query::where_clause(&filter);
 
-        let total: i64 = self
+        let counted: i64 = self
             .conn
             .query_row(
-                &format!("SELECT COUNT(*){from_where}"),
+                &format!("SELECT COUNT(*){}{where_sql}", query::FROM),
                 rusqlite::params_from_iter(args.iter()),
                 |r| r.get(0),
             )
             .map_err(db_err)?;
+        let total = filter.limit.map_or(counted, |l| counted.min(l as i64)) as usize;
 
-        let mut sql = format!("SELECT {}{from_where}{}", query::COLUMNS, query::ORDER);
-        if let Some(limit) = page.limit {
-            sql += " LIMIT ? OFFSET ?";
-            args.push((limit as i64).into());
-            args.push((page.offset as i64).into());
-        } else if page.offset > 0 {
-            sql += " LIMIT -1 OFFSET ?";
-            args.push((page.offset as i64).into());
+        let (offset, limit) = window(total, page);
+        if limit == 0 {
+            return Ok(SearchResult {
+                total,
+                tracks: Vec::new(),
+            });
         }
+        let sql = format!(
+            "SELECT {}{}{where_sql}{} LIMIT ? OFFSET ?",
+            query::COLUMNS,
+            query::FROM,
+            query::order_by(filter.sort)
+        );
+        args.push((limit as i64).into());
+        args.push((offset as i64).into());
         let tracks = self.fetch(&sql, args)?;
-        Ok(SearchResult {
-            total: total as usize,
-            tracks,
-        })
+        Ok(SearchResult { total, tracks })
     }
 
-    /// Resolve a full ID or unique prefix to a track.
+    /// Resolve a slug (or internal key) to a track.
     pub fn track(&self, id: &str) -> Result<Track> {
         let id = self.resolve_id(id)?;
         let sql = format!(
-            "SELECT {} FROM track_metadata m WHERE m.track_id = ?",
-            query::COLUMNS
+            "SELECT {}{} WHERE m.track_id = ?",
+            query::COLUMNS,
+            query::FROM
         );
         self.fetch(&sql, vec![id.into()])?
             .pop()
             .ok_or_else(|| Error::NotFound("track".into()))
     }
 
+    /// Tracks for exact slugs, in the order given (duplicates repeat). Unknown slugs are skipped.
+    pub fn tracks_by_slugs(&self, slugs: &[String]) -> Result<Vec<Track>> {
+        let mut found: HashMap<String, Track> = HashMap::new();
+        for chunk in slugs.chunks(400) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT {}{} WHERE t.slug IN ({marks})",
+                query::COLUMNS,
+                query::FROM
+            );
+            let args = chunk.iter().map(|s| s.clone().into()).collect();
+            for t in self.fetch(&sql, args)? {
+                found.insert(t.id.0.clone(), t);
+            }
+        }
+        Ok(slugs.iter().filter_map(|s| found.get(s).cloned()).collect())
+    }
+
     /// Accepts a slug (normalized, the public ID), or an internal key or unique prefix of one ( with `slugify`,
     /// so `Romeo Santos-Song-local` finds `romeo-santos-song-local`).
     /// Returns the internal key.
-    fn resolve_id(&self, key: &str) -> Result<String> {
+    pub(crate) fn resolve_id(&self, key: &str) -> Result<String> {
         let key = key.trim();
         if key.is_empty() {
             return Err(Error::InvalidInput("track id cannot be empty".into()));
@@ -201,7 +222,7 @@ impl Storage {
     }
 
     /// Run a `COLUMNS` query and attach tags with one extra query for the whole page.
-    fn fetch(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<Vec<Track>> {
+    pub(crate) fn fetch(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<Vec<Track>> {
         let mut stmt = self.conn.prepare(sql).map_err(db_err)?;
         let mut rows: Vec<(String, Track)> = stmt
             .query_map(rusqlite::params_from_iter(args), |r| {
@@ -225,6 +246,8 @@ impl Storage {
                             bpm: r.get(11)?,
                         },
                         tags: Vec::new(),
+                        favorite: r.get::<_, i64>(13)? != 0,
+                        rating: r.get(14)?,
                     },
                 ))
             })
@@ -334,99 +357,15 @@ impl Storage {
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)
     }
-
-    pub fn create_playlist(
-        &mut self,
-        name: &str,
-        description: Option<&str>,
-        filter: &FilterSpec,
-    ) -> Result<SmartPlaylist> {
-        let name = name.trim();
-        let description = description.map(str::trim).filter(|d| !d.is_empty());
-        if name.is_empty() {
-            return Err(Error::InvalidInput("playlist name cannot be empty".into()));
-        }
-        let filter = filter.clone().normalized();
-        filter.validate()?;
-        let tx = self.conn.transaction().map_err(db_err)?;
-        let exists = tx
-            .query_row(
-                "SELECT 1 FROM smart_playlists WHERE normalized_name = ?1",
-                [normalize_tag(name)],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(db_err)?
-            .is_some();
-        if exists {
-            return Err(Error::AlreadyExists(format!("playlist \"{name}\"")));
-        }
-        // The slug is the playlist's public ID (the `id` column).
-        let id = unique_slug(&tx, "smart_playlists", "id", &playlist_slug(name))?;
-        tx.execute(
-            "INSERT INTO smart_playlists (id, name, normalized_name, description, filter_spec)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                id,
-                name,
-                normalize_tag(name),
-                description,
-                spec_json(&filter)?
-            ],
-        )
-        .map_err(db_err)?;
-        tx.commit().map_err(db_err)?;
-        Ok(SmartPlaylist {
-            id,
-            name: name.into(),
-            description: description.map(Into::into),
-            filter,
-        })
-    }
-
-    /// Look up by name (case-insensitive) or by slug ID (normalized like `slugify`).
-    pub fn playlist(&self, name: &str) -> Result<SmartPlaylist> {
-        self.conn
-            .query_row(
-                "SELECT id, name, filter_spec, description FROM smart_playlists
-                 WHERE normalized_name = ?1 OR id = ?2
-                 ORDER BY normalized_name = ?1 DESC LIMIT 1",
-                params![normalize_tag(name), slugify(name)],
-                row_to_playlist,
-            )
-            .optional()
-            .map_err(db_err)?
-            .ok_or_else(|| Error::NotFound(format!("playlist \"{name}\"")))?
-    }
-
-    pub fn playlists(&self) -> Result<Vec<SmartPlaylist>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, filter_spec, description FROM smart_playlists ORDER BY normalized_name")
-            .map_err(db_err)?;
-        let rows = stmt.query_map([], row_to_playlist).map_err(db_err)?;
-        rows.map(|r| r.map_err(db_err)?).collect()
-    }
-
-    pub fn update_playlist(
-        &mut self,
-        id: &str,
-        description: Option<&str>,
-        filter: &FilterSpec,
-    ) -> Result<()> {
-        filter.validate()?;
-        self.conn
-            .execute(
-                "UPDATE smart_playlists SET description = ?1, filter_spec = ?2 WHERE id = ?3",
-                params![description, spec_json(filter)?, id],
-            )
-            .map_err(db_err)?;
-        Ok(())
-    }
 }
 
 /// `base`, or `base-2`, `base-3`… if taken.
-fn unique_slug(tx: &Transaction, table: &str, column: &str, base: &str) -> Result<String> {
+pub(crate) fn unique_slug(
+    tx: &Transaction,
+    table: &str,
+    column: &str,
+    base: &str,
+) -> Result<String> {
     let sql = format!("SELECT 1 FROM {table} WHERE {column} = ?1");
     let taken = |s: &str| -> Result<bool> {
         tx.query_row(&sql, [s], |_| Ok(()))
@@ -491,20 +430,16 @@ fn ensure_tag(tx: &Transaction, display: &str, norm: &str) -> Result<i64> {
     .map_err(db_err)
 }
 
-fn spec_json(f: &FilterSpec) -> Result<String> {
-    serde_json::to_string(f).map_err(|e| Error::Storage(e.to_string()))
-}
-
-fn row_to_playlist(r: &rusqlite::Row) -> rusqlite::Result<Result<SmartPlaylist>> {
-    let json: String = r.get(2)?;
-    Ok(serde_json::from_str::<FilterSpec>(&json)
-        .map(|filter| SmartPlaylist {
-            id: r.get(0).unwrap(),
-            name: r.get(1).unwrap(),
-            description: r.get(3).unwrap(),
-            filter,
-        })
-        .map_err(|e| Error::Storage(format!("corrupt filter_spec: {e}"))))
+/// Offset and size of the window to read, given the total and the requested page.
+fn window(total: usize, page: Page) -> (usize, usize) {
+    if page.offset >= total {
+        return (page.offset, 0);
+    }
+    let remaining = total - page.offset;
+    (
+        page.offset,
+        page.limit.map_or(remaining, |l| l.min(remaining)),
+    )
 }
 
 #[cfg(test)]

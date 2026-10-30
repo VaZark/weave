@@ -1,4 +1,5 @@
 use super::*;
+use weave_core::{EndOfQueue, PlayerState, PlaylistKind, Queue, RepeatMode, Rng, Sort, SortField};
 
 fn scanned(path: &str, title: &str, artist: &str, bpm: Option<f64>) -> ScannedTrack {
     ScannedTrack {
@@ -380,9 +381,12 @@ fn queries_use_indexes_on_the_metadata_table() {
     };
     let p = plan("SELECT m.track_id FROM track_metadata m WHERE m.bpm >= 90 AND m.bpm <= 140");
     assert!(p.contains("meta_bpm"), "{p}");
+    // The real paging query (with its joins) must walk the sort index without sorting.
     let p = plan(&format!(
-        "SELECT m.track_id FROM track_metadata m {} LIMIT 10",
-        query::ORDER
+        "SELECT {}{}{} LIMIT 10",
+        query::COLUMNS,
+        query::FROM,
+        query::order_by(None)
     ));
     assert!(p.contains("meta_sort") && !p.contains("TEMP B-TREE"), "{p}");
 }
@@ -475,4 +479,367 @@ fn playlists_have_unique_slug_ids_and_resolve_by_name_or_slug() {
         Err(Error::AlreadyExists(_))
     ));
     assert!(matches!(s.playlist("nope"), Err(Error::NotFound(_))));
+}
+
+fn ids_of(tracks: &[Track]) -> Vec<&str> {
+    tracks.iter().map(|t| t.id.0.as_str()).collect()
+}
+
+/// Titles with explicit year/bpm/rating to exercise sorting and annotations.
+fn annotated() -> Storage {
+    let mut s = Storage::open_in_memory().unwrap();
+    let mk = |t: &str, artist: &str, year: Option<i32>, bpm: Option<f64>| ScannedTrack {
+        external_id: t.into(),
+        metadata: Metadata {
+            title: t.into(),
+            artist: Some(artist.into()),
+            year,
+            bpm,
+            duration_ms: Some(200_000),
+            ..Default::default()
+        },
+    };
+    s.import_tracks(
+        "local",
+        &[
+            mk("A", "x", Some(1990), Some(100.0)),
+            mk("B", "x", Some(2000), None),
+            mk("C", "y", None, Some(80.0)),
+            mk("D", "y", Some(1980), Some(120.0)),
+        ],
+    )
+    .unwrap();
+    s
+}
+
+fn id(s: &Storage, title: &str) -> String {
+    all(
+        s,
+        &FilterSpec {
+            title: Some(title.into()),
+            ..Default::default()
+        },
+    )[0]
+    .id
+    .0
+    .clone()
+}
+
+#[test]
+fn favorites_and_ratings_are_stored_filtered_and_shown() {
+    let mut s = annotated();
+    let (a, b, c) = (id(&s, "a"), id(&s, "b"), id(&s, "c"));
+    assert_eq!(s.set_favorite(&[a.clone(), b.clone()], true).unwrap(), 2);
+    assert_eq!(
+        s.set_favorite(std::slice::from_ref(&a), true).unwrap(),
+        0,
+        "already a favorite"
+    );
+    s.set_rating(&a, Some(5)).unwrap();
+    s.set_rating(&c, Some(2)).unwrap();
+
+    let t = s.track(&a).unwrap();
+    assert_eq!((t.favorite, t.rating), (true, Some(5)));
+    let t = s.track(&id(&s, "d")).unwrap();
+    assert_eq!((t.favorite, t.rating), (false, None));
+
+    let f = |favorite, min, max| FilterSpec {
+        favorite,
+        rating_min: min,
+        rating_max: max,
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &f(Some(true), None, None))), ["A", "B"]);
+    assert_eq!(names(&all(&s, &f(Some(false), None, None))), ["C", "D"]);
+    assert_eq!(names(&all(&s, &f(None, Some(3), None))), ["A"]);
+    assert_eq!(
+        names(&all(&s, &f(None, Some(1), Some(2)))),
+        ["C"],
+        "unrated never matches a bound"
+    );
+    assert_eq!(names(&all(&s, &f(Some(true), Some(4), None))), ["A"]);
+
+    assert_eq!(s.set_favorite(std::slice::from_ref(&a), false).unwrap(), 1);
+    s.set_rating(&a, None).unwrap();
+    let t = s.track(&a).unwrap();
+    assert_eq!((t.favorite, t.rating), (false, None));
+    assert!(s.set_rating(&a, Some(6)).is_err());
+    assert!(s.set_rating(&a, Some(0)).is_err());
+}
+
+#[test]
+fn unknown_id_changes_no_favorites() {
+    let mut s = annotated();
+    let a = id(&s, "a");
+    assert!(matches!(
+        s.set_favorite(&[a.clone(), "nope".into()], true),
+        Err(Error::NotFound(_))
+    ));
+    assert!(!s.track(&a).unwrap().favorite);
+}
+
+#[test]
+fn sorting_puts_unknowns_last_in_both_directions() {
+    let s = annotated();
+    let by = |field, descending| {
+        let f = FilterSpec {
+            sort: Some(Sort { field, descending }),
+            ..Default::default()
+        };
+        names(&all(&s, &f))
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(by(SortField::Year, false), ["D", "A", "B", "C"]);
+    assert_eq!(by(SortField::Year, true), ["B", "A", "D", "C"]);
+    assert_eq!(by(SortField::Bpm, false), ["C", "A", "D", "B"]);
+    assert_eq!(by(SortField::Bpm, true), ["D", "A", "C", "B"]);
+    assert_eq!(by(SortField::Title, true), ["D", "C", "B", "A"]);
+    assert_eq!(
+        by(SortField::Artist, true),
+        ["C", "D", "A", "B"],
+        "ties use the default order"
+    );
+}
+
+#[test]
+fn sort_by_rating_and_duration() {
+    let mut s = annotated();
+    s.set_rating(&id(&s, "d"), Some(5)).unwrap();
+    s.set_rating(&id(&s, "a"), Some(3)).unwrap();
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Rating,
+            descending: true,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &f)), ["D", "A", "B", "C"]);
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Duration,
+            descending: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(all(&s, &f).len(), 4);
+}
+
+#[test]
+fn sort_by_added_orders_newest_first_with_stable_ties() {
+    let s = annotated();
+    s.conn
+        .execute(
+            "UPDATE tracks SET added_at = 100 WHERE slug LIKE '%-a-%'",
+            [],
+        )
+        .unwrap();
+    s.conn
+        .execute(
+            "UPDATE tracks SET added_at = 300 WHERE slug LIKE '%-c-%'",
+            [],
+        )
+        .unwrap();
+    s.conn
+        .execute(
+            "UPDATE tracks SET added_at = 200 WHERE slug LIKE '%-b-%' OR slug LIKE '%-d-%'",
+            [],
+        )
+        .unwrap();
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Added,
+            descending: true,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &f)), ["C", "B", "D", "A"]);
+}
+
+#[test]
+fn limit_caps_total_before_paging() {
+    let s = annotated();
+    let f = FilterSpec {
+        limit: Some(3),
+        ..Default::default()
+    };
+    let p1 = s.search(&f, Page::numbered(1, 2)).unwrap();
+    let p2 = s.search(&f, Page::numbered(2, 2)).unwrap();
+    let p3 = s.search(&f, Page::numbered(3, 2)).unwrap();
+    assert_eq!(
+        (p1.total, p1.tracks.len(), p2.tracks.len(), p3.tracks.len()),
+        (3, 2, 1, 0)
+    );
+    assert_eq!(s.search(&f, Page::ALL).unwrap().tracks.len(), 3);
+    let f = FilterSpec {
+        limit: Some(10),
+        ..Default::default()
+    };
+    assert_eq!(
+        s.search(&f, Page::ALL).unwrap().total,
+        4,
+        "a limit above the matches changes nothing"
+    );
+    let f = FilterSpec {
+        limit: Some(0),
+        ..Default::default()
+    };
+    assert!(s.search(&f, Page::ALL).is_err());
+}
+
+#[test]
+fn limit_with_sort_keeps_the_top_matches() {
+    let mut s = annotated();
+    s.set_rating(&id(&s, "a"), Some(5)).unwrap();
+    s.set_rating(&id(&s, "d"), Some(4)).unwrap();
+    s.set_rating(&id(&s, "c"), Some(1)).unwrap();
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Rating,
+            descending: true,
+        }),
+        limit: Some(2),
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &f)), ["A", "D"]);
+}
+
+#[test]
+fn manual_playlists_keep_order_and_reject_filters_semantics() {
+    let mut s = annotated();
+    let (a, b, c, d) = (id(&s, "a"), id(&s, "b"), id(&s, "c"), id(&s, "d"));
+    let p = s
+        .create_manual_playlist("Road trip", Some("Long drives"))
+        .unwrap();
+    assert_eq!((p.kind, p.id.as_str()), (PlaylistKind::Manual, "road-trip"));
+    assert_eq!(
+        s.playlist_add("road-trip", &[d.clone(), a.clone(), c.clone()])
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        s.playlist_add("Road Trip", &[a.clone(), b.clone()])
+            .unwrap(),
+        1,
+        "duplicates are skipped"
+    );
+    let r = s.manual_playlist_tracks("road-trip", Page::ALL).unwrap();
+    assert_eq!((r.total, names(&r.tracks)), (4, vec!["D", "A", "C", "B"]));
+    let r = s
+        .manual_playlist_tracks("road-trip", Page::numbered(2, 3))
+        .unwrap();
+    assert_eq!((r.total, names(&r.tracks)), (4, vec!["B"]));
+
+    assert_eq!(
+        s.playlist_remove("road-trip", &[a.clone(), "nope-nope".into()])
+            .unwrap_err()
+            .to_string(),
+        "not found: track nope-nope"
+    );
+    assert_eq!(s.playlist_remove("road-trip", &[a]).unwrap(), 1);
+    s.playlist_add("road-trip", &[id(&s, "a")]).unwrap();
+    let r = s.manual_playlist_tracks("road-trip", Page::ALL).unwrap();
+    assert_eq!(
+        names(&r.tracks),
+        ["D", "C", "B", "A"],
+        "re-added tracks go to the end"
+    );
+}
+
+#[test]
+fn dynamic_playlists_reject_membership_edits_and_manual_ones_list_as_manual() {
+    let mut s = annotated();
+    s.create_playlist("Dyn", None, &FilterSpec::default())
+        .unwrap();
+    s.create_manual_playlist("Man", None).unwrap();
+    let a = id(&s, "a");
+    assert!(matches!(
+        s.playlist_add("dyn", std::slice::from_ref(&a)),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        s.playlist_remove("dyn", &[a]),
+        Err(Error::InvalidInput(_))
+    ));
+    let kinds: Vec<_> = s
+        .playlists()
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.id, p.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("dyn".to_string(), PlaylistKind::Dynamic),
+            ("man".to_string(), PlaylistKind::Manual)
+        ]
+    );
+}
+
+#[test]
+fn dynamic_playlist_persists_sort_and_limit() {
+    let mut s = annotated();
+    let f = FilterSpec {
+        sort: Some(Sort {
+            field: SortField::Bpm,
+            descending: true,
+        }),
+        limit: Some(2),
+        favorite: Some(false),
+        rating_min: Some(1),
+        ..Default::default()
+    };
+    s.create_playlist("Top", None, &f).unwrap();
+    assert_eq!(s.playlist("top").unwrap().filter, f);
+}
+
+#[test]
+fn tracks_by_slugs_keeps_order_and_duplicates() {
+    let s = annotated();
+    let (a, b) = (id(&s, "a"), id(&s, "b"));
+    let got = s
+        .tracks_by_slugs(&[b.clone(), a.clone(), b.clone(), "missing".into()])
+        .unwrap();
+    assert_eq!(ids_of(&got), [b.as_str(), a.as_str(), b.as_str()]);
+}
+
+#[test]
+fn session_round_trips_queue_order_and_state() {
+    let mut s = annotated();
+    let slugs: Vec<String> = ["a", "b", "c", "d"].iter().map(|t| id(&s, t)).collect();
+    let mut rng = Rng::new(11);
+    let mut q = s.load_queue().unwrap();
+    assert!(q.is_empty() && q.state == PlayerState::default());
+
+    q.state.shuffle = true;
+    q.state.repeat = RepeatMode::Playlist;
+    q.state.end_of_queue = EndOfQueue::Continue;
+    q.replace(slugs.iter().map(|t| TrackId(t.clone())).collect(), &mut rng);
+    q.append(vec![TrackId(slugs[0].clone())], &mut rng); // duplicates are fine
+    q.set_sleep_until(Some(123_456));
+    q.jump(2).unwrap();
+    s.save_queue(&q).unwrap();
+
+    assert_eq!(s.load_queue().unwrap(), q);
+
+    q.clear();
+    s.save_queue(&q).unwrap();
+    let back = s.load_queue().unwrap();
+    assert_eq!(back, q);
+    assert!(back.state.shuffle && back.state.repeat == RepeatMode::Playlist);
+}
+
+#[test]
+fn saving_a_queue_with_an_unknown_track_fails_without_changing_the_saved_one() {
+    let mut s = annotated();
+    let a = id(&s, "a");
+    let mut rng = Rng::new(1);
+    let mut q = Queue::default();
+    q.replace(vec![TrackId(a.clone())], &mut rng);
+    s.save_queue(&q).unwrap();
+
+    q.append(vec![TrackId("ghost".into())], &mut rng);
+    assert!(matches!(s.save_queue(&q), Err(Error::NotFound(_))));
+    assert_eq!(s.load_queue().unwrap().items, [TrackId(a)]);
 }

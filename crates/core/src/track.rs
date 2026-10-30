@@ -36,6 +36,9 @@ pub struct Track {
     pub metadata: Metadata,
     /// Custom tags, in display spelling.
     pub tags: Vec<String>,
+    pub favorite: bool,
+    /// 1 to 5 stars; `None` means unrated.
+    pub rating: Option<u8>,
 }
 
 /// A user tag. `name` keeps the spelling it was first created with.

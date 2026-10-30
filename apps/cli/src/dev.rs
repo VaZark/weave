@@ -1,6 +1,6 @@
 //! Debug-build-only helpers. Compiled out of release builds.
 
-use weave_core::{FilterSpec, Metadata, Result, ScannedTrack, track_slug};
+use weave_core::{FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, track_slug};
 use weave_engine::Library;
 
 /// Not a registered backend: seeded tracks have no files behind them.
@@ -137,57 +137,110 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     let fake = tracks(count);
     let stats = lib.import_scanned(SEED_BACKEND, &fake)?;
 
-    let mut tagged = 0;
-    for (i, t) in fake.iter().enumerate() {
+    let slug_of = |t: &ScannedTrack| {
         let m = &t.metadata;
-        let slug = track_slug(
+        track_slug(
             m.artist.as_deref(),
             m.album.as_deref(),
             &m.title,
             SEED_BACKEND,
-        );
+        )
+    };
+
+    let mut tagged = 0;
+    for (i, t) in fake.iter().enumerate() {
+        let slug = slug_of(t);
         tagged += lib.add_tags(&slug, &tags_for(t, i))?;
+        // Favorites and ratings are only seeded onto tracks that have neither yet, so
+        // re-running never overwrites something changed by hand.
+        let current = lib.track(&slug)?;
+        if current.rating.is_none() && !current.favorite {
+            if i.is_multiple_of(5) {
+                lib.set_favorite(std::slice::from_ref(&slug), true)?;
+            }
+            if !i.is_multiple_of(3) {
+                lib.set_rating(&slug, Some(1 + (i * 7 % 5) as u8))?;
+            }
+        }
     }
 
-    let mut list = |name: &str, description: &str, filter: FilterSpec| match lib.create_playlist(
-        name,
-        Some(description),
-        filter,
-    ) {
+    let created = |r: weave_core::Result<weave_core::Playlist>| match r {
         Ok(_) => Ok(1),
         Err(weave_core::Error::AlreadyExists(_)) => Ok(0),
         Err(e) => Err(e),
     };
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let dynamic = [
+        (
+            "Bachata 90s",
+            "Slow dance nights",
+            FilterSpec {
+                tag_all: strs(&["bachata", "90s"]),
+                tag_none: strs(&["live", "remix"]),
+                bpm_min: Some(90.0),
+                ..Default::default()
+            },
+        ),
+        (
+            "Party starters",
+            "Fast and fun",
+            FilterSpec {
+                tag_any: strs(&["party", "electronic"]),
+                bpm_min: Some(115.0),
+                bpm_max: Some(140.0),
+                sort: Some(Sort {
+                    field: SortField::Bpm,
+                    descending: true,
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Old classics",
+            "Before 1970",
+            FilterSpec {
+                year_max: Some(1969),
+                ..Default::default()
+            },
+        ),
+        (
+            "Top rated",
+            "Best rated, top 15",
+            FilterSpec {
+                rating_min: Some(4),
+                sort: Some(Sort {
+                    field: SortField::Rating,
+                    descending: true,
+                }),
+                limit: Some(15),
+                ..Default::default()
+            },
+        ),
+        (
+            "Favorites",
+            "Everything marked with a heart",
+            FilterSpec {
+                favorite: Some(true),
+                sort: Some(Sort {
+                    field: SortField::Title,
+                    descending: false,
+                }),
+                ..Default::default()
+            },
+        ),
+    ];
     let mut playlists = 0;
-    playlists += list(
-        "Bachata 90s",
-        "Slow dance nights",
-        FilterSpec {
-            tag_all: strs(&["bachata", "90s"]),
-            tag_none: strs(&["live", "remix"]),
-            bpm_min: Some(90.0),
-            ..Default::default()
-        },
-    )?;
-    playlists += list(
-        "Party starters",
-        "Fast and fun",
-        FilterSpec {
-            tag_any: strs(&["party", "electronic"]),
-            bpm_min: Some(115.0),
-            bpm_max: Some(140.0),
-            ..Default::default()
-        },
-    )?;
-    playlists += list(
-        "Old classics",
-        "Before 1970",
-        FilterSpec {
-            year_max: Some(1969),
-            ..Default::default()
-        },
-    )?;
+    for (name, description, filter) in dynamic {
+        playlists += created(lib.create_playlist(name, Some(description), filter))?;
+    }
+
+    // A manual playlist with the first few seeded tracks, in a hand-picked (reverse) order.
+    let made = created(lib.create_manual_playlist("Road trip", Some("Hand-picked, in order")))?;
+    if made == 1 {
+        let picks: Vec<String> = fake.iter().take(8).rev().map(slug_of).collect();
+        lib.playlist_add("road-trip", &picks)?;
+    }
+    playlists += made;
 
     Ok(Seeded {
         added: stats.added,
@@ -206,7 +259,7 @@ mod tests {
     fn seed_is_idempotent_and_populates_everything() {
         let mut lib = Library::open_in_memory().unwrap();
         let first = seed(&mut lib, 60).unwrap();
-        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 3));
+        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 6));
         assert!(first.tagged > 60);
 
         let second = seed(&mut lib, 60).unwrap();
@@ -224,6 +277,11 @@ mod tests {
             lib.search(&FilterSpec::default(), Page::ALL).unwrap().total,
             60
         );
+        let tracks = lib
+            .search(&FilterSpec::default(), Page::ALL)
+            .unwrap()
+            .tracks;
+        assert!(tracks.iter().any(|t| t.favorite) && tracks.iter().any(|t| t.rating.is_some()));
         for p in lib.playlists().unwrap() {
             let (_, r) = lib.playlist_tracks(&p.name, Page::ALL).unwrap();
             assert!(r.total > 0, "playlist {} is empty", p.name);

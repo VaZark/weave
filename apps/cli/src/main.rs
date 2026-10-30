@@ -1,20 +1,38 @@
+/// `println!` that ends the process quietly when stdout is closed (`weave-player list | head`).
+macro_rules! outln {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        if writeln!(std::io::stdout(), $($arg)*).is_err() {
+            std::process::exit(0);
+        }
+    }};
+}
+
 #[cfg(debug_assertions)]
 mod dev;
+mod output;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
-use serde::Serialize;
-use weave_core::{Error, FilterSpec, Page, SearchResult, Track};
-use weave_engine::{Library, SmartPlaylist};
+use weave_core::{
+    EndOfQueue, Error, FilterSpec, Page, RepeatMode, Sort, SortField, parse_duration,
+};
+use weave_engine::Library;
 
-/// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter, 5 unsupported.
+use output::{
+    out, print_columns, print_json, print_page, print_playlist, print_playlists, print_queue,
+    print_session,
+};
+
+/// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter/state.
 #[derive(Parser)]
 #[command(
     name = "weave-player",
     version,
-    about = "Local-first music library with tags and smart playlists"
+    about = "Local-first music library with tags, playlists and a persistent play queue"
 )]
 struct Cli {
     /// Library database path.
@@ -35,15 +53,20 @@ enum Cmd {
     /// Index audio files without modifying them.
     Import { path: PathBuf },
     /// List tracks.
-    List(PageArgs),
-    /// Search by tags, BPM and metadata.
+    List {
+        #[command(flatten)]
+        result: ResultArgs,
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Search by tags, BPM, metadata, favorites and ratings.
     Search {
         #[command(flatten)]
         filter: FilterArgs,
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Add tags to a track (or the current track). Tracks are addressed by their ID (slug).
+    /// Add tags to a track, or to the current track when no ID is given.
     Add {
         track_id: Option<String>,
         #[arg(long = "tag", required = true, value_delimiter = ',')]
@@ -57,22 +80,60 @@ enum Cmd {
     },
     /// Show a track's tags.
     Tags { track_id: String },
-    /// Manage smart playlists.
+    /// Mark tracks as favorites.
+    Favorite {
+        #[arg(required = true)]
+        track_ids: Vec<String>,
+    },
+    /// Remove tracks from the favorites.
+    Unfavorite {
+        #[arg(required = true)]
+        track_ids: Vec<String>,
+    },
+    /// Rate a track from 1 to 5 stars; 0 clears the rating.
+    Rate {
+        track_id: String,
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=5))]
+        stars: u8,
+    },
+    /// Manage playlists.
     #[command(subcommand)]
     Playlist(PlaylistCmd),
+    /// Show and edit the play queue.
+    #[command(subcommand)]
+    Queue(QueueCmd),
+    /// Replace the queue with one track and start it. Session state only: audio output arrives in 0.a4.
+    Play { track_id: String },
+    /// Pause the current track.
+    Pause,
+    /// Resume a paused track, or restart the current one after a stop.
+    Resume,
+    /// Stop playback; the queue and position are kept.
+    Stop,
+    /// Skip to the next track (starts an idle queue).
+    Next,
+    /// Go back to the previous track.
+    Prev,
+    /// Show the playback session: status, current track, queue position and modes.
+    Now,
+    /// Turn shuffle on or off for the queue.
+    Shuffle {
+        #[arg(value_parser = BoolishValueParser::new(), action = clap::ArgAction::Set, value_name = "on|off")]
+        on: bool,
+    },
+    /// Repeat nothing, the current song, or the whole queue (playlist).
+    Repeat {
+        #[arg(value_name = "off|song|playlist")]
+        mode: RepeatMode,
+    },
+    /// Stop playback after a delay (30m, 1h30m, 45s; a bare number is minutes), or `off` to cancel.
+    Sleep {
+        #[arg(value_name = "DURATION|off")]
+        after: String,
+    },
     /// Inspect backends.
     #[command(subcommand)]
     Backend(BackendCmd),
-    /// Play a track (0.a2).
-    Play { track_id: String },
-    /// Pause playback (0.a2).
-    Pause,
-    /// Resume playback (0.a2).
-    Resume,
-    /// Skip to the next track (0.a2).
-    Next,
-    /// Show the current track (0.a2).
-    Now,
     /// Developer tools (debug builds only).
     #[cfg(debug_assertions)]
     #[command(subcommand)]
@@ -82,32 +143,37 @@ enum Cmd {
 #[cfg(debug_assertions)]
 #[derive(Subcommand)]
 enum DevCmd {
-    /// Fill the library with fake tracks, tags and playlists (idempotent; no files are read).
+    /// Fill the library with fake tracks, tags, ratings and playlists (idempotent; no files are read).
     Seed {
         /// Number of tracks to generate.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=dev::MAX_COUNT as i64))]
         count: u32,
     },
+    /// Simulate the current track finishing by itself (what a playback backend will report).
+    FinishTrack,
 }
 
 #[derive(Subcommand)]
 enum PlaylistCmd {
-    /// Save a dynamic playlist: filters, not membership.
+    /// Save a dynamic playlist (filters, sort and limit, not membership), or an empty manual one.
     Create {
         name: String,
         /// What the playlist is for.
         #[arg(long)]
         description: Option<String>,
+        /// Create an ordered list you fill with `playlist add` instead of a saved filter.
+        #[arg(long)]
+        manual: bool,
         #[command(flatten)]
         filter: FilterArgs,
     },
-    /// Evaluate a playlist's saved filters.
+    /// Show a playlist's tracks (evaluates the saved filters of a dynamic one).
     Show {
         name: String,
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Change the specified filters; retain the others.
+    /// Change the specified filters of a dynamic playlist; retain the others.
     Update {
         name: String,
         /// New description; pass "" to clear it.
@@ -116,10 +182,61 @@ enum PlaylistCmd {
         #[command(flatten)]
         filter: FilterArgs,
     },
-    /// Queue the current matches (0.a2).
-    Play { name: String },
+    /// Append tracks to a manual playlist.
+    Add {
+        name: String,
+        #[arg(required = true)]
+        track_ids: Vec<String>,
+    },
+    /// Remove tracks from a manual playlist.
+    Remove {
+        name: String,
+        #[arg(required = true)]
+        track_ids: Vec<String>,
+    },
+    /// Replace the queue with the playlist's tracks and start it (or add them with --append).
+    Play {
+        name: String,
+        /// Add to the end of the queue instead of replacing it.
+        #[arg(long)]
+        append: bool,
+    },
     /// List saved playlists.
     List,
+}
+
+#[derive(Subcommand)]
+enum QueueCmd {
+    /// Show the queue.
+    Show,
+    /// Add tracks (or a playlist's tracks) to the end of the queue.
+    Add {
+        #[arg(required_unless_present = "playlist")]
+        track_ids: Vec<String>,
+        /// Add this playlist's tracks.
+        #[arg(long)]
+        playlist: Option<String>,
+        /// Insert after the current track instead of at the end.
+        #[arg(long)]
+        next: bool,
+    },
+    /// Remove tracks by position (1-based, as shown by `queue show`).
+    Remove {
+        #[arg(required = true, value_parser = clap::value_parser!(usize))]
+        positions: Vec<usize>,
+    },
+    /// Move a track from one position to another.
+    Move { from: usize, to: usize },
+    /// Make the track at a position current and start it.
+    Jump { position: usize },
+    /// Empty the queue and stop.
+    Clear,
+    /// What happens when the queue runs out: stop, or continue with similar tracks
+    /// (shared tags, BPM near the queue's average).
+    End {
+        #[arg(value_name = "stop|continue")]
+        mode: EndOfQueue,
+    },
 }
 
 #[derive(Subcommand)]
@@ -135,9 +252,9 @@ struct PageArgs {
     page: u32,
     /// Tracks per page.
     #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..))]
-    limit: u32,
+    per_page: u32,
     /// Print every match instead of one page.
-    #[arg(long, conflicts_with_all = ["page", "limit"])]
+    #[arg(long, conflicts_with_all = ["page", "per_page"])]
     all: bool,
 }
 
@@ -146,7 +263,35 @@ impl PageArgs {
         if self.all {
             Page::ALL
         } else {
-            Page::numbered(self.page as usize, self.limit as usize)
+            Page::numbered(self.page as usize, self.per_page as usize)
+        }
+    }
+}
+
+/// Ordering and a cap on the result set.
+#[derive(Args, Clone, Copy, Default)]
+struct ResultArgs {
+    /// Order by title, artist, album, genre, year, bpm, duration, rating or added.
+    /// Unknown values sort last.
+    #[arg(long, value_name = "FIELD")]
+    sort: Option<SortField>,
+    /// Sort descending.
+    #[arg(long, requires = "sort")]
+    desc: bool,
+    /// Keep at most this many matches (before paging).
+    #[arg(long, value_parser = clap::value_parser!(usize))]
+    limit: Option<usize>,
+}
+
+impl ResultArgs {
+    fn spec(self) -> FilterSpec {
+        FilterSpec {
+            sort: self.sort.map(|field| Sort {
+                field,
+                descending: self.desc,
+            }),
+            limit: self.limit,
+            ..Default::default()
         }
     }
 }
@@ -178,6 +323,20 @@ struct FilterArgs {
     year_min: Option<i32>,
     #[arg(long)]
     year_max: Option<i32>,
+    /// Only favorites.
+    #[arg(long, conflicts_with = "not_favorite")]
+    favorite: bool,
+    /// Only tracks that are not favorites.
+    #[arg(long)]
+    not_favorite: bool,
+    /// Minimum rating (1-5); unrated tracks never match.
+    #[arg(long)]
+    rating_min: Option<u8>,
+    /// Maximum rating (1-5).
+    #[arg(long)]
+    rating_max: Option<u8>,
+    #[command(flatten)]
+    result: ResultArgs,
 }
 
 impl From<FilterArgs> for FilterSpec {
@@ -194,6 +353,14 @@ impl From<FilterArgs> for FilterSpec {
             genre: a.genre,
             year_min: a.year_min,
             year_max: a.year_max,
+            favorite: match (a.favorite, a.not_favorite) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            },
+            rating_min: a.rating_min,
+            rating_max: a.rating_max,
+            ..a.result.spec()
         }
         .normalized()
     }
@@ -201,7 +368,6 @@ impl From<FilterArgs> for FilterSpec {
 
 enum Failure {
     Engine(Error),
-    Unsupported(&'static str),
     Other(String),
 }
 
@@ -235,7 +401,6 @@ fn main() -> ExitCode {
                     },
                     e.to_string(),
                 ),
-                Failure::Unsupported(m) => (5, m.to_string()),
                 Failure::Other(m) => (1, m),
             };
             eprintln!("weave-player: {msg}");
@@ -244,30 +409,14 @@ fn main() -> ExitCode {
     }
 }
 
-const NOT_YET: &str = "playback is not implemented yet (planned for 0.a2)";
+const NO_AUDIO_YET: &str =
+    "note: no audio output yet (planned for 0.a4); this updates the playback session only";
 
 fn run(cli: Cli) -> Result<(), Failure> {
-    // Reject commands that cannot work before touching the database.
-    match &cli.command {
-        Cmd::Play { .. }
-        | Cmd::Pause
-        | Cmd::Resume
-        | Cmd::Next
-        | Cmd::Now
-        | Cmd::Playlist(PlaylistCmd::Play { .. }) => {
-            return Err(Failure::Unsupported(NOT_YET));
-        }
-        Cmd::Add { track_id: None, .. } => {
-            return Err(Failure::Unsupported(
-                "no active playback session; pass a track id (current-track tagging arrives with 0.a2)",
-            ));
-        }
-        _ => {}
-    }
-
     let json = cli.json;
     let show_ids = cli.show_ids;
     let mut lib = Library::open(&cli.db.unwrap_or_else(default_db))?;
+    let session = |v: &weave_engine::SessionView| print_session(json, show_ids, v);
 
     match cli.command {
         Cmd::Import { path } => {
@@ -275,14 +424,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
             out(
                 json,
                 &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
-                || println!("imported {} new, {} already indexed", s.added, s.skipped),
+                || outln!("imported {} new, {} already indexed", s.added, s.skipped),
             )?;
         }
-        Cmd::List(p) => print_page(
+        Cmd::List { result, page } => print_page(
             json,
             show_ids,
-            p,
-            &lib.search(&FilterSpec::default(), p.page())?,
+            page,
+            &lib.search(&result.spec(), page.page())?,
         )?,
         Cmd::Search { filter, page } => print_page(
             json,
@@ -290,31 +439,69 @@ fn run(cli: Cli) -> Result<(), Failure> {
             page,
             &lib.search(&filter.into(), page.page())?,
         )?,
-        Cmd::Add {
-            track_id: Some(id),
-            tags,
-        } => {
+        Cmd::Add { track_id, tags } => {
+            let (id, label) = match track_id {
+                Some(id) => (id.clone(), id),
+                None => {
+                    let t = lib.current_track()?;
+                    (t.id.0.clone(), t.metadata.title)
+                }
+            };
             let n = lib.add_tags(&id, &tags)?;
             out(json, &serde_json::json!({ "added": n }), || {
-                println!("added {n} tag(s)")
+                outln!("added {n} tag(s) to {label}")
             })?;
         }
         Cmd::Remove { track_id, tags } => {
             let n = lib.remove_tags(&track_id, &tags)?;
             out(json, &serde_json::json!({ "removed": n }), || {
-                println!("removed {n} tag(s)")
+                outln!("removed {n} tag(s)")
             })?;
         }
         Cmd::Tags { track_id } => {
             let tags = lib.tags(&track_id)?;
-            out(json, &tags, || tags.iter().for_each(|t| println!("{t}")))?;
+            out(json, &tags, || tags.iter().for_each(|t| outln!("{t}")))?;
         }
+        Cmd::Favorite { track_ids } => {
+            let n = lib.set_favorite(&track_ids, true)?;
+            out(json, &serde_json::json!({ "changed": n }), || {
+                outln!("{n} track(s) added to favorites")
+            })?;
+        }
+        Cmd::Unfavorite { track_ids } => {
+            let n = lib.set_favorite(&track_ids, false)?;
+            out(json, &serde_json::json!({ "changed": n }), || {
+                outln!("{n} track(s) removed from favorites")
+            })?;
+        }
+        Cmd::Rate { track_id, stars } => {
+            lib.set_rating(&track_id, (stars > 0).then_some(stars))?;
+            out(json, &serde_json::json!({ "rating": stars }), || {
+                if stars == 0 {
+                    outln!("rating cleared")
+                } else {
+                    outln!("rated {stars}/5")
+                }
+            })?;
+        }
+
         Cmd::Playlist(PlaylistCmd::Create {
             name,
             description,
+            manual,
             filter,
         }) => {
-            let p = lib.create_playlist(&name, description.as_deref(), filter.into())?;
+            let p = if manual {
+                if FilterSpec::from(filter) != FilterSpec::default() {
+                    return Err(Error::InvalidInput(
+                        "manual playlists have no filters; fill them with `playlist add`".into(),
+                    )
+                    .into());
+                }
+                lib.create_manual_playlist(&name, description.as_deref())?
+            } else {
+                lib.create_playlist(&name, description.as_deref(), filter.into())?
+            };
             print_playlist(json, show_ids, &p)?;
         }
         Cmd::Playlist(PlaylistCmd::Update {
@@ -329,28 +516,69 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let (_, result) = lib.playlist_tracks(&name, page.page())?;
             print_page(json, show_ids, page, &result)?;
         }
-        Cmd::Playlist(PlaylistCmd::List) => {
-            let ps = lib.playlists()?;
-            if json {
-                print_json(&ps.iter().map(playlist_json).collect::<Vec<_>>())?;
-            } else {
-                let rows = ps.iter().map(|p| {
-                    vec![
-                        p.name.clone(),
-                        p.description.clone().unwrap_or_else(|| "-".into()),
-                        PLAYLIST_TYPE.into(),
-                        describe(&p.filter),
-                    ]
-                });
-                let ids: Vec<String> = ps.iter().map(|p| p.id.clone()).collect();
-                print_columns(
-                    &["NAME", "DESCRIPTION", "TYPE", "RULESET"],
-                    rows.collect(),
-                    &[3],
-                    show_ids.then_some(&ids[..]),
-                );
+        Cmd::Playlist(PlaylistCmd::Add { name, track_ids }) => {
+            let n = lib.playlist_add(&name, &track_ids)?;
+            out(json, &serde_json::json!({ "added": n }), || {
+                outln!("added {n} track(s)")
+            })?;
+        }
+        Cmd::Playlist(PlaylistCmd::Remove { name, track_ids }) => {
+            let n = lib.playlist_remove(&name, &track_ids)?;
+            out(json, &serde_json::json!({ "removed": n }), || {
+                outln!("removed {n} track(s)")
+            })?;
+        }
+        Cmd::Playlist(PlaylistCmd::Play { name, append }) => {
+            let v = lib.play_playlist(&name, append)?;
+            session(&v)?;
+            if !json {
+                eprintln!("{NO_AUDIO_YET}");
             }
         }
+        Cmd::Playlist(PlaylistCmd::List) => print_playlists(json, show_ids, &lib.playlists()?)?,
+
+        Cmd::Queue(QueueCmd::Show) => print_queue(json, show_ids, &lib.session()?)?,
+        Cmd::Queue(QueueCmd::Add {
+            track_ids,
+            playlist,
+            next,
+        }) => {
+            let n = lib.queue_add_all(&track_ids, playlist.as_deref(), next)?;
+            out(json, &serde_json::json!({ "added": n }), || {
+                outln!("queued {n} track(s)")
+            })?;
+        }
+        Cmd::Queue(QueueCmd::Remove { positions }) => session(&lib.queue_remove(&positions)?)?,
+        Cmd::Queue(QueueCmd::Move { from, to }) => {
+            print_queue(json, show_ids, &lib.queue_move(from, to)?)?
+        }
+        Cmd::Queue(QueueCmd::Jump { position }) => session(&lib.queue_jump(position)?)?,
+        Cmd::Queue(QueueCmd::Clear) => session(&lib.queue_clear()?)?,
+        Cmd::Queue(QueueCmd::End { mode }) => session(&lib.set_end_of_queue(mode)?)?,
+
+        Cmd::Play { track_id } => {
+            session(&lib.play_track(&track_id)?)?;
+            if !json {
+                eprintln!("{NO_AUDIO_YET}");
+            }
+        }
+        Cmd::Pause => session(&lib.pause()?)?,
+        Cmd::Resume => session(&lib.resume()?)?,
+        Cmd::Stop => session(&lib.stop()?)?,
+        Cmd::Next => session(&lib.next()?)?,
+        Cmd::Prev => session(&lib.previous()?)?,
+        Cmd::Now => session(&lib.session()?)?,
+        Cmd::Shuffle { on } => session(&lib.set_shuffle(on)?)?,
+        Cmd::Repeat { mode } => session(&lib.set_repeat(mode)?)?,
+        Cmd::Sleep { after } => {
+            let after = if after.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                Some(parse_duration(&after).map_err(Error::InvalidInput)?)
+            };
+            session(&lib.set_sleep(after)?)?;
+        }
+
         Cmd::Backend(BackendCmd::List) => {
             let bs = lib.backends();
             if json {
@@ -361,7 +589,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 )?;
             } else {
                 bs.iter()
-                    .for_each(|b| println!("{}\t{} capabilities", b.id, b.capabilities.len()));
+                    .for_each(|b| outln!("{}\t{} capabilities", b.id, b.capabilities.len()));
             }
         }
         Cmd::Backend(BackendCmd::Show { id }) => {
@@ -369,227 +597,50 @@ fn run(cli: Cli) -> Result<(), Failure> {
             if json {
                 print_json(&serde_json::json!({ "id": b.id, "capabilities": b.capabilities }))?;
             } else {
-                println!("{}", b.id);
-                for c in &b.capabilities {
-                    println!(
-                        "  {:?}/{}\tsupported={} authorized={} available={}",
-                        c.group, c.name, c.state.supported, c.state.authorized, c.state.available
-                    );
-                }
+                outln!("{}", b.id);
+                let rows = b
+                    .capabilities
+                    .iter()
+                    .map(|c| {
+                        vec![
+                            format!("{:?}/{}", c.group, c.name),
+                            c.state.supported.to_string(),
+                            c.state.authorized.to_string(),
+                            c.state.available.to_string(),
+                        ]
+                    })
+                    .collect();
+                print_columns(
+                    &["CAPABILITY", "SUPPORTED", "AUTHORIZED", "AVAILABLE"],
+                    rows,
+                    &[],
+                    None,
+                );
             }
         }
+
         #[cfg(debug_assertions)]
         Cmd::Dev(DevCmd::Seed { count }) => {
             let s = dev::seed(&mut lib, count as usize)?;
             out(
                 json,
                 &serde_json::json!({
-                    "added": s.added, "skipped": s.skipped, "tag_links_added": s.tagged, "playlists_created": s.playlists,
+                    "added": s.added, "skipped": s.skipped, "tag_links_added": s.tagged,
+                    "playlists_created": s.playlists,
                 }),
                 || {
-                    println!(
+                    outln!(
                         "seeded {} new track(s) ({} already present), {} tag link(s), {} playlist(s)",
-                        s.added, s.skipped, s.tagged, s.playlists
+                        s.added,
+                        s.skipped,
+                        s.tagged,
+                        s.playlists
                     )
                 },
             )?;
         }
-        Cmd::Add { track_id: None, .. }
-        | Cmd::Play { .. }
-        | Cmd::Pause
-        | Cmd::Resume
-        | Cmd::Next
-        | Cmd::Now
-        | Cmd::Playlist(PlaylistCmd::Play { .. }) => unreachable!("rejected above"),
+        #[cfg(debug_assertions)]
+        Cmd::Dev(DevCmd::FinishTrack) => session(&lib.track_ended()?)?,
     }
     Ok(())
-}
-
-fn print_json<T: Serialize>(v: &T) -> Result<(), Failure> {
-    let s = serde_json::to_string_pretty(v).map_err(|e| Failure::Other(e.to_string()))?;
-    println!("{s}");
-    Ok(())
-}
-
-fn out<T: Serialize>(json: bool, v: &T, text: impl FnOnce()) -> Result<(), Failure> {
-    if json {
-        print_json(v)
-    } else {
-        text();
-        Ok(())
-    }
-}
-
-fn print_page(json: bool, show_ids: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failure> {
-    let (page, per_page) = if args.all {
-        (1, r.total.max(1))
-    } else {
-        (args.page as usize, args.limit as usize)
-    };
-    let pages = r.total.div_ceil(per_page).max(1);
-    if json {
-        return print_json(&serde_json::json!({
-            "total": r.total, "page": page, "pages": pages, "per_page": per_page, "tracks": r.tracks,
-        }));
-    }
-    print_table(&r.tracks, show_ids);
-    // Footer goes to stderr so stdout stays a clean table.
-    if !args.all && pages > 1 {
-        let hint = if page < pages {
-            format!("; next: --page {}", page + 1)
-        } else {
-            String::new()
-        };
-        eprintln!("page {page} of {pages} ({} tracks){hint}", r.total);
-    } else {
-        eprintln!("{} track(s)", r.total);
-    }
-    Ok(())
-}
-
-fn print_table(tracks: &[Track], show_ids: bool) {
-    let dash = || "-".to_string();
-    let rows = tracks
-        .iter()
-        .map(|t| {
-            let m = &t.metadata;
-            vec![
-                m.title.clone(),
-                m.artist.clone().unwrap_or_else(dash),
-                m.album.clone().unwrap_or_else(dash),
-                m.genre.clone().unwrap_or_else(dash),
-                m.year.map_or_else(dash, |y| y.to_string()),
-                m.bpm.map_or_else(dash, |b| format!("{b}")),
-                m.duration_ms
-                    .map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)),
-                if t.tags.is_empty() {
-                    dash()
-                } else {
-                    t.tags.join(",")
-                },
-            ]
-        })
-        .collect();
-    let ids: Vec<String> = tracks.iter().map(|t| t.id.0.clone()).collect();
-    print_columns(
-        &[
-            "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS",
-        ],
-        rows,
-        &[],
-        show_ids.then_some(&ids[..]),
-    );
-}
-
-/// Left-aligned table with a header row. Columns are capped at 32 characters
-/// (ellipsized) except those listed in `uncapped`. `ids`, when given, becomes a
-/// leading `ID` column that is never truncated, since it is meant to be copied.
-fn print_columns(
-    headers: &[&str],
-    mut rows: Vec<Vec<String>>,
-    uncapped: &[usize],
-    ids: Option<&[String]>,
-) {
-    const MAX: usize = 32;
-    let mut headers: Vec<&str> = headers.to_vec();
-    let mut uncapped: Vec<usize> = uncapped.to_vec();
-    if let Some(ids) = ids {
-        headers.insert(0, "ID");
-        for (row, id) in rows.iter_mut().zip(ids) {
-            row.insert(0, id.clone());
-        }
-        uncapped = std::iter::once(0)
-            .chain(uncapped.iter().map(|i| i + 1))
-            .collect();
-    }
-    let widths: Vec<usize> = (0..headers.len())
-        .map(|i| {
-            let w = rows
-                .iter()
-                .map(|r| r[i].chars().count())
-                .chain([headers[i].len()])
-                .max()
-                .unwrap();
-            if uncapped.contains(&i) { w } else { w.min(MAX) }
-        })
-        .collect();
-    let line = |cells: Vec<&str>| {
-        let parts: Vec<String> = cells
-            .iter()
-            .zip(&widths)
-            .map(|(c, w)| {
-                let c = if c.chars().count() > *w {
-                    c.chars().take(w - 1).chain(['…']).collect::<String>()
-                } else {
-                    c.to_string()
-                };
-                format!("{c:<w$}")
-            })
-            .collect();
-        println!("{}", parts.join("  ").trim_end());
-    };
-    line(headers.clone());
-    for r in &rows {
-        line(r.iter().map(String::as_str).collect());
-    }
-}
-
-/// Every playlist today is a saved filter; manual (fixed-membership) playlists do not exist yet.
-const PLAYLIST_TYPE: &str = "dynamic";
-
-fn playlist_json(p: &SmartPlaylist) -> serde_json::Value {
-    serde_json::json!({
-        "id": p.id, "name": p.name, "description": p.description, "type": PLAYLIST_TYPE, "filter": p.filter,
-    })
-}
-
-fn print_playlist(json: bool, show_ids: bool, p: &SmartPlaylist) -> Result<(), Failure> {
-    out(json, &playlist_json(p), || {
-        let id = if show_ids {
-            format!("{}\t", p.id)
-        } else {
-            String::new()
-        };
-        println!("{id}{}\t{}", p.name, describe(&p.filter))
-    })
-}
-
-fn describe(f: &FilterSpec) -> String {
-    let mut parts = Vec::new();
-    for (k, v) in [
-        ("tag-all", &f.tag_all),
-        ("tag-any", &f.tag_any),
-        ("tag-none", &f.tag_none),
-    ] {
-        if !v.is_empty() {
-            parts.push(format!("--{k} {}", v.join(",")));
-        }
-    }
-    if let Some(v) = f.bpm_min {
-        parts.push(format!("--bpm-min {v}"));
-    }
-    if let Some(v) = f.bpm_max {
-        parts.push(format!("--bpm-max {v}"));
-    }
-    if let Some(v) = f.year_min {
-        parts.push(format!("--year-min {v}"));
-    }
-    if let Some(v) = f.year_max {
-        parts.push(format!("--year-max {v}"));
-    }
-    for (k, v) in [
-        ("title", &f.title),
-        ("artist", &f.artist),
-        ("album", &f.album),
-        ("genre", &f.genre),
-    ] {
-        if let Some(v) = v {
-            parts.push(format!("--{k} {v:?}"));
-        }
-    }
-    if parts.is_empty() {
-        "(all tracks)".into()
-    } else {
-        parts.join(" ")
-    }
 }

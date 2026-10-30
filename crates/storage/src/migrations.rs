@@ -5,9 +5,17 @@ use weave_core::{Error, Result};
 /// step and pre-0.1 databases are not migrated: delete and re-import.
 /// `PRAGMA user_version` records how many steps have been applied.
 const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
-         id   TEXT PRIMARY KEY,           -- opaque internal key, never shown to users
-         slug TEXT NOT NULL UNIQUE        -- public ID, see weave_core::track_slug
+         id       TEXT PRIMARY KEY,       -- opaque internal key, never shown to users
+         slug     TEXT NOT NULL UNIQUE,   -- public ID, see weave_core::track_slug
+         added_at INTEGER NOT NULL        -- unix seconds
      );
+     -- User annotations live apart from source-derived metadata so syncs never touch them.
+     CREATE TABLE track_annotations (
+         track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+         favorite INTEGER NOT NULL DEFAULT 0,
+         rating   INTEGER CHECK (rating BETWEEN 1 AND 5)
+     );
+     CREATE INDEX annotations_rating ON track_annotations(rating);
      CREATE TABLE track_metadata (
          track_id     TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
          title        TEXT NOT NULL,
@@ -49,13 +57,37 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          PRIMARY KEY (track_id, tag_id)
      );
      CREATE INDEX track_tags_tag ON track_tags(tag_id);
-     CREATE TABLE smart_playlists (
+     CREATE TABLE playlists (
          id              TEXT PRIMARY KEY,   -- slug, the public ID
          name            TEXT NOT NULL,
          normalized_name TEXT NOT NULL UNIQUE,
          description     TEXT,
-         filter_spec     TEXT NOT NULL
-     );"];
+         kind            TEXT NOT NULL CHECK (kind IN ('dynamic', 'manual')),
+         filter_spec     TEXT NOT NULL       -- JSON FilterSpec; empty for manual playlists
+     );
+     CREATE TABLE playlist_tracks (
+         playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+         track_id    TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+         position    INTEGER NOT NULL,
+         PRIMARY KEY (playlist_id, track_id)
+     );
+     CREATE INDEX playlist_tracks_order ON playlist_tracks(playlist_id, position);
+     -- Playback session: a single queue and its state (see weave_core::Queue).
+     CREATE TABLE queue_items (
+         position  INTEGER PRIMARY KEY,                 -- list order, 0-based
+         track_id  TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+         play_rank INTEGER NOT NULL UNIQUE              -- play order (shuffle)
+     );
+     CREATE TABLE player_state (
+         id               INTEGER PRIMARY KEY CHECK (id = 1),
+         status           TEXT NOT NULL,
+         repeat           TEXT NOT NULL,
+         shuffle          INTEGER NOT NULL,
+         end_of_queue     TEXT NOT NULL,
+         sleep_until      INTEGER,                      -- unix milliseconds
+         current_position INTEGER
+     );
+     INSERT INTO player_state VALUES (1, 'stopped', 'off', 0, 'stop', NULL, NULL);"];
 
 pub fn run(conn: &mut Connection) -> Result<()> {
     let db = |e: rusqlite::Error| Error::Storage(e.to_string());

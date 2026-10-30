@@ -7,6 +7,39 @@ pub fn normalize_tag(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    Title,
+    Artist,
+    Album,
+    Genre,
+    Year,
+    Bpm,
+    Duration,
+    Rating,
+    /// When the track was first indexed.
+    Added,
+}
+text_enum!(SortField {
+    Title => "title",
+    Artist => "artist",
+    Album => "album",
+    Genre => "genre",
+    Year => "year",
+    Bpm => "bpm",
+    Duration => "duration",
+    Rating => "rating",
+    Added => "added",
+});
+
+/// Unknown values always sort last, in either direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sort {
+    pub field: SortField,
+    pub descending: bool,
+}
+
 /// Structured, serializable filter shared by the CLI, GUI and saved playlists.
 /// Groups combine with AND; empty/omitted groups do not restrict results.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -23,6 +56,15 @@ pub struct FilterSpec {
     pub genre: Option<String>,
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
+    /// `Some(true)`: only favorites; `Some(false)`: only non-favorites.
+    pub favorite: Option<bool>,
+    /// Inclusive, 1 to 5. Unrated tracks never match a rating bound.
+    pub rating_min: Option<u8>,
+    pub rating_max: Option<u8>,
+    /// Result order; default is artist, album, title.
+    pub sort: Option<Sort>,
+    /// Cap on the number of matches (applied before paging).
+    pub limit: Option<usize>,
 }
 
 impl FilterSpec {
@@ -70,6 +112,28 @@ impl FilterSpec {
                 "bpm-min ({min}) is greater than bpm-max ({max})"
             )));
         }
+        for (name, v) in [
+            ("rating-min", self.rating_min),
+            ("rating-max", self.rating_max),
+        ] {
+            if let Some(v) = v
+                && !(1..=5).contains(&v)
+            {
+                return Err(Error::InvalidFilter(format!(
+                    "{name} must be between 1 and 5"
+                )));
+            }
+        }
+        if let (Some(min), Some(max)) = (self.rating_min, self.rating_max)
+            && min > max
+        {
+            return Err(Error::InvalidFilter(format!(
+                "rating-min ({min}) is greater than rating-max ({max})"
+            )));
+        }
+        if self.limit == Some(0) {
+            return Err(Error::InvalidFilter("limit must be at least 1".into()));
+        }
         if let (Some(min), Some(max)) = (self.year_min, self.year_max)
             && min > max
         {
@@ -101,6 +165,11 @@ impl FilterSpec {
         self.genre = update.genre.or(self.genre);
         self.year_min = update.year_min.or(self.year_min);
         self.year_max = update.year_max.or(self.year_max);
+        self.favorite = update.favorite.or(self.favorite);
+        self.rating_min = update.rating_min.or(self.rating_min);
+        self.rating_max = update.rating_max.or(self.rating_max);
+        self.sort = update.sort.or(self.sort);
+        self.limit = update.limit.or(self.limit);
         self
     }
 }
@@ -137,6 +206,68 @@ mod tests {
             ..Default::default()
         };
         assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn validates_ratings_and_limit() {
+        let bad = |f: FilterSpec| f.validate().is_err();
+        assert!(bad(FilterSpec {
+            rating_min: Some(0),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            rating_max: Some(6),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            rating_min: Some(4),
+            rating_max: Some(2),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            limit: Some(0),
+            ..Default::default()
+        }));
+        let ok = FilterSpec {
+            rating_min: Some(3),
+            rating_max: Some(3),
+            limit: Some(1),
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn merge_overlays_sort_limit_and_ratings() {
+        let sort = Sort {
+            field: SortField::Rating,
+            descending: true,
+        };
+        let base = FilterSpec {
+            rating_min: Some(4),
+            limit: Some(10),
+            ..Default::default()
+        };
+        let m = base.merged(FilterSpec {
+            sort: Some(sort),
+            limit: Some(5),
+            ..Default::default()
+        });
+        assert_eq!(
+            (m.rating_min, m.limit, m.sort),
+            (Some(4), Some(5), Some(sort))
+        );
+    }
+
+    #[test]
+    fn sort_fields_parse() {
+        assert_eq!("BPM".parse::<SortField>().unwrap(), SortField::Bpm);
+        assert!(
+            "loudness"
+                .parse::<SortField>()
+                .unwrap_err()
+                .contains("title, artist")
+        );
     }
 
     #[test]
