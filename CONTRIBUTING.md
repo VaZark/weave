@@ -5,33 +5,13 @@ conventions every change must respect. This page covers getting a working checko
 
 ## Prerequisites
 
-- **Rust 1.85 or newer** (the workspace uses edition 2024). Install with [rustup](https://rustup.rs).
-- **SQLite 3.14.0 or newer** as a system library (e.g. `sqlite` on Arch, `libsqlite3-dev` on Debian/Ubuntu), or a
-  C compiler so Weave can build its own copy (see below).
-- **A C toolchain** (`gcc` or `clang`). Rust uses it to link binaries on Linux, and it compiles SQLite if you opt in.
+- **Rust 1.85 or newer** (edition 2024). Install with [rustup](https://rustup.rs).
+- **SQLite 3.14.0 or newer** as a system library (`sqlite` on Arch, `libsqlite3-dev` on Debian/Ubuntu), unless you
+  build with `sqlite-from-source` (see [Build rules](#build-rules)).
+- **A C toolchain** (`gcc` or `clang`): Rust links binaries with it on Linux.
 - Git. No database server, daemon or account is required.
 
 The GPUI desktop app is not built yet (planned for 0.a3); only the CLI and the engine exist today.
-
-## SQLite
-
-By default Weave links the **system SQLite library**, so nothing is compiled and your distro keeps it patched.
-
-**Minimum SQLite: 3.14.0** (the floor of the `rusqlite` bindings; Weave's own SQL needs nothing newer). The check
-runs at startup, so an older library fails with a clear error. Only SQLite 3.50 (built from source) and 3.53 (system)
-have actually been tested, so report any older-version problems you hit.
-
-To compile SQLite from source and link it statically instead (needs a C compiler; every build then uses the same
-version, which is also what you want for binaries you hand to other people), enable the `sqlite-from-source` feature:
-
-```bash
-cargo build -p weave-player --features sqlite-from-source
-cargo test --workspace --features sqlite-from-source
-```
-
-The feature is chosen by the final binary. The library crates (`weave-storage`, `weave-engine`) have it off unless
-you ask: `cargo test -p weave-storage` links the system SQLite, and
-`cargo test -p weave-storage --features sqlite-from-source` builds its own.
 
 ## Get the code and build
 
@@ -40,14 +20,17 @@ git clone <repository-url> weave
 cd weave
 cargo build            # debug build: target/debug/weave-player
 cargo build --release  # optimized build: target/release/weave-player
+cargo install --path apps/cli   # install weave-player into ~/.cargo/bin
 ```
 
-Install the CLI (the `weave-player` binary) into `~/.cargo/bin`:
+Without installing, run it with `cargo run -p weave-player -- <args>`.
 
-```bash
-cargo install --path apps/cli                              # links the system SQLite
-cargo install --path apps/cli --features sqlite-from-source  # self-contained
-``` 
+## Build rules
+
+- Default: links the system SQLite (3.14.0 or newer, checked at startup).
+- `--features sqlite-from-source`: compiles SQLite and links it statically. Set it on the binary, e.g.
+  `cargo build -p weave-player --features sqlite-from-source`.
+- `weave-player dev ...` exists only in debug builds.
 
 ## Run and test
 
