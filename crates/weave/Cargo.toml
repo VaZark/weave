@@ -8,8 +8,9 @@ description = "Local-first music library, queue and playback engine, to embed in
 [features]
 # Audio output through rodio (needs the ALSA development files on Linux).
 audio = ["weave-engine/audio"]
-# Desktop media controls over D-Bus (MPRIS): media keys, GNOME/KDE widgets, playerctl.
-mpris = ["dep:mpris-server", "dep:async-io", "dep:futures-lite", "dep:async-channel"]
+# OS media controls through souvlaki: media keys and now-playing widgets. Wired for Linux (MPRIS over
+# D-Bus) only for now; souvlaki also covers Windows and macOS.
+media-controls = ["dep:souvlaki", "dep:zbus"]
 # Compile SQLite from source and link it statically (default: the system SQLite).
 sqlite-from-source = ["weave-engine/sqlite-from-source"]
 
@@ -18,9 +19,9 @@ name = "embedded_player"
 required-features = ["audio"]
 
 [dependencies]
-async-channel = { version = "2", optional = true }
-async-io = { version = "2", optional = true }
-futures-lite = { version = "2", optional = true }
-mpris-server = { version = "0.11", optional = true }
+# souvlaki's in-progress 1.0 branch. The pure-Rust zbus backend, so no libdbus is needed.
+souvlaki = { git = "https://github.com/Sinono3/souvlaki", branch = "1.0", default-features = false, features = ["mpris_zbus"], optional = true }
 weave-core.workspace = true
 weave-engine.workspace = true
+# Used to look for a bus name another player already owns (souvlaki would queue behind it).
+zbus = { version = "5.7", optional = true }

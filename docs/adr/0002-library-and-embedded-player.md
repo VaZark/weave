@@ -15,13 +15,13 @@ embedding app would have had to depend on four crates and could not play audio w
 - **`weave` is a facade.** It re-exports `Library` and the domain types (`weave::core`) and owns the embedded
   `Player`. The internal crates (`core`, `engine`, `storage`, `local`) stay separate implementation details.
 - **The player moves into the library.** Following the session, driving audio, publishing the position, the sleep
-  timer, MPRIS and the one-player-per-library lock now live in `weave`. A `Player` is a thread with its own database
+  timer, the OS media controls (see ADR 0003) and the one-player-per-library lock now live in `weave`. A `Player` is a thread with its own database
   connection, started with `Player::start(db, options)`, reporting typed `PlayerEvent`s on a channel.
 - **Embedding works like the CLI host:** the app opens a `Library` and edits the session; the `Player` follows it
   through the database. No new IPC and no new concepts. The embedder can supply its own audio output (`Audio::Custom`).
 - **The CLI depends on `weave` only.** Its `host` command runs the library's `Player`; what stays in the CLI is
   starting a detached `weave-player host` process and printing.
-- **No default features** on the library, like the other crates: embedders choose `audio`, `mpris`,
+- **No default features** on the library, like the other crates: embedders choose `audio`, `media-controls`,
   `sqlite-from-source`.
 
 ## Alternatives

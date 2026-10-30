@@ -4,12 +4,12 @@
 //! follows the session that any [`Library`](crate::Library) handle edits (the same way the
 //! `weave-player` CLI and its host process do): it starts tracks, pauses, seeks, applies
 //! volume, reports the real position, advances when a track ends, enforces the sleep timer
-//! and (with the `mpris` feature) answers desktop media controls. Only one player can run per
+//! and (with the `media-controls` feature) answers the OS media controls. Only one player can run per
 //! library at a time, across processes.
 
 mod host;
 mod lock;
-mod mpris;
+mod media;
 
 use std::fmt;
 use std::path::Path;
@@ -24,7 +24,7 @@ use weave_engine::Library;
 
 use host::Host;
 use lock::HostLock;
-use mpris::Mpris;
+use media::MediaService;
 
 pub use host::TICK as DEFAULT_TICK;
 pub use lock::lock_path;
@@ -58,11 +58,12 @@ impl fmt::Debug for Audio {
 #[derive(Debug)]
 pub struct PlayerOptions {
     pub audio: Audio,
-    /// Register with the desktop's media controls (needs the `mpris` feature and a session bus;
-    /// if that fails the player carries on and reports an [`PlayerEvent::Error`]).
-    pub mpris: bool,
-    /// The MPRIS bus name suffix: `org.mpris.MediaPlayer2.<name>`.
-    pub mpris_name: String,
+    /// Register with the OS media controls: media keys and now-playing widgets (needs the
+    /// `media-controls` feature; wired for Linux, where it needs a session bus). If that fails the
+    /// player carries on and reports a [`PlayerEvent::Error`].
+    pub media_controls: bool,
+    /// The name to register as. On Linux the MPRIS bus name `org.mpris.MediaPlayer2.<name>`.
+    pub media_controls_name: String,
     /// How often the session is re-read.
     pub tick: Duration,
 }
@@ -71,8 +72,8 @@ impl Default for PlayerOptions {
     fn default() -> Self {
         Self {
             audio: Audio::Device,
-            mpris: cfg!(feature = "mpris"),
-            mpris_name: "weave".into(),
+            media_controls: cfg!(feature = "media-controls"),
+            media_controls_name: "weave".into(),
             tick: DEFAULT_TICK,
         }
     }
@@ -83,7 +84,7 @@ impl PlayerOptions {
     pub fn silent() -> Self {
         Self {
             audio: Audio::Off,
-            mpris: false,
+            media_controls: false,
             ..Self::default()
         }
     }
@@ -239,12 +240,12 @@ fn run(
             Audio::Device => Some(lib.open_playback()?),
             Audio::Custom(factory) => Some(factory()?),
         };
-        let mpris = if options.mpris {
-            match Mpris::start(&options.mpris_name) {
+        let media = if options.media_controls {
+            match MediaService::start(&options.media_controls_name) {
                 Ok(m) => Some(m),
                 Err(e) => {
                     let _ = events.send(PlayerEvent::Error(format!(
-                        "MPRIS is unavailable ({e}); continuing without desktop media controls"
+                        "media controls are unavailable ({e}); continuing without them"
                     )));
                     None
                 }
@@ -252,7 +253,7 @@ fn run(
         } else {
             None
         };
-        Ok((lib, Host::new(playback).with_mpris(mpris)))
+        Ok((lib, Host::new(playback).with_media(media)))
     };
     let (mut lib, mut host) = match setup() {
         Ok(ready_parts) => ready_parts,

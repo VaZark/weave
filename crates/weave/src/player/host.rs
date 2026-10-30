@@ -1,6 +1,6 @@
 //! Following the persisted session: turns its changes into audio actions, detects finished
 //! tracks, publishes the real position, applies the sleep timer and carries out desktop
-//! (MPRIS) requests. `Player` runs this on a thread; the logic is kept apart from threads and
+//! (media-key and widget) requests. `Player` runs this on a thread; the logic is kept apart from threads and
 //! devices so it is tested against a fake `Playback`.
 
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use weave_core::{Error, PlayStatus, Playback, PlayerState, Result};
 use weave_engine::{Library, SessionView};
 
 use super::PlayerEvent;
-use super::mpris::{Mpris, Remote, Snapshot, TrackInfo};
+use super::media::{MediaService, Remote, Snapshot, TrackInfo};
 
 /// How often the player re-reads the session.
 pub const TICK: Duration = Duration::from_millis(100);
@@ -99,7 +99,7 @@ pub struct Host {
     last_view: Option<SessionView>,
     /// Consecutive tracks skipped because they could not be played.
     skipped: usize,
-    mpris: Option<Mpris>,
+    media: Option<MediaService>,
     last_snapshot: Option<(Snapshot, Instant)>,
     /// Plain lyrics of the track that started with this `start_seq`, for `xesam:asText`.
     lyrics_cache: Option<(u64, Option<String>)>,
@@ -116,15 +116,15 @@ impl Host {
             report_every: POSITION_EVERY,
             last_view: None,
             skipped: 0,
-            mpris: None,
+            media: None,
             last_snapshot: None,
             lyrics_cache: None,
             quit: false,
         }
     }
 
-    pub fn with_mpris(mut self, mpris: Option<Mpris>) -> Self {
-        self.mpris = mpris;
+    pub fn with_media(mut self, media: Option<MediaService>) -> Self {
+        self.media = media;
         self
     }
 
@@ -136,7 +136,7 @@ impl Host {
     /// One pass: follow the session, detect a finished track, publish the position.
     pub fn tick(&mut self, lib: &mut Library) -> Result<Vec<PlayerEvent>> {
         let mut events = Vec::new();
-        while let Some(remote) = self.mpris.as_ref().and_then(Mpris::try_recv) {
+        while let Some(remote) = self.media.as_ref().and_then(MediaService::try_recv) {
             match apply_remote(lib, &remote) {
                 Ok(true) => self.quit = true,
                 Ok(false) => {}
@@ -165,7 +165,7 @@ impl Host {
         }
 
         let view = lib.session()?;
-        self.publish_to_mpris(lib, &view)?;
+        self.publish_to_media(lib, &view)?;
         if let Some(before) = &self.last_view {
             events.extend(session_events(before, &view));
         }
@@ -173,10 +173,10 @@ impl Host {
         Ok(events)
     }
 
-    /// Send the session to MPRIS when something besides the position changed, and the
-    /// position itself about twice a second.
-    fn publish_to_mpris(&mut self, lib: &Library, view: &SessionView) -> Result<()> {
-        let Some(mpris) = &self.mpris else {
+    /// Send the session to the OS media controls when something besides the position changed,
+    /// and the position itself about twice a second.
+    fn publish_to_media(&mut self, lib: &Library, view: &SessionView) -> Result<()> {
+        let Some(media) = self.media.as_mut() else {
             return Ok(());
         };
         let key = view.state.start_seq;
@@ -196,7 +196,7 @@ impl Host {
             }
         };
         if due {
-            mpris.send(snapshot.clone());
+            media.send(snapshot.clone());
             self.last_snapshot = Some((snapshot, Instant::now()));
         }
         Ok(())
@@ -244,7 +244,7 @@ impl Host {
     }
 }
 
-/// What MPRIS shows for a session.
+/// What the OS media controls show for a session.
 pub fn snapshot_of(v: &SessionView, lyrics: Option<String>) -> Snapshot {
     Snapshot {
         status: v.state.status,

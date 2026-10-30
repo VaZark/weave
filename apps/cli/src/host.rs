@@ -65,14 +65,14 @@ pub fn run_foreground(
     db: &Path,
     json: bool,
     no_audio: bool,
-    no_mpris: bool,
+    no_media_controls: bool,
     run_for: Option<Duration>,
 ) -> Result<(), Failure> {
     let mut options = PlayerOptions::default();
     if no_audio {
         options.audio = Audio::Off;
     }
-    options.mpris &= !no_mpris;
+    options.media_controls &= !no_media_controls;
 
     let player = match Player::start(db, options) {
         Ok(player) => player,

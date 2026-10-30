@@ -21,7 +21,7 @@ part, and users expect `play` to make sound.
   back about once a second.
 - **Audio: rodio** (symphonia decoders, cpal output) behind a small `Playback` trait in core, implemented by the
   `local` backend behind an `audio` cargo feature, so the engine and tests never need a sound device.
-- **MPRIS: mpris-server** (zbus, no tokio) on its own thread, bridged to the host by channels. MPRIS calls go through
+- **Media controls (MPRIS on Linux): mpris-server** (replaced by souvlaki in [ADR 0003](0003-souvlaki-media-controls.md)) (zbus, no tokio) on its own thread, bridged to the host by channels. MPRIS calls go through
   the same engine methods the CLI uses.
 - **Lyrics:** LRC parsing and the current-line lookup live in core. The `local` backend reads a `.lrc` file next to the
   audio file, then falls back to embedded lyrics (synced if they contain LRC timestamps).
@@ -37,7 +37,7 @@ part, and users expect `play` to make sound.
   local SQLite file every 100 ms is cheap; revisit if latency matters.
 - **symphonia + cpal directly:** more control (gapless, resampling) for roughly 500 more lines. rodio can be replaced
   behind the `Playback` trait later.
-- **souvlaki:** simpler, cross-platform media controls, but less of MPRIS than mpris-server. Linux is the target.
+- **souvlaki:** simpler, cross-platform media controls, but at the time less of MPRIS than mpris-server (adopted later: ADR 0003).
 
 ## Consequences
 

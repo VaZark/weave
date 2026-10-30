@@ -31,15 +31,15 @@ Without installing, run it with `cargo run -p weave-player -- <args>`.
 
 Two artifacts, built separately:
 
-- The library: `cargo build -p weave` (add `--features audio,mpris`). It has no CLI code or dependencies. Try the
-  embedding API with `cargo run -p weave --example embedded_player --features audio,mpris -- ~/Music`.
+- The library: `cargo build -p weave` (add `--features audio,media-controls`). It has no CLI code or dependencies. Try the
+  embedding API with `cargo run -p weave --example embedded_player --features audio,media-controls -- ~/Music`.
 - The CLI: `cargo build -p weave-player`. It depends on `weave` only.
 
 - Default: links the system SQLite (3.14.0 or newer, checked at startup).
 - `--features sqlite-from-source`: compiles SQLite and links it statically. Set it on the binary, e.g.
   `cargo build -p weave-player --features sqlite-from-source`.
-- The library has no default features; its features are `audio` (rodio, needs ALSA headers), `mpris` (D-Bus media
-  controls) and `sqlite-from-source`. The CLI turns `audio` and `mpris` on by default; build it with
+- The library has no default features; its features are `audio` (rodio, needs ALSA headers), `media-controls` (OS media keys and
+  widgets through souvlaki's 1.0 branch, Linux only for now) and `sqlite-from-source`. The CLI turns `audio` and `media-controls` on by default; build it with
   `--no-default-features` for a binary that cannot play sound or register with the desktop.
 - `weave-player dev ...` exists only in debug builds.
 
@@ -48,7 +48,7 @@ Two artifacts, built separately:
 Commands that start playback launch the playback host (`weave-player host`) in the background; its log is
 `<library>.host.log` next to the database, `weave-player now` shows whether it runs and `weave-player quit` stops it.
 Use `--no-host` (or `WEAVE_NO_HOST=1`) to edit the session without ever starting one, and `weave-player host` to run it in
-the foreground. The audio test plays silence and the MPRIS tests talk to the session bus; both skip themselves where
+the foreground. The audio test plays silence and the media-controls tests talk to the session bus; both skip themselves where
 there is no output device or no bus.
 
 ## Run and test

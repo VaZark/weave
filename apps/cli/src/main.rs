@@ -154,9 +154,9 @@ enum Cmd {
         /// Follow the session without producing sound.
         #[arg(long)]
         no_audio: bool,
-        /// Do not register with the desktop's media controls (MPRIS).
+        /// Do not register with the OS media controls (media keys, now-playing widgets).
         #[arg(long)]
-        no_mpris: bool,
+        no_media_controls: bool,
         /// Exit after this long instead of running until `quit` or Ctrl-C.
         #[arg(long = "for", value_name = "DURATION")]
         run_for: Option<String>,
@@ -701,14 +701,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
 
         Cmd::Host {
             no_audio,
-            no_mpris,
+            no_media_controls,
             run_for,
         } => {
             let run_for = run_for
                 .as_deref()
                 .map(|s| parse_duration(s).map_err(Error::InvalidInput))
                 .transpose()?;
-            host::run_foreground(&db, json, no_audio, no_mpris, run_for)?;
+            host::run_foreground(&db, json, no_audio, no_media_controls, run_for)?;
         }
         Cmd::Quit => {
             if !Player::is_running(&db) {

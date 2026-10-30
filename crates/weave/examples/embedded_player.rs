@@ -1,9 +1,9 @@
 //! A tiny "player" that embeds weave: no CLI, no separate host process.
 //!
-//!     cargo run -p weave --example embedded_player --features audio,mpris -- ~/Music
+//!     cargo run -p weave --example embedded_player --features audio,media-controls -- ~/Music
 //!
 //! It indexes the folder, starts the embedded player in this process, plays everything in random
-//! order for a little while and prints what the player reports. Media keys work too (`mpris`).
+//! order for a little while and prints what the player reports. Media keys work too (`media-controls`).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

@@ -3,8 +3,8 @@
 //! One dependency gives a player (a GUI, a TUI, a service) everything the `weave-player` CLI has:
 //! the library of tracks with tags, playlists, favorites, ratings, filters and sorting; a persisted
 //! now-playing queue with shuffle, repeat, recommendations and a sleep timer; lyrics; and an
-//! embedded [`Player`] that plays the session in your process, with optional desktop media
-//! controls (MPRIS). The CLI is only a frontend over this crate.
+//! embedded [`Player`] that plays the session in your process, with optional OS media
+//! controls (media keys and now-playing widgets, through souvlaki). The CLI is only a frontend over this crate.
 //!
 //! # Shape
 //!
@@ -36,7 +36,8 @@
 //! None are on by default; pick what your player needs.
 //!
 //! - `audio`: sound output through rodio (needs the ALSA development files on Linux).
-//! - `mpris`: register with the desktop's media controls over D-Bus.
+//! - `media-controls`: register with the OS media controls (media keys, now-playing widgets)
+//!   through souvlaki's in-progress 1.0 branch. Linux (MPRIS) only for now.
 //! - `sqlite-from-source`: compile and statically link SQLite instead of using the system one
 //!   (3.14.0 or newer).
 //!

@@ -1,11 +1,12 @@
-//! Desktop media controls (MPRIS over D-Bus). The host sends snapshots of the session to a
-//! thread that owns the D-Bus connection, and receives the commands desktop widgets, media
-//! keys and `playerctl` send. Without the `mpris` feature, `start` reports it is unavailable.
+//! OS media controls (media keys, now-playing widgets, `playerctl`) through souvlaki. The player
+//! sends snapshots of the session and receives the requests the OS forwards. Wired for Linux
+//! (MPRIS over D-Bus) only for now. Without the `media-controls` feature, or on another platform,
+//! `start` reports that it is unavailable.
 
 use weave_core::{PlayStatus, RepeatMode};
 
-/// A request from a desktop media controller. (Only the D-Bus service constructs these.)
-#[cfg_attr(not(feature = "mpris"), allow(dead_code))]
+/// A request from the OS media controls. (Only the service constructs these.)
+#[cfg_attr(not(feature = "media-controls"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Remote {
     Play,
@@ -61,21 +62,21 @@ impl Snapshot {
     }
 }
 
-#[cfg(feature = "mpris")]
+#[cfg(feature = "media-controls")]
 mod service;
-#[cfg(feature = "mpris")]
-pub use service::Mpris;
+#[cfg(feature = "media-controls")]
+pub use service::MediaService;
 
-#[cfg(not(feature = "mpris"))]
-pub struct Mpris;
+#[cfg(not(feature = "media-controls"))]
+pub struct MediaService;
 
-#[cfg(not(feature = "mpris"))]
-impl Mpris {
-    pub fn start(_bus_name: &str) -> Result<Mpris, String> {
-        Err("this build has no MPRIS support".into())
+#[cfg(not(feature = "media-controls"))]
+impl MediaService {
+    pub fn start(_name: &str) -> Result<MediaService, String> {
+        Err("this build has no media-controls support".into())
     }
 
-    pub fn send(&self, _snapshot: Snapshot) {}
+    pub fn send(&mut self, _snapshot: Snapshot) {}
 
     pub fn try_recv(&self) -> Option<Remote> {
         None

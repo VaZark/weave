@@ -9,12 +9,12 @@ name = "weave-player"
 path = "src/main.rs"
 
 [features]
-default = ["audio", "mpris"]
+default = ["audio", "media-controls"]
 # Audio output (rodio). Needs the ALSA development files on Linux; build with
 # --no-default-features for a binary that cannot play sound.
 audio = ["weave/audio"]
-# Desktop media controls over D-Bus (MPRIS): media keys, GNOME/KDE widgets, playerctl.
-mpris = ["weave/mpris"]
+# OS media controls (media keys, now-playing widgets, playerctl). Linux only for now.
+media-controls = ["weave/media-controls"]
 # By default the system SQLite (3.14.0 or newer) is linked. Enable this to compile
 # SQLite from source and link it statically instead (needs a C compiler).
 sqlite-from-source = ["weave/sqlite-from-source"]

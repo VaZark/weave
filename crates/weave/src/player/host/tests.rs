@@ -117,7 +117,7 @@ mod remote {
     use weave_core::{Metadata, RepeatMode, ScannedTrack};
 
     use super::*;
-    use crate::player::mpris::Remote;
+    use crate::player::media::Remote;
 
     fn lib() -> (Library, Rc<Cell<i64>>) {
         let clock = Rc::new(Cell::new(1_000_000));
