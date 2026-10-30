@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# Without this feature, the system SQLite library (3.14.0 or newer) is linked.
+# Off by default: the system SQLite library (3.14.0 or newer) is linked.
 # Libraries leave the choice to the final binary; see apps/cli.
 sqlite-from-source = ["rusqlite/bundled"]
 

@@ -9,9 +9,8 @@ name = "weave-player"
 path = "src/main.rs"
 
 [features]
-# Compile SQLite from source and link it statically (needs a C compiler). Build with
-# --no-default-features to link the system SQLite instead.
-default = ["sqlite-from-source"]
+# By default the system SQLite (3.14.0 or newer) is linked. Enable this to compile
+# SQLite from source and link it statically instead (needs a C compiler).
 sqlite-from-source = ["weave-engine/sqlite-from-source"]
 
 [dependencies]

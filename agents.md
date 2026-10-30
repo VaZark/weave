@@ -31,7 +31,7 @@ Build an open-source, local-first, source-neutral music management engine used b
 
 ## Coding conventions
 
-- Language: Rust for engine, CLI and desktop; use `clap` for CLI parsing and SQLite for storage (bundled by default via the `sqlite-from-source` feature; minimum system SQLite 3.14.0).
+- Language: Rust for engine, CLI and desktop; use `clap` for CLI parsing and SQLite for storage (system library by default, minimum 3.14.0; the opt-in `sqlite-from-source` feature compiles and statically links it).
 - Respect the specs defined in `goals.md`
 - Keep the domain model independent of GPUI, SQL details and backend SDKs.
 - Prefer small explicit types, typed errors and transparent operations over magic configuration.
