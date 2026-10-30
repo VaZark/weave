@@ -1,3 +1,6 @@
+#[cfg(debug_assertions)]
+mod dev;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -8,7 +11,11 @@ use weave_engine::{Library, SmartPlaylist};
 
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter, 5 unsupported.
 #[derive(Parser)]
-#[command(name = "weave", version, about = "Local-first music library with tags and smart playlists")]
+#[command(
+    name = "weave",
+    version,
+    about = "Local-first music library with tags and smart playlists"
+)]
 struct Cli {
     /// Library database path.
     #[arg(long, global = true, env = "WEAVE_DB")]
@@ -34,9 +41,17 @@ enum Cmd {
         page: PageArgs,
     },
     /// Add tags to a track (or the current track). Tracks are addressed by their ID (slug).
-    Add { track_id: Option<String>, #[arg(long = "tag", required = true, value_delimiter = ',')] tags: Vec<String> },
+    Add {
+        track_id: Option<String>,
+        #[arg(long = "tag", required = true, value_delimiter = ',')]
+        tags: Vec<String>,
+    },
     /// Remove tags from a track.
-    Remove { track_id: String, #[arg(long = "tag", required = true, value_delimiter = ',')] tags: Vec<String> },
+    Remove {
+        track_id: String,
+        #[arg(long = "tag", required = true, value_delimiter = ',')]
+        tags: Vec<String>,
+    },
     /// Show a track's tags.
     Tags { track_id: String },
     /// Manage smart playlists.
@@ -55,6 +70,21 @@ enum Cmd {
     Next,
     /// Show the current track (0.a2).
     Now,
+    /// Developer tools (debug builds only).
+    #[cfg(debug_assertions)]
+    #[command(subcommand)]
+    Dev(DevCmd),
+}
+
+#[cfg(debug_assertions)]
+#[derive(Subcommand)]
+enum DevCmd {
+    /// Fill the library with fake tracks, tags and playlists (idempotent; no files are read).
+    Seed {
+        /// Number of tracks to generate.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=dev::MAX_COUNT as i64))]
+        count: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -110,7 +140,11 @@ struct PageArgs {
 
 impl PageArgs {
     fn page(self) -> Page {
-        if self.all { Page::ALL } else { Page::numbered(self.page as usize, self.limit as usize) }
+        if self.all {
+            Page::ALL
+        } else {
+            Page::numbered(self.page as usize, self.limit as usize)
+        }
     }
 }
 
@@ -191,7 +225,9 @@ fn main() -> ExitCode {
                 Failure::Engine(e) => (
                     match e {
                         Error::NotFound(_) => 3,
-                        Error::InvalidFilter(_) | Error::InvalidInput(_) | Error::AlreadyExists(_) => 4,
+                        Error::InvalidFilter(_)
+                        | Error::InvalidInput(_)
+                        | Error::AlreadyExists(_) => 4,
                         _ => 1,
                     },
                     e.to_string(),
@@ -210,11 +246,18 @@ const NOT_YET: &str = "playback is not implemented yet (planned for 0.a2)";
 fn run(cli: Cli) -> Result<(), Failure> {
     // Reject commands that cannot work before touching the database.
     match &cli.command {
-        Cmd::Play { .. } | Cmd::Pause | Cmd::Resume | Cmd::Next | Cmd::Now | Cmd::Playlist(PlaylistCmd::Play { .. }) => {
+        Cmd::Play { .. }
+        | Cmd::Pause
+        | Cmd::Resume
+        | Cmd::Next
+        | Cmd::Now
+        | Cmd::Playlist(PlaylistCmd::Play { .. }) => {
             return Err(Failure::Unsupported(NOT_YET));
         }
         Cmd::Add { track_id: None, .. } => {
-            return Err(Failure::Unsupported("no active playback session; pass a track id (current-track tagging arrives with 0.a2)"));
+            return Err(Failure::Unsupported(
+                "no active playback session; pass a track id (current-track tagging arrives with 0.a2)",
+            ));
         }
         _ => {}
     }
@@ -225,29 +268,48 @@ fn run(cli: Cli) -> Result<(), Failure> {
     match cli.command {
         Cmd::Import { path } => {
             let s = lib.import(&path)?;
-            out(json, &serde_json::json!({ "added": s.added, "skipped": s.skipped }), || {
-                println!("imported {} new, {} already indexed", s.added, s.skipped)
-            })?;
+            out(
+                json,
+                &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
+                || println!("imported {} new, {} already indexed", s.added, s.skipped),
+            )?;
         }
         Cmd::List(p) => print_page(json, p, &lib.search(&FilterSpec::default(), p.page())?)?,
-        Cmd::Search { filter, page } => print_page(json, page, &lib.search(&filter.into(), page.page())?)?,
-        Cmd::Add { track_id: Some(id), tags } => {
+        Cmd::Search { filter, page } => {
+            print_page(json, page, &lib.search(&filter.into(), page.page())?)?
+        }
+        Cmd::Add {
+            track_id: Some(id),
+            tags,
+        } => {
             let n = lib.add_tags(&id, &tags)?;
-            out(json, &serde_json::json!({ "added": n }), || println!("added {n} tag(s)"))?;
+            out(json, &serde_json::json!({ "added": n }), || {
+                println!("added {n} tag(s)")
+            })?;
         }
         Cmd::Remove { track_id, tags } => {
             let n = lib.remove_tags(&track_id, &tags)?;
-            out(json, &serde_json::json!({ "removed": n }), || println!("removed {n} tag(s)"))?;
+            out(json, &serde_json::json!({ "removed": n }), || {
+                println!("removed {n} tag(s)")
+            })?;
         }
         Cmd::Tags { track_id } => {
             let tags = lib.tags(&track_id)?;
             out(json, &tags, || tags.iter().for_each(|t| println!("{t}")))?;
         }
-        Cmd::Playlist(PlaylistCmd::Create { name, description, filter }) => {
+        Cmd::Playlist(PlaylistCmd::Create {
+            name,
+            description,
+            filter,
+        }) => {
             let p = lib.create_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, &p)?;
         }
-        Cmd::Playlist(PlaylistCmd::Update { name, description, filter }) => {
+        Cmd::Playlist(PlaylistCmd::Update {
+            name,
+            description,
+            filter,
+        }) => {
             let p = lib.update_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, &p)?;
         }
@@ -268,15 +330,24 @@ fn run(cli: Cli) -> Result<(), Failure> {
                         describe(&p.filter),
                     ]
                 });
-                print_columns(&["NAME", "DESCRIPTION", "TYPE", "RULESET"], rows.collect(), &[3]);
+                print_columns(
+                    &["NAME", "DESCRIPTION", "TYPE", "RULESET"],
+                    rows.collect(),
+                    &[3],
+                );
             }
         }
         Cmd::Backend(BackendCmd::List) => {
             let bs = lib.backends();
             if json {
-                print_json(&bs.iter().map(|b| serde_json::json!({ "id": b.id, "capabilities": b.capabilities })).collect::<Vec<_>>())?;
+                print_json(
+                    &bs.iter()
+                        .map(|b| serde_json::json!({ "id": b.id, "capabilities": b.capabilities }))
+                        .collect::<Vec<_>>(),
+                )?;
             } else {
-                bs.iter().for_each(|b| println!("{}\t{} capabilities", b.id, b.capabilities.len()));
+                bs.iter()
+                    .for_each(|b| println!("{}\t{} capabilities", b.id, b.capabilities.len()));
             }
         }
         Cmd::Backend(BackendCmd::Show { id }) => {
@@ -292,6 +363,22 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     );
                 }
             }
+        }
+        #[cfg(debug_assertions)]
+        Cmd::Dev(DevCmd::Seed { count }) => {
+            let s = dev::seed(&mut lib, count as usize)?;
+            out(
+                json,
+                &serde_json::json!({
+                    "added": s.added, "skipped": s.skipped, "tag_links_added": s.tagged, "playlists_created": s.playlists,
+                }),
+                || {
+                    println!(
+                        "seeded {} new track(s) ({} already present), {} tag link(s), {} playlist(s)",
+                        s.added, s.skipped, s.tagged, s.playlists
+                    )
+                },
+            )?;
         }
         Cmd::Add { track_id: None, .. }
         | Cmd::Play { .. }
@@ -311,11 +398,20 @@ fn print_json<T: Serialize>(v: &T) -> Result<(), Failure> {
 }
 
 fn out<T: Serialize>(json: bool, v: &T, text: impl FnOnce()) -> Result<(), Failure> {
-    if json { print_json(v) } else { text(); Ok(()) }
+    if json {
+        print_json(v)
+    } else {
+        text();
+        Ok(())
+    }
 }
 
 fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failure> {
-    let (page, per_page) = if args.all { (1, r.total.max(1)) } else { (args.page as usize, args.limit as usize) };
+    let (page, per_page) = if args.all {
+        (1, r.total.max(1))
+    } else {
+        (args.page as usize, args.limit as usize)
+    };
     let pages = r.total.div_ceil(per_page).max(1);
     if json {
         return print_json(&serde_json::json!({
@@ -325,7 +421,11 @@ fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failur
     print_table(&r.tracks);
     // Footer goes to stderr so stdout stays a clean table.
     if !args.all && pages > 1 {
-        let hint = if page < pages { format!("; next: --page {}", page + 1) } else { String::new() };
+        let hint = if page < pages {
+            format!("; next: --page {}", page + 1)
+        } else {
+            String::new()
+        };
         eprintln!("page {page} of {pages} ({} tracks){hint}", r.total);
     } else {
         eprintln!("{} track(s)", r.total);
@@ -347,13 +447,24 @@ fn print_table(tracks: &[Track]) {
                 m.genre.clone().unwrap_or_else(dash),
                 m.year.map_or_else(dash, |y| y.to_string()),
                 m.bpm.map_or_else(dash, |b| format!("{b}")),
-                m.duration_ms.map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)),
-                if t.tags.is_empty() { dash() } else { t.tags.join(",") },
+                m.duration_ms
+                    .map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)),
+                if t.tags.is_empty() {
+                    dash()
+                } else {
+                    t.tags.join(",")
+                },
             ]
         })
         .collect();
     // The ID column is never truncated: it is meant to be copied.
-    print_columns(&["ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"], rows, &[0]);
+    print_columns(
+        &[
+            "ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS",
+        ],
+        rows,
+        &[0],
+    );
 }
 
 /// Left-aligned table with a header row. Columns are capped at 32 characters
@@ -362,7 +473,12 @@ fn print_columns(headers: &[&str], rows: Vec<Vec<String>>, uncapped: &[usize]) {
     const MAX: usize = 32;
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
-            let w = rows.iter().map(|r| r[i].chars().count()).chain([headers[i].len()]).max().unwrap();
+            let w = rows
+                .iter()
+                .map(|r| r[i].chars().count())
+                .chain([headers[i].len()])
+                .max()
+                .unwrap();
             if uncapped.contains(&i) { w } else { w.min(MAX) }
         })
         .collect();
@@ -397,22 +513,47 @@ fn playlist_json(p: &SmartPlaylist) -> serde_json::Value {
 }
 
 fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
-    out(json, &playlist_json(p), || println!("{}\t{}", p.name, describe(&p.filter)))
+    out(json, &playlist_json(p), || {
+        println!("{}\t{}", p.name, describe(&p.filter))
+    })
 }
 
 fn describe(f: &FilterSpec) -> String {
     let mut parts = Vec::new();
-    for (k, v) in [("tag-all", &f.tag_all), ("tag-any", &f.tag_any), ("tag-none", &f.tag_none)] {
+    for (k, v) in [
+        ("tag-all", &f.tag_all),
+        ("tag-any", &f.tag_any),
+        ("tag-none", &f.tag_none),
+    ] {
         if !v.is_empty() {
             parts.push(format!("--{k} {}", v.join(",")));
         }
     }
-    if let Some(v) = f.bpm_min { parts.push(format!("--bpm-min {v}")); }
-    if let Some(v) = f.bpm_max { parts.push(format!("--bpm-max {v}")); }
-    if let Some(v) = f.year_min { parts.push(format!("--year-min {v}")); }
-    if let Some(v) = f.year_max { parts.push(format!("--year-max {v}")); }
-    for (k, v) in [("title", &f.title), ("artist", &f.artist), ("album", &f.album), ("genre", &f.genre)] {
-        if let Some(v) = v { parts.push(format!("--{k} {v:?}")); }
+    if let Some(v) = f.bpm_min {
+        parts.push(format!("--bpm-min {v}"));
     }
-    if parts.is_empty() { "(all tracks)".into() } else { parts.join(" ") }
+    if let Some(v) = f.bpm_max {
+        parts.push(format!("--bpm-max {v}"));
+    }
+    if let Some(v) = f.year_min {
+        parts.push(format!("--year-min {v}"));
+    }
+    if let Some(v) = f.year_max {
+        parts.push(format!("--year-max {v}"));
+    }
+    for (k, v) in [
+        ("title", &f.title),
+        ("artist", &f.artist),
+        ("album", &f.album),
+        ("genre", &f.genre),
+    ] {
+        if let Some(v) = v {
+            parts.push(format!("--{k} {v:?}"));
+        }
+    }
+    if parts.is_empty() {
+        "(all tracks)".into()
+    } else {
+        parts.join(" ")
+    }
 }

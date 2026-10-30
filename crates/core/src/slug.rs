@@ -10,7 +10,9 @@ const MAX_SEGMENT_CHARS: usize = 48;
 /// - apostrophes and backticks are dropped, so `Don't` → `dont`
 /// - `&` becomes `and`
 /// - every other run of characters (spaces, quotes, punctuation, symbols) becomes one `-`
-/// - no leading/trailing `-`; capped at 48 characters
+/// - no leading/trailing `-`
+///
+/// No length cap here: lookups normalize whole slugs with this. `track_slug` caps each part.
 pub fn slugify(input: &str) -> String {
     let mut out = String::new();
     let mut pending_sep = false;
@@ -39,21 +41,31 @@ pub fn slugify(input: &str) -> String {
             _ => pending_sep = true,
         }
     }
-    let truncated: String = out.chars().take(MAX_SEGMENT_CHARS).collect();
-    truncated.trim_end_matches('-').to_string()
+    out
+}
+
+fn segment(input: &str) -> String {
+    let capped: String = slugify(input).chars().take(MAX_SEGMENT_CHARS).collect();
+    capped.trim_end_matches('-').to_string()
 }
 
 /// `artist[-album]-song-source`. Unknown artist → `unknown`, unusable title →
 /// `untitled`; the album is left out when absent. Uniqueness is the caller's job.
 pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str, source: &str) -> String {
-    let or = |s: String, fallback: &str| if s.is_empty() { fallback.to_string() } else { s };
-    let mut parts = vec![or(slugify(artist.unwrap_or("")), "unknown")];
-    let album = slugify(album.unwrap_or(""));
+    let or = |s: String, fallback: &str| {
+        if s.is_empty() {
+            fallback.to_string()
+        } else {
+            s
+        }
+    };
+    let mut parts = vec![or(segment(artist.unwrap_or("")), "unknown")];
+    let album = segment(album.unwrap_or(""));
     if !album.is_empty() {
         parts.push(album);
     }
-    parts.push(or(slugify(title), "untitled"));
-    parts.push(or(slugify(source), "unknown"));
+    parts.push(or(segment(title), "untitled"));
+    parts.push(or(segment(source), "unknown"));
     parts.join("-")
 }
 
@@ -85,18 +97,35 @@ mod tests {
     }
 
     #[test]
-    fn truncates_without_trailing_dash() {
-        let s = slugify(&"ab ".repeat(40));
-        assert!(s.chars().count() <= 48 && !s.ends_with('-'));
+    fn parts_are_capped_but_whole_slugs_are_not_truncated() {
+        let long = "ab ".repeat(40);
+        let slug = track_slug(Some(&long), None, "t", "local");
+        let artist = slug.strip_suffix("-t-local").unwrap();
+        assert!(artist.chars().count() <= 48 && !artist.ends_with('-'));
+        // Re-normalizing a finished slug must be a no-op, however long.
+        assert_eq!(slugify(&slug), slug);
+        let long_slug = format!("{}-song-local", "a".repeat(120));
+        assert_eq!(slugify(&long_slug), long_slug);
     }
 
     #[test]
     fn full_slug_with_fallbacks() {
         assert_eq!(
-            track_slug(Some("Romeo Santos"), Some("Fórmula, Vol. 2"), "Propuesta Indecente", "local"),
+            track_slug(
+                Some("Romeo Santos"),
+                Some("Fórmula, Vol. 2"),
+                "Propuesta Indecente",
+                "local"
+            ),
             "romeo-santos-fórmula-vol-2-propuesta-indecente-local"
         );
-        assert_eq!(track_slug(None, None, "Song", "local"), "unknown-song-local");
-        assert_eq!(track_slug(Some("!!"), Some(""), "???", "Local"), "unknown-untitled-local");
+        assert_eq!(
+            track_slug(None, None, "Song", "local"),
+            "unknown-song-local"
+        );
+        assert_eq!(
+            track_slug(Some("!!"), Some(""), "???", "Local"),
+            "unknown-untitled-local"
+        );
     }
 }

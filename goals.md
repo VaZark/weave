@@ -178,4 +178,4 @@ weave/
 
 Cloud accounts, public tag sharing, file rewriting, a general-purpose query DSL, and mandatory background services.
 
-See [credits.md](credits.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build and run it locally, and [credits.md](credits.md).

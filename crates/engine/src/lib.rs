@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use weave_core::{Backend, CapabilityDescriptor, Error, FilterSpec, Page, Result, SearchResult, Track};
+use weave_core::{
+    Backend, CapabilityDescriptor, Error, FilterSpec, Page, Result, ScannedTrack, SearchResult,
+    Track,
+};
 use weave_local::LocalBackend;
 use weave_storage::Storage;
 
@@ -20,11 +23,17 @@ pub struct Library {
 
 impl Library {
     pub fn open(db_path: &Path) -> Result<Self> {
-        Ok(Self { storage: Storage::open(db_path)?, local: LocalBackend })
+        Ok(Self {
+            storage: Storage::open(db_path)?,
+            local: LocalBackend,
+        })
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Ok(Self { storage: Storage::open_in_memory()?, local: LocalBackend })
+        Ok(Self {
+            storage: Storage::open_in_memory()?,
+            local: LocalBackend,
+        })
     }
 
     // --- library -----------------------------------------------------------
@@ -32,6 +41,16 @@ impl Library {
     pub fn import(&mut self, path: &Path) -> Result<ImportStats> {
         let scanned = self.local.scan(path)?;
         self.storage.import_tracks(self.local.id(), &scanned)
+    }
+
+    /// Index tracks reported by any backend (also used for fixtures and seed data).
+    /// Already-known `(backend_id, external_id)` pairs are skipped.
+    pub fn import_scanned(
+        &mut self,
+        backend_id: &str,
+        tracks: &[ScannedTrack],
+    ) -> Result<ImportStats> {
+        self.storage.import_tracks(backend_id, tracks)
     }
 
     pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
@@ -96,7 +115,8 @@ impl Library {
         if let Some(d) = description {
             p.description = Some(d.trim().to_string()).filter(|d| !d.is_empty());
         }
-        self.storage.update_playlist(&p.id, p.description.as_deref(), &merged)?;
+        self.storage
+            .update_playlist(&p.id, p.description.as_deref(), &merged)?;
         p.filter = merged;
         Ok(p)
     }
@@ -104,7 +124,10 @@ impl Library {
     // --- backends ----------------------------------------------------------
 
     pub fn backends(&self) -> Vec<BackendInfo> {
-        vec![BackendInfo { id: self.local.id().into(), capabilities: self.local.capabilities() }]
+        vec![BackendInfo {
+            id: self.local.id().into(),
+            capabilities: self.local.capabilities(),
+        }]
     }
 
     pub fn backend(&self, id: &str) -> Result<BackendInfo> {
@@ -122,10 +145,20 @@ mod tests {
     #[test]
     fn update_playlist_retains_other_filters() {
         let mut lib = Library::open_in_memory().unwrap();
-        let base = FilterSpec { tag_all: vec!["bachata".into()], ..Default::default() };
+        let base = FilterSpec {
+            tag_all: vec!["bachata".into()],
+            ..Default::default()
+        };
         lib.create_playlist("P", None, base).unwrap();
         let p = lib
-            .update_playlist("p", None, FilterSpec { bpm_min: Some(90.0), ..Default::default() })
+            .update_playlist(
+                "p",
+                None,
+                FilterSpec {
+                    bpm_min: Some(90.0),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(p.filter.tag_all, ["bachata"]);
         assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, Some(90.0));
@@ -134,8 +167,23 @@ mod tests {
     #[test]
     fn update_rejects_invalid_merge() {
         let mut lib = Library::open_in_memory().unwrap();
-        lib.create_playlist("P", None, FilterSpec { bpm_max: Some(100.0), ..Default::default() }).unwrap();
-        let r = lib.update_playlist("P", None, FilterSpec { bpm_min: Some(120.0), ..Default::default() });
+        lib.create_playlist(
+            "P",
+            None,
+            FilterSpec {
+                bpm_max: Some(100.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = lib.update_playlist(
+            "P",
+            None,
+            FilterSpec {
+                bpm_min: Some(120.0),
+                ..Default::default()
+            },
+        );
         assert!(matches!(r, Err(Error::InvalidFilter(_))));
         assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, None);
     }
@@ -143,14 +191,40 @@ mod tests {
     #[test]
     fn update_playlist_description() {
         let mut lib = Library::open_in_memory().unwrap();
-        lib.create_playlist("P", Some("first"), FilterSpec::default()).unwrap();
-        let p = lib.update_playlist("P", None, FilterSpec::default()).unwrap();
+        lib.create_playlist("P", Some("first"), FilterSpec::default())
+            .unwrap();
+        let p = lib
+            .update_playlist("P", None, FilterSpec::default())
+            .unwrap();
         assert_eq!(p.description.as_deref(), Some("first"));
-        let p = lib.update_playlist("P", Some("second"), FilterSpec::default()).unwrap();
+        let p = lib
+            .update_playlist("P", Some("second"), FilterSpec::default())
+            .unwrap();
         assert_eq!(lib.playlist("P").unwrap().description, p.description);
-        let p = lib.update_playlist("P", Some(""), FilterSpec::default()).unwrap();
+        let p = lib
+            .update_playlist("P", Some(""), FilterSpec::default())
+            .unwrap();
         assert_eq!(p.description, None);
         assert_eq!(lib.playlist("P").unwrap().description, None);
+    }
+
+    #[test]
+    fn import_scanned_is_idempotent() {
+        let mut lib = Library::open_in_memory().unwrap();
+        let t = ScannedTrack {
+            external_id: "x".into(),
+            metadata: weave_core::Metadata {
+                title: "T".into(),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            lib.import_scanned("fake", std::slice::from_ref(&t))
+                .unwrap()
+                .added,
+            1
+        );
+        assert_eq!(lib.import_scanned("fake", &[t]).unwrap().skipped, 1);
     }
 
     #[test]

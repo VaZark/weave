@@ -22,7 +22,11 @@ pub struct CapabilityState {
 }
 
 impl CapabilityState {
-    pub const READY: Self = Self { supported: true, authorized: true, available: true };
+    pub const READY: Self = Self {
+        supported: true,
+        authorized: true,
+        available: true,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

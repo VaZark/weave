@@ -40,7 +40,12 @@ impl FilterSpec {
                 true
             });
         }
-        for field in [&mut self.title, &mut self.artist, &mut self.album, &mut self.genre] {
+        for field in [
+            &mut self.title,
+            &mut self.artist,
+            &mut self.album,
+            &mut self.genre,
+        ] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
             }
@@ -106,34 +111,58 @@ mod tests {
 
     #[test]
     fn rejects_inverted_range() {
-        let f = FilterSpec { bpm_min: Some(140.0), bpm_max: Some(90.0), ..Default::default() };
+        let f = FilterSpec {
+            bpm_min: Some(140.0),
+            bpm_max: Some(90.0),
+            ..Default::default()
+        };
         assert!(f.validate().is_err());
     }
 
     #[test]
     fn accepts_equal_bounds() {
-        let f = FilterSpec { bpm_min: Some(90.0), bpm_max: Some(90.0), ..Default::default() };
+        let f = FilterSpec {
+            bpm_min: Some(90.0),
+            bpm_max: Some(90.0),
+            ..Default::default()
+        };
         assert!(f.validate().is_ok());
     }
 
     #[test]
     fn rejects_inverted_year_range() {
-        let f = FilterSpec { year_min: Some(2000), year_max: Some(1990), ..Default::default() };
+        let f = FilterSpec {
+            year_min: Some(2000),
+            year_max: Some(1990),
+            ..Default::default()
+        };
         assert!(f.validate().is_err());
     }
 
     #[test]
     fn rejects_nan_and_negative() {
-        let f = FilterSpec { bpm_min: Some(f64::NAN), ..Default::default() };
+        let f = FilterSpec {
+            bpm_min: Some(f64::NAN),
+            ..Default::default()
+        };
         assert!(f.validate().is_err());
-        let f = FilterSpec { bpm_max: Some(-1.0), ..Default::default() };
+        let f = FilterSpec {
+            bpm_max: Some(-1.0),
+            ..Default::default()
+        };
         assert!(f.validate().is_err());
     }
 
     #[test]
     fn normalized_dedupes_case_insensitively_keeping_first_spelling() {
         let f = FilterSpec {
-            tag_all: vec!["Bachata".into(), " bachata ".into(), "".into(), "ÉTÉ".into(), "été".into()],
+            tag_all: vec![
+                "Bachata".into(),
+                " bachata ".into(),
+                "".into(),
+                "ÉTÉ".into(),
+                "été".into(),
+            ],
             ..Default::default()
         }
         .normalized();
@@ -142,8 +171,15 @@ mod tests {
 
     #[test]
     fn merge_retains_unspecified() {
-        let base = FilterSpec { tag_all: vec!["a".into()], bpm_max: Some(140.0), ..Default::default() };
-        let upd = FilterSpec { bpm_min: Some(90.0), ..Default::default() };
+        let base = FilterSpec {
+            tag_all: vec!["a".into()],
+            bpm_max: Some(140.0),
+            ..Default::default()
+        };
+        let upd = FilterSpec {
+            bpm_min: Some(90.0),
+            ..Default::default()
+        };
         let m = base.merged(upd);
         assert_eq!(m.tag_all, vec!["a"]);
         assert_eq!(m.bpm_min, Some(90.0));

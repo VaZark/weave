@@ -53,11 +53,17 @@ pub struct Page {
 }
 
 impl Page {
-    pub const ALL: Page = Page { offset: 0, limit: None };
+    pub const ALL: Page = Page {
+        offset: 0,
+        limit: None,
+    };
 
     /// 1-based page number; page 0 is treated as 1.
     pub fn numbered(page: usize, per_page: usize) -> Page {
-        Page { offset: page.saturating_sub(1) * per_page, limit: Some(per_page) }
+        Page {
+            offset: page.saturating_sub(1) * per_page,
+            limit: Some(per_page),
+        }
     }
 }
 

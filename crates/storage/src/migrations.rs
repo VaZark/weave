@@ -4,8 +4,7 @@ use weave_core::{Error, Result};
 /// Append-only once 0.1 ships. Until then the schema is squashed into a single
 /// step and pre-0.1 databases are not migrated: delete and re-import.
 /// `PRAGMA user_version` records how many steps have been applied.
-const MIGRATIONS: &[&str] = &[
-    "CREATE TABLE tracks (
+const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          id   TEXT PRIMARY KEY,           -- opaque internal key, never shown to users
          slug TEXT NOT NULL UNIQUE        -- public ID, see weave_core::track_slug
      );
@@ -56,12 +55,13 @@ const MIGRATIONS: &[&str] = &[
          normalized_name TEXT NOT NULL UNIQUE,
          description     TEXT,
          filter_spec     TEXT NOT NULL
-     );",
-];
+     );"];
 
 pub fn run(conn: &mut Connection) -> Result<()> {
     let db = |e: rusqlite::Error| Error::Storage(e.to_string());
-    let applied: usize = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(db)?;
+    let applied: usize = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(db)?;
     if applied > MIGRATIONS.len() {
         return Err(Error::Storage(format!(
             "incompatible database schema v{applied} (this build uses v{}); \

@@ -3,12 +3,13 @@
 use std::path::Path;
 
 use lofty::file::TaggedFileExt;
-use lofty::probe::Probe;
 use lofty::prelude::*;
+use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use walkdir::WalkDir;
 use weave_core::{
-    Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, Error, Metadata, Result, ScannedTrack,
+    Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, Error, Metadata, Result,
+    ScannedTrack,
 };
 
 pub const BACKEND_ID: &str = "local";
@@ -22,8 +23,16 @@ impl Backend for LocalBackend {
     }
 
     fn capabilities(&self) -> Vec<CapabilityDescriptor> {
-        let cap = |group, name: &str, state| CapabilityDescriptor { group, name: name.into(), state };
-        let off = CapabilityState { supported: false, authorized: true, available: false };
+        let cap = |group, name: &str, state| CapabilityDescriptor {
+            group,
+            name: name.into(),
+            state,
+        };
+        let off = CapabilityState {
+            supported: false,
+            authorized: true,
+            available: false,
+        };
         vec![
             cap(CapabilityGroup::Library, "read", CapabilityState::READY),
             cap(CapabilityGroup::Metadata, "read", CapabilityState::READY),
@@ -57,7 +66,9 @@ impl LocalBackend {
 fn is_audio(path: &Path) -> bool {
     // `Probe::open` would fall back to the extension when the content is not
     // recognized; build the probe from a bare reader so only content counts.
-    let Ok(file) = std::fs::File::open(path) else { return false };
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
     Probe::new(std::io::BufReader::new(file))
         .guess_file_type()
         .is_ok_and(|p| p.file_type().is_some())
@@ -69,8 +80,14 @@ fn read_track(path: &Path) -> ScannedTrack {
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned();
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut m = Metadata { title: stem, ..Default::default() };
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut m = Metadata {
+        title: stem,
+        ..Default::default()
+    };
 
     if let Ok(file) = lofty::read_from_path(path) {
         let ms = file.properties().duration().as_millis() as u64;
@@ -98,7 +115,10 @@ fn read_track(path: &Path) -> ScannedTrack {
                 .filter(|b| b.is_finite() && *b > 0.0);
         }
     }
-    ScannedTrack { external_id, metadata: m }
+    ScannedTrack {
+        external_id,
+        metadata: m,
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +145,8 @@ mod tests {
     }
 
     fn temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("weave-local-{}", uuid::Uuid::new_v4().simple()));
+        let dir =
+            std::env::temp_dir().join(format!("weave-local-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         dir
     }
@@ -141,17 +162,27 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
         std::fs::write(dir.join("empty.flac"), b"").unwrap();
 
-        let mut titles: Vec<_> =
-            LocalBackend.scan(&dir).unwrap().into_iter().map(|t| t.metadata.title).collect();
+        let mut titles: Vec<_> = LocalBackend
+            .scan(&dir)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.metadata.title)
+            .collect();
         titles.sort();
         assert_eq!(titles, ["Song One", "mislabeled", "no_extension"]);
         assert_eq!(std::fs::read(dir.join("sub/Song One.wav")).unwrap(), wav);
-        assert_eq!(std::fs::read(dir.join("fake.mp3")).unwrap(), b"not really audio");
+        assert_eq!(
+            std::fs::read(dir.join("fake.mp3")).unwrap(),
+            b"not really audio"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn missing_path_is_not_found() {
-        assert!(matches!(LocalBackend.scan(Path::new("/nonexistent/weave")), Err(Error::NotFound(_))));
+        assert!(matches!(
+            LocalBackend.scan(Path::new("/nonexistent/weave")),
+            Err(Error::NotFound(_))
+        ));
     }
 }

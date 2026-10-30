@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
 use weave_core::{
-    Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId, normalize_tag,
-    slugify, track_slug,
+    Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId,
+    normalize_tag, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -49,14 +49,20 @@ impl Storage {
     }
 
     fn init(mut conn: Connection) -> Result<Self> {
-        conn.pragma_update(None, "foreign_keys", true).map_err(db_err)?;
-        conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(db_err)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(db_err)?;
         migrations::run(&mut conn)?;
         Ok(Self { conn })
     }
 
     /// Insert tracks not yet known by `(backend_id, external_id)`; all-or-nothing.
-    pub fn import_tracks(&mut self, backend_id: &str, tracks: &[ScannedTrack]) -> Result<ImportStats> {
+    pub fn import_tracks(
+        &mut self,
+        backend_id: &str,
+        tracks: &[ScannedTrack],
+    ) -> Result<ImportStats> {
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut stats = ImportStats::default();
         for t in tracks {
@@ -77,9 +83,18 @@ impl Storage {
             let m = &t.metadata;
             let slug = unique_slug(
                 &tx,
-                &track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title, backend_id),
+                &track_slug(
+                    m.artist.as_deref(),
+                    m.album.as_deref(),
+                    &m.title,
+                    backend_id,
+                ),
             )?;
-            tx.execute("INSERT INTO tracks (id, slug) VALUES (?1, ?2)", [&id, &slug]).map_err(db_err)?;
+            tx.execute(
+                "INSERT INTO tracks (id, slug) VALUES (?1, ?2)",
+                [&id, &slug],
+            )
+            .map_err(db_err)?;
             insert_metadata(&tx, &id, &t.metadata)?;
             tx.execute(
                 "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
@@ -116,13 +131,19 @@ impl Storage {
             args.push((page.offset as i64).into());
         }
         let tracks = self.fetch(&sql, args)?;
-        Ok(SearchResult { total: total as usize, tracks })
+        Ok(SearchResult {
+            total: total as usize,
+            tracks,
+        })
     }
 
     /// Resolve a full ID or unique prefix to a track.
     pub fn track(&self, id: &str) -> Result<Track> {
         let id = self.resolve_id(id)?;
-        let sql = format!("SELECT {} FROM track_metadata m WHERE m.track_id = ?", query::COLUMNS);
+        let sql = format!(
+            "SELECT {} FROM track_metadata m WHERE m.track_id = ?",
+            query::COLUMNS
+        );
         self.fetch(&sql, vec![id.into()])?
             .pop()
             .ok_or_else(|| Error::NotFound("track".into()))
@@ -138,7 +159,11 @@ impl Storage {
         }
         let by_slug: Option<String> = self
             .conn
-            .query_row("SELECT id FROM tracks WHERE slug = ?1", [slugify(key)], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM tracks WHERE slug = ?1",
+                [slugify(key)],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         if let Some(id) = by_slug {
@@ -156,7 +181,9 @@ impl Storage {
         match ids.len() {
             0 => Err(Error::NotFound(format!("track {key}"))),
             1 => Ok(ids.into_iter().next().unwrap()),
-            _ => Err(Error::InvalidInput(format!("track id prefix \"{key}\" is ambiguous"))),
+            _ => Err(Error::InvalidInput(format!(
+                "track id prefix \"{key}\" is ambiguous"
+            ))),
         }
     }
 
@@ -167,23 +194,26 @@ impl Storage {
             .query_map(rusqlite::params_from_iter(args), |r| {
                 // Column 0 is the internal key; the public ID is the slug (column 12).
                 let internal: String = r.get(0)?;
-                Ok((internal, Track {
-                    id: TrackId(r.get(12)?),
-                    metadata: Metadata {
-                        title: r.get(1)?,
-                        artist: r.get(2)?,
-                        album: r.get(3)?,
-                        album_artist: r.get(4)?,
-                        genre: r.get(5)?,
-                        composer: r.get(6)?,
-                        year: r.get(7)?,
-                        track_number: r.get(8)?,
-                        disc_number: r.get(9)?,
-                        duration_ms: r.get(10)?,
-                        bpm: r.get(11)?,
+                Ok((
+                    internal,
+                    Track {
+                        id: TrackId(r.get(12)?),
+                        metadata: Metadata {
+                            title: r.get(1)?,
+                            artist: r.get(2)?,
+                            album: r.get(3)?,
+                            album_artist: r.get(4)?,
+                            genre: r.get(5)?,
+                            composer: r.get(6)?,
+                            year: r.get(7)?,
+                            track_number: r.get(8)?,
+                            disc_number: r.get(9)?,
+                            duration_ms: r.get(10)?,
+                            bpm: r.get(11)?,
+                        },
+                        tags: Vec::new(),
                     },
-                    tags: Vec::new(),
-                }))
+                ))
             })
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
@@ -202,9 +232,10 @@ impl Storage {
             .map_err(db_err)?;
         let mut by_track: HashMap<String, Vec<String>> = HashMap::new();
         let tag_rows = stmt
-            .query_map(rusqlite::params_from_iter(rows.iter().map(|(internal, _)| internal)), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+            .query_map(
+                rusqlite::params_from_iter(rows.iter().map(|(internal, _)| internal)),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
             .map_err(db_err)?;
         for row in tag_rows {
             let (id, name) = row.map_err(db_err)?;
@@ -308,9 +339,20 @@ impl Storage {
         match self.conn.execute(
             "INSERT INTO smart_playlists (id, name, normalized_name, description, filter_spec)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, name, normalize_tag(name), description, spec_json(&filter)?],
+            params![
+                id,
+                name,
+                normalize_tag(name),
+                description,
+                spec_json(&filter)?
+            ],
         ) {
-            Ok(_) => Ok(SmartPlaylist { id, name: name.into(), description: description.map(Into::into), filter }),
+            Ok(_) => Ok(SmartPlaylist {
+                id,
+                name: name.into(),
+                description: description.map(Into::into),
+                filter,
+            }),
             Err(rusqlite::Error::SqliteFailure(e, _))
                 if e.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -341,7 +383,12 @@ impl Storage {
         rows.map(|r| r.map_err(db_err)?).collect()
     }
 
-    pub fn update_playlist(&mut self, id: &str, description: Option<&str>, filter: &FilterSpec) -> Result<()> {
+    pub fn update_playlist(
+        &mut self,
+        id: &str,
+        description: Option<&str>,
+        filter: &FilterSpec,
+    ) -> Result<()> {
         filter.validate()?;
         self.conn
             .execute(
@@ -410,8 +457,12 @@ fn ensure_tag(tx: &Transaction, display: &str, norm: &str) -> Result<i64> {
         params![display, norm],
     )
     .map_err(db_err)?;
-    tx.query_row("SELECT id FROM tags WHERE normalized_name = ?1", [norm], |r| r.get(0))
-        .map_err(db_err)
+    tx.query_row(
+        "SELECT id FROM tags WHERE normalized_name = ?1",
+        [norm],
+        |r| r.get(0),
+    )
+    .map_err(db_err)
 }
 
 fn spec_json(f: &FilterSpec) -> Result<String> {

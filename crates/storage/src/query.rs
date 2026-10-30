@@ -41,7 +41,10 @@ pub fn from_where(f: &FilterSpec) -> (String, Vec<Value>) {
         args.extend(tag_keys(&f.tag_any));
     }
     if !f.tag_none.is_empty() {
-        sql += &format!(" AND NOT EXISTS ({TAGGED} ({}))", placeholders(f.tag_none.len()));
+        sql += &format!(
+            " AND NOT EXISTS ({TAGGED} ({}))",
+            placeholders(f.tag_none.len())
+        );
         args.extend(tag_keys(&f.tag_none));
     }
     // NULL compares as NULL, so unknown BPM/year never matches a bound.
