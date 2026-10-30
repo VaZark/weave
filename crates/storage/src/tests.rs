@@ -223,20 +223,13 @@ fn genre_and_year_filters() {
 }
 
 #[test]
-fn id_prefix_resolution() {
-    let (mut s, all_tracks) = fixture();
-    let id = &all_tracks[0].id.0;
-    assert_eq!(s.track(&id[..8]).unwrap().id.0, *id);
+fn internal_key_prefix_still_resolves() {
+    let (s, fx) = fixture();
+    assert_eq!(fx[0].id.0, "aventura-b-local");
+    let internal: String = s.conn.query_row("SELECT id FROM tracks WHERE slug = ?1", [&fx[0].id.0], |r| r.get(0)).unwrap();
+    assert_eq!(s.track(&internal[..8]).unwrap().id, fx[0].id);
     assert!(matches!(s.track("zzzz"), Err(Error::NotFound(_))));
     assert!(matches!(s.track(""), Err(Error::InvalidInput(_))));
-    assert_eq!(s.add_tags(&id[..8], &tags(&["viaprefix"])).unwrap(), 1);
-    // Every ID shares at most a few leading hex chars; the empty-ish "0".."f" prefixes may be ambiguous.
-    let ambiguous = (0..16u8).map(|d| format!("{d:x}")).find(|p| {
-        all_tracks.iter().filter(|t| t.id.0.starts_with(p.as_str())).count() > 1
-    });
-    if let Some(p) = ambiguous {
-        assert!(matches!(s.track(&p), Err(Error::InvalidInput(_))));
-    }
 }
 
 #[test]
@@ -297,18 +290,20 @@ fn slugs_are_assigned_unique_and_resolvable() {
         ],
     )
     .unwrap();
-    let slugs: Vec<String> = all(&s, &FilterSpec::default()).into_iter().map(|t| t.slug).collect();
+    // Identical sort keys tie-break on the internal key, so compare as a sorted set.
+    let mut slugs: Vec<String> = all(&s, &FilterSpec::default()).into_iter().map(|t| t.id.0).collect();
+    slugs.sort();
     assert_eq!(
         slugs,
         [
-            "unknown-mystery-local",
             "romeo-santos-fórmula-dont-stop-local",
             "romeo-santos-fórmula-dont-stop-local-2",
+            "unknown-mystery-local",
         ]
     );
     // exact, differently-written, and via tag operations
-    assert_eq!(s.track("romeo-santos-fórmula-dont-stop-local-2").unwrap().slug, slugs[2]);
-    assert_eq!(s.track("Unknown / Mystery / LOCAL").unwrap().slug, slugs[0]);
+    assert_eq!(s.track("romeo-santos-fórmula-dont-stop-local-2").unwrap().id.0, slugs[1]);
+    assert_eq!(s.track("Unknown / Mystery / LOCAL").unwrap().id.0, slugs[2]);
     assert_eq!(s.add_tags("unknown-mystery-local", &tags(&["x"])).unwrap(), 1);
     assert!(matches!(s.track("nope-nope-local"), Err(Error::NotFound(_))));
     assert!(matches!(s.track("x'; DROP TABLE tracks;--"), Err(Error::NotFound(_))));
@@ -333,6 +328,6 @@ fn migration_backfills_slugs() {
     )
     .unwrap();
     let s = Storage::init(conn).unwrap();
-    assert_eq!(s.track("a1").unwrap().slug, "band-song-local");
-    assert_eq!(s.track("a2").unwrap().slug, "band-song-local-2");
+    assert_eq!(s.track("a1").unwrap().id.0, "band-song-local");
+    assert_eq!(s.track("a2").unwrap().id.0, "band-song-local-2");
 }

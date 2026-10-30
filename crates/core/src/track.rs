@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Weave's own track identity. Never a path or a service ID.
+/// Weave's own track identity: a readable slug assigned at import and never
+/// changed afterwards. Never a path or a service ID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TrackId(pub String);
@@ -29,9 +30,8 @@ pub struct Metadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
+    /// The slug, e.g. `romeo-santos-propuesta-indecente-local`.
     pub id: TrackId,
-    /// Stable readable alternative ID, e.g. `romeo-santos-propuesta-indecente-local`.
-    pub slug: String,
     #[serde(flatten)]
     pub metadata: Metadata,
     /// Custom tags, in display spelling.

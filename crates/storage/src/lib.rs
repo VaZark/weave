@@ -127,8 +127,9 @@ impl Storage {
             .ok_or_else(|| Error::NotFound("track".into()))
     }
 
-    /// Accepts a full ID, a unique ID prefix, or a slug (normalized with `slugify`,
+    /// Accepts a slug (normalized, the public ID), or an internal key or unique prefix of one ( with `slugify`,
     /// so `Romeo Santos-Song-local` finds `romeo-santos-song-local`).
+    /// Returns the internal key.
     fn resolve_id(&self, key: &str) -> Result<String> {
         let key = key.trim();
         if key.is_empty() {
@@ -161,11 +162,12 @@ impl Storage {
     /// Run a `COLUMNS` query and attach tags with one extra query for the whole page.
     fn fetch(&self, sql: &str, args: Vec<rusqlite::types::Value>) -> Result<Vec<Track>> {
         let mut stmt = self.conn.prepare(sql).map_err(db_err)?;
-        let mut tracks: Vec<Track> = stmt
+        let mut rows: Vec<(String, Track)> = stmt
             .query_map(rusqlite::params_from_iter(args), |r| {
-                Ok(Track {
-                    id: TrackId(r.get(0)?),
-                    slug: r.get(12)?,
+                // Column 0 is the internal key; the public ID is the slug (column 12).
+                let internal: String = r.get(0)?;
+                Ok((internal, Track {
+                    id: TrackId(r.get(12)?),
                     metadata: Metadata {
                         title: r.get(1)?,
                         artist: r.get(2)?,
@@ -180,16 +182,16 @@ impl Storage {
                         bpm: r.get(11)?,
                     },
                     tags: Vec::new(),
-                })
+                }))
             })
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)?;
-        if tracks.is_empty() {
-            return Ok(tracks);
+        if rows.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let marks = vec!["?"; tracks.len()].join(",");
+        let marks = vec!["?"; rows.len()].join(",");
         let mut stmt = self
             .conn
             .prepare(&format!(
@@ -198,19 +200,22 @@ impl Storage {
             ))
             .map_err(db_err)?;
         let mut by_track: HashMap<String, Vec<String>> = HashMap::new();
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(tracks.iter().map(|t| &t.id.0)), |r| {
+        let tag_rows = stmt
+            .query_map(rusqlite::params_from_iter(rows.iter().map(|(internal, _)| internal)), |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })
             .map_err(db_err)?;
-        for row in rows {
+        for row in tag_rows {
             let (id, name) = row.map_err(db_err)?;
             by_track.entry(id).or_default().push(name);
         }
-        for t in &mut tracks {
-            t.tags = by_track.remove(&t.id.0).unwrap_or_default();
-        }
-        Ok(tracks)
+        Ok(rows
+            .drain(..)
+            .map(|(internal, mut t)| {
+                t.tags = by_track.remove(&internal).unwrap_or_default();
+                t
+            })
+            .collect())
     }
 
     /// External reference of a track's source for `backend_id`.

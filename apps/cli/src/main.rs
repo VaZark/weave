@@ -33,7 +33,7 @@ enum Cmd {
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Add tags to a track (or the current track). Tracks are addressed by ID, unique ID prefix or slug.
+    /// Add tags to a track (or the current track). Tracks are addressed by their ID (slug).
     Add { track_id: Option<String>, #[arg(long = "tag", required = true, value_delimiter = ',')] tags: Vec<String> },
     /// Remove tags from a track.
     Remove { track_id: String, #[arg(long = "tag", required = true, value_delimiter = ',')] tags: Vec<String> },
@@ -312,15 +312,14 @@ fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failur
 }
 
 fn print_table(tracks: &[Track]) {
-    const HEADERS: [&str; 10] = ["ID", "SLUG", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"];
+    const HEADERS: [&str; 9] = ["ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"];
     let dash = || "-".to_string();
-    let rows: Vec<[String; 10]> = tracks
+    let rows: Vec<[String; 9]> = tracks
         .iter()
         .map(|t| {
             let m = &t.metadata;
             [
-                t.id.0.chars().take(8).collect(),
-                t.slug.clone(),
+                t.id.0.clone(),
                 m.title.clone(),
                 m.artist.clone().unwrap_or_else(dash),
                 m.album.clone().unwrap_or_else(dash),
@@ -334,12 +333,12 @@ fn print_table(tracks: &[Track]) {
         .collect();
 
     const MAX: usize = 32;
-    // The slug column is never truncated: it is meant to be copied.
+    // The ID column is never truncated: it is meant to be copied.
     let width = |i: usize| {
         let w = rows.iter().map(|r| r[i].chars().count()).chain([HEADERS[i].len()]).max().unwrap();
-        if i == 1 { w } else { w.min(MAX) }
+        if i == 0 { w } else { w.min(MAX) }
     };
-    let widths: Vec<usize> = (0..10).map(width).collect();
+    let widths: Vec<usize> = (0..9).map(width).collect();
     let line = |cells: &[&str]| {
         let parts: Vec<String> = cells
             .iter()
