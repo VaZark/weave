@@ -23,6 +23,9 @@ struct Cli {
     /// Emit structured JSON.
     #[arg(long, global = true)]
     json: bool,
+    /// Add an ID column (the slug used to address tracks and playlists) to tables.
+    #[arg(long, global = true)]
+    show_ids: bool,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -263,6 +266,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 
     let json = cli.json;
+    let show_ids = cli.show_ids;
     let mut lib = Library::open(&cli.db.unwrap_or_else(default_db))?;
 
     match cli.command {
@@ -274,10 +278,18 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 || println!("imported {} new, {} already indexed", s.added, s.skipped),
             )?;
         }
-        Cmd::List(p) => print_page(json, p, &lib.search(&FilterSpec::default(), p.page())?)?,
-        Cmd::Search { filter, page } => {
-            print_page(json, page, &lib.search(&filter.into(), page.page())?)?
-        }
+        Cmd::List(p) => print_page(
+            json,
+            show_ids,
+            p,
+            &lib.search(&FilterSpec::default(), p.page())?,
+        )?,
+        Cmd::Search { filter, page } => print_page(
+            json,
+            show_ids,
+            page,
+            &lib.search(&filter.into(), page.page())?,
+        )?,
         Cmd::Add {
             track_id: Some(id),
             tags,
@@ -303,7 +315,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             filter,
         }) => {
             let p = lib.create_playlist(&name, description.as_deref(), filter.into())?;
-            print_playlist(json, &p)?;
+            print_playlist(json, show_ids, &p)?;
         }
         Cmd::Playlist(PlaylistCmd::Update {
             name,
@@ -311,11 +323,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             filter,
         }) => {
             let p = lib.update_playlist(&name, description.as_deref(), filter.into())?;
-            print_playlist(json, &p)?;
+            print_playlist(json, show_ids, &p)?;
         }
         Cmd::Playlist(PlaylistCmd::Show { name, page }) => {
             let (_, result) = lib.playlist_tracks(&name, page.page())?;
-            print_page(json, page, &result)?;
+            print_page(json, show_ids, page, &result)?;
         }
         Cmd::Playlist(PlaylistCmd::List) => {
             let ps = lib.playlists()?;
@@ -324,17 +336,18 @@ fn run(cli: Cli) -> Result<(), Failure> {
             } else {
                 let rows = ps.iter().map(|p| {
                     vec![
-                        p.id.clone(),
                         p.name.clone(),
                         p.description.clone().unwrap_or_else(|| "-".into()),
                         PLAYLIST_TYPE.into(),
                         describe(&p.filter),
                     ]
                 });
+                let ids: Vec<String> = ps.iter().map(|p| p.id.clone()).collect();
                 print_columns(
-                    &["ID", "NAME", "DESCRIPTION", "TYPE", "RULESET"],
+                    &["NAME", "DESCRIPTION", "TYPE", "RULESET"],
                     rows.collect(),
-                    &[0, 4],
+                    &[3],
+                    show_ids.then_some(&ids[..]),
                 );
             }
         }
@@ -407,7 +420,7 @@ fn out<T: Serialize>(json: bool, v: &T, text: impl FnOnce()) -> Result<(), Failu
     }
 }
 
-fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failure> {
+fn print_page(json: bool, show_ids: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failure> {
     let (page, per_page) = if args.all {
         (1, r.total.max(1))
     } else {
@@ -419,7 +432,7 @@ fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failur
             "total": r.total, "page": page, "pages": pages, "per_page": per_page, "tracks": r.tracks,
         }));
     }
-    print_table(&r.tracks);
+    print_table(&r.tracks, show_ids);
     // Footer goes to stderr so stdout stays a clean table.
     if !args.all && pages > 1 {
         let hint = if page < pages {
@@ -434,14 +447,13 @@ fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failur
     Ok(())
 }
 
-fn print_table(tracks: &[Track]) {
+fn print_table(tracks: &[Track], show_ids: bool) {
     let dash = || "-".to_string();
     let rows = tracks
         .iter()
         .map(|t| {
             let m = &t.metadata;
             vec![
-                t.id.0.clone(),
                 m.title.clone(),
                 m.artist.clone().unwrap_or_else(dash),
                 m.album.clone().unwrap_or_else(dash),
@@ -458,20 +470,38 @@ fn print_table(tracks: &[Track]) {
             ]
         })
         .collect();
-    // The ID column is never truncated: it is meant to be copied.
+    let ids: Vec<String> = tracks.iter().map(|t| t.id.0.clone()).collect();
     print_columns(
         &[
-            "ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS",
+            "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS",
         ],
         rows,
-        &[0],
+        &[],
+        show_ids.then_some(&ids[..]),
     );
 }
 
 /// Left-aligned table with a header row. Columns are capped at 32 characters
-/// (ellipsized) except those listed in `uncapped`.
-fn print_columns(headers: &[&str], rows: Vec<Vec<String>>, uncapped: &[usize]) {
+/// (ellipsized) except those listed in `uncapped`. `ids`, when given, becomes a
+/// leading `ID` column that is never truncated, since it is meant to be copied.
+fn print_columns(
+    headers: &[&str],
+    mut rows: Vec<Vec<String>>,
+    uncapped: &[usize],
+    ids: Option<&[String]>,
+) {
     const MAX: usize = 32;
+    let mut headers: Vec<&str> = headers.to_vec();
+    let mut uncapped: Vec<usize> = uncapped.to_vec();
+    if let Some(ids) = ids {
+        headers.insert(0, "ID");
+        for (row, id) in rows.iter_mut().zip(ids) {
+            row.insert(0, id.clone());
+        }
+        uncapped = std::iter::once(0)
+            .chain(uncapped.iter().map(|i| i + 1))
+            .collect();
+    }
     let widths: Vec<usize> = (0..headers.len())
         .map(|i| {
             let w = rows
@@ -498,7 +528,7 @@ fn print_columns(headers: &[&str], rows: Vec<Vec<String>>, uncapped: &[usize]) {
             .collect();
         println!("{}", parts.join("  ").trim_end());
     };
-    line(headers.to_vec());
+    line(headers.clone());
     for r in &rows {
         line(r.iter().map(String::as_str).collect());
     }
@@ -513,9 +543,14 @@ fn playlist_json(p: &SmartPlaylist) -> serde_json::Value {
     })
 }
 
-fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
+fn print_playlist(json: bool, show_ids: bool, p: &SmartPlaylist) -> Result<(), Failure> {
     out(json, &playlist_json(p), || {
-        println!("{}\t{}\t{}", p.id, p.name, describe(&p.filter))
+        let id = if show_ids {
+            format!("{}\t", p.id)
+        } else {
+            String::new()
+        };
+        println!("{id}{}\t{}", p.name, describe(&p.filter))
     })
 }
 

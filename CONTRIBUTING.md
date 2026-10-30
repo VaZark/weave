@@ -64,7 +64,7 @@ It is idempotent: running it again adds nothing that already exists. Seeded trac
 (their IDs end in `-seed`) and have no files, so they are not playable. Then try:
 
 ```bash
-weave-player list
+weave-player list --show-ids    # --show-ids adds the slug ID column
 weave-player search --tag-all bachata,90s --bpm-min 90
 weave-player playlist list
 weave-player playlist show "Bachata 90s"

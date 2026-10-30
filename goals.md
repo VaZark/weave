@@ -15,7 +15,7 @@
 | Feature               | CLI                                                                                     | Behavior                                                                                                                           |
 | --------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Import music          | `weave-player import ~/Music`                                                           | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports.                        |
-| List tracks           | `weave-player list [--page N --limit N \| --all]`                                       | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. A track's ID is its readable slug. |
+| List tracks           | `weave-player list [--page N --limit N \| --all]`                                       | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. Add `--show-ids` for the slug ID column. |
 | Play                  | `weave-player play <track-id>`                                                          | Play an available local source.                                                                                                    |
 | Playback controls     | `weave-player pause`, `weave-player resume`, `weave-player next`                        | Control the active playback session.                                                                                               |
 | Current track         | `weave-player now`                                                                      | Show playback state and track details.                                                                                             |
@@ -33,9 +33,15 @@
 | Show playlist         | `weave-player playlist show "Bachata 90s"`                                              | Evaluate its saved filters.                                                                                                        |
 | Update playlist       | `weave-player playlist update "Bachata 90s" --bpm-min 90`                               | Change specified filters; retain others.                                                                                           |
 | Play playlist         | `weave-player playlist play "Bachata 90s"`                                              | Queue current matching tracks.                                                                                                     |
-| List playlists        | `weave-player playlist list`                                                            | Table of ID (slug), NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                       |
+| List playlists        | `weave-player playlist list`                                                            | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET.                                       |
 | List backends         | `weave-player backend list`                                                             | Show registered backends and capabilities.                                                                                         |
 | Inspect backend       | `weave-player backend show local`                                                       | Show capabilities and availability.                                                                                                |
+
+### Output conventions
+
+- Tables omit the long slug IDs by default; the global `--show-ids` flag adds a leading `ID` column to every table
+  (`list`, `search`, `playlist list`, `playlist show`) and to `playlist create|update` output.
+- `--json` always includes IDs.
 
 ### Filter conventions
 
