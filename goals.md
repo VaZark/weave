@@ -59,26 +59,13 @@
 
 ### Filter conventions
 
-- `--tag-all a,b`: all listed tags must match.
-- `--tag-any a,b`: at least one must match.
-- `--tag-none a,b`: none may match.
-- `--bpm-min N` / `--bpm-max N`, `--year-min N` / `--year-max N`, `--rating-min N` / `--rating-max N`: inclusive ranges.
-- `--favorite` / `--not-favorite`: restrict on the favorite flag.
-- `--sort FIELD [--desc]` and `--limit N` are part of the same specification, so saved playlists keep them.
-- Different filter groups combine implicitly with AND; omitted groups do not restrict results.
-- Reject invalid range bounds and use parameterized SQL
-- Tags match case-insensitively, preserving display spelling.
-- Filters use structured parameters, not a user-facing expression language.
-- CLI and GPUI use the same serializable filter specification.
-
-CLI Example:
-
-```bash
-weave-player search --tag-all bachata,sensual \
-  --tag-any romantic,melodic \
-  --tag-none live,remix \
-  --bpm-min 90 --bpm-max 140
-```
+- Filter groups combine with AND, and empty groups do not restrict results.
+- Tag lists ignore blank entries and duplicates and match case-insensitively while keeping their display spelling.
+- Ranges are inclusive, inverted or out-of-domain bounds are rejected, and tracks with an unknown value never match a bound.
+- Text fields match as case-insensitive substrings.
+- Results follow the requested sort (default artist, album, title) with unknown values last, and a limit applies before paging.
+- Updating a saved filter changes only what is specified.
+- Filters are typed parameters bound to SQL, not an expression language, and are shared by the CLI, the GUI and saved playlists.
 
 ## Technical design
 
