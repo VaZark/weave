@@ -14,8 +14,8 @@ The GPUI desktop app is not built yet (planned for 0.a3); only the CLI and the e
 
 ## SQLite
 
-By default SQLite is compiled from source and statically linked (cargo feature `bundled-sqlite`, on by default), so
-nothing needs to be installed and every build uses the same version.
+By default SQLite is compiled from source and statically linked (cargo feature `sqlite-from-source`, enabled by
+`weave-player`'s default features), so nothing needs to be installed and every build uses the same version.
 
 To link your system SQLite instead (no SQLite compile; needs the SQLite shared library and, for some distros, its
 `-dev`/headers package), disable the default features:
@@ -24,6 +24,10 @@ To link your system SQLite instead (no SQLite compile; needs the SQLite shared l
 cargo build -p weave-player --no-default-features
 cargo test --workspace --no-default-features
 ```
+
+The library crates (`weave-storage`, `weave-engine`) do not choose for you: building one on its own, such as
+`cargo test -p weave-storage`, links the system SQLite. Add `--features sqlite-from-source` there, or just run
+`cargo test --workspace`.
 
 **Minimum SQLite: 3.14.0** (the floor of the `rusqlite` bindings; Weave's own SQL needs nothing newer). The check
 runs at startup, so an older system library fails with a clear error. Only the bundled version (3.50) and one recent

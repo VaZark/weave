@@ -9,8 +9,10 @@ name = "weave-player"
 path = "src/main.rs"
 
 [features]
-default = ["bundled-sqlite"]
-bundled-sqlite = ["weave-engine/bundled-sqlite"]
+# Compile SQLite from source and link it statically (needs a C compiler). Build with
+# --no-default-features to link the system SQLite instead.
+default = ["sqlite-from-source"]
+sqlite-from-source = ["weave-engine/sqlite-from-source"]
 
 [dependencies]
 weave-core.workspace = true

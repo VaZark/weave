@@ -5,10 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# Compile SQLite from source (needs a C compiler). Disable with --no-default-features
-# to link the system SQLite instead (3.14.0 or newer).
-default = ["bundled-sqlite"]
-bundled-sqlite = ["rusqlite/bundled"]
+# Without this feature, the system SQLite library (3.14.0 or newer) is linked.
+# Libraries leave the choice to the final binary; see apps/cli.
+sqlite-from-source = ["rusqlite/bundled"]
 
 [dependencies]
 weave-core.workspace = true
