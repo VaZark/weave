@@ -60,7 +60,14 @@ enum Cmd {
 #[derive(Subcommand)]
 enum PlaylistCmd {
     /// Save a dynamic playlist: filters, not membership.
-    Create { name: String, #[command(flatten)] filter: FilterArgs },
+    Create {
+        name: String,
+        /// What the playlist is for.
+        #[arg(long)]
+        description: Option<String>,
+        #[command(flatten)]
+        filter: FilterArgs,
+    },
     /// Evaluate a playlist's saved filters.
     Show {
         name: String,
@@ -68,7 +75,14 @@ enum PlaylistCmd {
         page: PageArgs,
     },
     /// Change the specified filters; retain the others.
-    Update { name: String, #[command(flatten)] filter: FilterArgs },
+    Update {
+        name: String,
+        /// New description; pass "" to clear it.
+        #[arg(long)]
+        description: Option<String>,
+        #[command(flatten)]
+        filter: FilterArgs,
+    },
     /// Queue the current matches (0.a2).
     Play { name: String },
     /// List saved playlists.
@@ -229,12 +243,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let tags = lib.tags(&track_id)?;
             out(json, &tags, || tags.iter().for_each(|t| println!("{t}")))?;
         }
-        Cmd::Playlist(PlaylistCmd::Create { name, filter }) => {
-            let p = lib.create_playlist(&name, filter.into())?;
+        Cmd::Playlist(PlaylistCmd::Create { name, description, filter }) => {
+            let p = lib.create_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, &p)?;
         }
-        Cmd::Playlist(PlaylistCmd::Update { name, filter }) => {
-            let p = lib.update_playlist(&name, filter.into())?;
+        Cmd::Playlist(PlaylistCmd::Update { name, description, filter }) => {
+            let p = lib.update_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, &p)?;
         }
         Cmd::Playlist(PlaylistCmd::Show { name, page }) => {
@@ -244,9 +258,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Playlist(PlaylistCmd::List) => {
             let ps = lib.playlists()?;
             if json {
-                print_json(&ps.iter().map(|p| serde_json::json!({ "name": p.name, "filter": p.filter })).collect::<Vec<_>>())?;
+                print_json(&ps.iter().map(playlist_json).collect::<Vec<_>>())?;
             } else {
-                ps.iter().for_each(|p| println!("{}\t{}", p.name, describe(&p.filter)));
+                let rows = ps.iter().map(|p| {
+                    vec![
+                        p.name.clone(),
+                        p.description.clone().unwrap_or_else(|| "-".into()),
+                        PLAYLIST_TYPE.into(),
+                        describe(&p.filter),
+                    ]
+                });
+                print_columns(&["NAME", "DESCRIPTION", "TYPE", "RULESET"], rows.collect(), &[3]);
             }
         }
         Cmd::Backend(BackendCmd::List) => {
@@ -312,13 +334,12 @@ fn print_page(json: bool, args: PageArgs, r: &SearchResult) -> Result<(), Failur
 }
 
 fn print_table(tracks: &[Track]) {
-    const HEADERS: [&str; 9] = ["ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"];
     let dash = || "-".to_string();
-    let rows: Vec<[String; 9]> = tracks
+    let rows = tracks
         .iter()
         .map(|t| {
             let m = &t.metadata;
-            [
+            vec![
                 t.id.0.clone(),
                 m.title.clone(),
                 m.artist.clone().unwrap_or_else(dash),
@@ -331,15 +352,21 @@ fn print_table(tracks: &[Track]) {
             ]
         })
         .collect();
-
-    const MAX: usize = 32;
     // The ID column is never truncated: it is meant to be copied.
-    let width = |i: usize| {
-        let w = rows.iter().map(|r| r[i].chars().count()).chain([HEADERS[i].len()]).max().unwrap();
-        if i == 0 { w } else { w.min(MAX) }
-    };
-    let widths: Vec<usize> = (0..9).map(width).collect();
-    let line = |cells: &[&str]| {
+    print_columns(&["ID", "TITLE", "ARTIST", "ALBUM", "GENRE", "YEAR", "BPM", "TIME", "TAGS"], rows, &[0]);
+}
+
+/// Left-aligned table with a header row. Columns are capped at 32 characters
+/// (ellipsized) except those listed in `uncapped`.
+fn print_columns(headers: &[&str], rows: Vec<Vec<String>>, uncapped: &[usize]) {
+    const MAX: usize = 32;
+    let widths: Vec<usize> = (0..headers.len())
+        .map(|i| {
+            let w = rows.iter().map(|r| r[i].chars().count()).chain([headers[i].len()]).max().unwrap();
+            if uncapped.contains(&i) { w } else { w.min(MAX) }
+        })
+        .collect();
+    let line = |cells: Vec<&str>| {
         let parts: Vec<String> = cells
             .iter()
             .zip(&widths)
@@ -354,16 +381,23 @@ fn print_table(tracks: &[Track]) {
             .collect();
         println!("{}", parts.join("  ").trim_end());
     };
-    line(&HEADERS);
+    line(headers.to_vec());
     for r in &rows {
-        line(&r.each_ref().map(String::as_str));
+        line(r.iter().map(String::as_str).collect());
     }
 }
 
-fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
-    out(json, &serde_json::json!({ "name": p.name, "filter": p.filter }), || {
-        println!("{}\t{}", p.name, describe(&p.filter))
+/// Every playlist today is a saved filter; manual (fixed-membership) playlists do not exist yet.
+const PLAYLIST_TYPE: &str = "dynamic";
+
+fn playlist_json(p: &SmartPlaylist) -> serde_json::Value {
+    serde_json::json!({
+        "name": p.name, "description": p.description, "type": PLAYLIST_TYPE, "filter": p.filter,
     })
+}
+
+fn print_playlist(json: bool, p: &SmartPlaylist) -> Result<(), Failure> {
+    out(json, &playlist_json(p), || println!("{}\t{}", p.name, describe(&p.filter)))
 }
 
 fn describe(f: &FilterSpec) -> String {

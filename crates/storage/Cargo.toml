@@ -6,6 +6,6 @@ license.workspace = true
 
 [dependencies]
 weave-core.workspace = true
-rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }

@@ -21,6 +21,7 @@ fn db_err(e: rusqlite::Error) -> Error {
 pub struct SmartPlaylist {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub filter: FilterSpec,
 }
 
@@ -49,7 +50,6 @@ impl Storage {
     fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", true).map_err(db_err)?;
         conn.pragma_update(None, "journal_mode", "WAL").map_err(db_err)?;
-        query::register_functions(&conn)?;
         migrations::run(&mut conn)?;
         Ok(Self { conn })
     }
@@ -290,8 +290,14 @@ impl Storage {
             .map_err(db_err)
     }
 
-    pub fn create_playlist(&mut self, name: &str, filter: &FilterSpec) -> Result<SmartPlaylist> {
+    pub fn create_playlist(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        filter: &FilterSpec,
+    ) -> Result<SmartPlaylist> {
         let name = name.trim();
+        let description = description.map(str::trim).filter(|d| !d.is_empty());
         if name.is_empty() {
             return Err(Error::InvalidInput("playlist name cannot be empty".into()));
         }
@@ -299,10 +305,11 @@ impl Storage {
         filter.validate()?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         match self.conn.execute(
-            "INSERT INTO smart_playlists (id, name, normalized_name, filter_spec) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, normalize_tag(name), spec_json(&filter)?],
+            "INSERT INTO smart_playlists (id, name, normalized_name, description, filter_spec)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, normalize_tag(name), description, spec_json(&filter)?],
         ) {
-            Ok(_) => Ok(SmartPlaylist { id, name: name.into(), filter }),
+            Ok(_) => Ok(SmartPlaylist { id, name: name.into(), description: description.map(Into::into), filter }),
             Err(rusqlite::Error::SqliteFailure(e, _))
                 if e.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
@@ -315,7 +322,7 @@ impl Storage {
     pub fn playlist(&self, name: &str) -> Result<SmartPlaylist> {
         self.conn
             .query_row(
-                "SELECT id, name, filter_spec FROM smart_playlists WHERE normalized_name = ?1",
+                "SELECT id, name, filter_spec, description FROM smart_playlists WHERE normalized_name = ?1",
                 [normalize_tag(name)],
                 row_to_playlist,
             )
@@ -327,18 +334,18 @@ impl Storage {
     pub fn playlists(&self) -> Result<Vec<SmartPlaylist>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, filter_spec FROM smart_playlists ORDER BY normalized_name")
+            .prepare("SELECT id, name, filter_spec, description FROM smart_playlists ORDER BY normalized_name")
             .map_err(db_err)?;
         let rows = stmt.query_map([], row_to_playlist).map_err(db_err)?;
         rows.map(|r| r.map_err(db_err)?).collect()
     }
 
-    pub fn update_playlist_filter(&mut self, id: &str, filter: &FilterSpec) -> Result<()> {
+    pub fn update_playlist(&mut self, id: &str, description: Option<&str>, filter: &FilterSpec) -> Result<()> {
         filter.validate()?;
         self.conn
             .execute(
-                "UPDATE smart_playlists SET filter_spec = ?1 WHERE id = ?2",
-                params![spec_json(filter)?, id],
+                "UPDATE smart_playlists SET description = ?1, filter_spec = ?2 WHERE id = ?3",
+                params![description, spec_json(filter)?, id],
             )
             .map_err(db_err)?;
         Ok(())
@@ -413,7 +420,12 @@ fn spec_json(f: &FilterSpec) -> Result<String> {
 fn row_to_playlist(r: &rusqlite::Row) -> rusqlite::Result<Result<SmartPlaylist>> {
     let json: String = r.get(2)?;
     Ok(serde_json::from_str::<FilterSpec>(&json)
-        .map(|filter| SmartPlaylist { id: r.get(0).unwrap(), name: r.get(1).unwrap(), filter })
+        .map(|filter| SmartPlaylist {
+            id: r.get(0).unwrap(),
+            name: r.get(1).unwrap(),
+            description: r.get(3).unwrap(),
+            filter,
+        })
         .map_err(|e| Error::Storage(format!("corrupt filter_spec: {e}"))))
 }
 

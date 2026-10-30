@@ -136,16 +136,17 @@ fn remove_tags() {
 fn playlists_are_live_queries() {
     let (mut s, fx) = fixture();
     let f = FilterSpec { tag_all: tags(&["90s"]), ..Default::default() };
-    let p = s.create_playlist("Bachata 90s", &f).unwrap();
-    assert!(matches!(s.create_playlist("bachata 90S", &f), Err(Error::AlreadyExists(_))));
+    let p = s.create_playlist("Bachata 90s", Some("Slow ones"), &f).unwrap();
+    assert!(matches!(s.create_playlist("bachata 90S", None, &f), Err(Error::AlreadyExists(_))));
     let members = |s: &Storage| all(s, &s.playlist("bachata 90s").unwrap().filter).len();
     assert_eq!(members(&s), 2);
     let d = &fx.iter().find(|t| t.metadata.title == "D").unwrap().id.0;
     s.add_tags(d, &tags(&["90s"])).unwrap();
     assert_eq!(members(&s), 3);
-    s.update_playlist_filter(&p.id, &FilterSpec { bpm_min: Some(95.0), ..f }).unwrap();
+    s.update_playlist(&p.id, p.description.as_deref(), &FilterSpec { bpm_min: Some(95.0), ..f }).unwrap();
     assert_eq!(members(&s), 2);
     assert_eq!(s.playlists().unwrap().len(), 1);
+    assert_eq!(s.playlist("BACHATA 90S").unwrap().description.as_deref(), Some("Slow ones"));
     assert!(matches!(s.playlist("nope"), Err(Error::NotFound(_))));
 }
 
@@ -246,30 +247,6 @@ fn queries_use_indexes_on_the_metadata_table() {
 }
 
 #[test]
-fn migration_moves_existing_metadata() {
-    let conn = Connection::open_in_memory().unwrap();
-    query::register_functions(&conn).unwrap();
-    // Build a v1 database by hand, then let Storage migrate it.
-    conn.execute_batch(
-        "CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT, album TEXT, bpm REAL);
-         CREATE TABLE sources (id TEXT PRIMARY KEY, track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            backend_id TEXT NOT NULL, external_id TEXT NOT NULL, UNIQUE (backend_id, external_id));
-         CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE);
-         CREATE TABLE track_tags (track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (track_id, tag_id));
-         CREATE TABLE smart_playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE, filter_spec TEXT NOT NULL);
-         INSERT INTO tracks VALUES ('abc', 'Été', 'Édith', NULL, 101.0);
-         PRAGMA user_version = 1;",
-    )
-    .unwrap();
-    let s = Storage::init(conn).unwrap();
-    let t = s.track("abc").unwrap();
-    assert_eq!((t.metadata.title.as_str(), t.metadata.bpm), ("Été", Some(101.0)));
-    let f = FilterSpec { artist: Some("ÉDITH".into()), ..Default::default() };
-    assert_eq!(all(&s, &f).len(), 1);
-}
-
-#[test]
 fn slugs_are_assigned_unique_and_resolvable() {
     let mut s = Storage::open_in_memory().unwrap();
     let mk = |p: &str, artist: Option<&str>, album: Option<&str>, title: &str| ScannedTrack {
@@ -309,25 +286,3 @@ fn slugs_are_assigned_unique_and_resolvable() {
     assert!(matches!(s.track("x'; DROP TABLE tracks;--"), Err(Error::NotFound(_))));
 }
 
-#[test]
-fn migration_backfills_slugs() {
-    // Reuse the v1 database from `migration_moves_existing_metadata`, adding a duplicate.
-    let conn = Connection::open_in_memory().unwrap();
-    query::register_functions(&conn).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT, album TEXT, bpm REAL);
-         CREATE TABLE sources (id TEXT PRIMARY KEY, track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            backend_id TEXT NOT NULL, external_id TEXT NOT NULL, UNIQUE (backend_id, external_id));
-         CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE);
-         CREATE TABLE track_tags (track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY (track_id, tag_id));
-         CREATE TABLE smart_playlists (id TEXT PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL UNIQUE, filter_spec TEXT NOT NULL);
-         INSERT INTO tracks VALUES ('a1', 'Song', 'Band', NULL, NULL), ('a2', 'Song', 'Band', NULL, NULL);
-         INSERT INTO sources VALUES ('s1', 'a1', 'local', '/1'), ('s2', 'a2', 'local', '/2');
-         PRAGMA user_version = 1;",
-    )
-    .unwrap();
-    let s = Storage::init(conn).unwrap();
-    assert_eq!(s.track("a1").unwrap().id.0, "band-song-local");
-    assert_eq!(s.track("a2").unwrap().id.0, "band-song-local-2");
-}

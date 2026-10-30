@@ -58,8 +58,13 @@ impl Library {
 
     // --- smart playlists ---------------------------------------------------
 
-    pub fn create_playlist(&mut self, name: &str, filter: FilterSpec) -> Result<SmartPlaylist> {
-        self.storage.create_playlist(name, &filter)
+    pub fn create_playlist(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        filter: FilterSpec,
+    ) -> Result<SmartPlaylist> {
+        self.storage.create_playlist(name, description, &filter)
     }
 
     pub fn playlists(&self) -> Result<Vec<SmartPlaylist>> {
@@ -77,12 +82,21 @@ impl Library {
         Ok((p, result))
     }
 
-    /// Change the specified filters; retain the others.
-    pub fn update_playlist(&mut self, name: &str, update: FilterSpec) -> Result<SmartPlaylist> {
+    /// Change the specified filters; retain the others. `description`: `None` keeps
+    /// the current one, `Some("")` clears it.
+    pub fn update_playlist(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        update: FilterSpec,
+    ) -> Result<SmartPlaylist> {
         let mut p = self.storage.playlist(name)?;
         let merged = p.filter.clone().merged(update).normalized();
         merged.validate()?;
-        self.storage.update_playlist_filter(&p.id, &merged)?;
+        if let Some(d) = description {
+            p.description = Some(d.trim().to_string()).filter(|d| !d.is_empty());
+        }
+        self.storage.update_playlist(&p.id, p.description.as_deref(), &merged)?;
         p.filter = merged;
         Ok(p)
     }
@@ -109,9 +123,9 @@ mod tests {
     fn update_playlist_retains_other_filters() {
         let mut lib = Library::open_in_memory().unwrap();
         let base = FilterSpec { tag_all: vec!["bachata".into()], ..Default::default() };
-        lib.create_playlist("P", base).unwrap();
+        lib.create_playlist("P", None, base).unwrap();
         let p = lib
-            .update_playlist("p", FilterSpec { bpm_min: Some(90.0), ..Default::default() })
+            .update_playlist("p", None, FilterSpec { bpm_min: Some(90.0), ..Default::default() })
             .unwrap();
         assert_eq!(p.filter.tag_all, ["bachata"]);
         assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, Some(90.0));
@@ -120,10 +134,23 @@ mod tests {
     #[test]
     fn update_rejects_invalid_merge() {
         let mut lib = Library::open_in_memory().unwrap();
-        lib.create_playlist("P", FilterSpec { bpm_max: Some(100.0), ..Default::default() }).unwrap();
-        let r = lib.update_playlist("P", FilterSpec { bpm_min: Some(120.0), ..Default::default() });
+        lib.create_playlist("P", None, FilterSpec { bpm_max: Some(100.0), ..Default::default() }).unwrap();
+        let r = lib.update_playlist("P", None, FilterSpec { bpm_min: Some(120.0), ..Default::default() });
         assert!(matches!(r, Err(Error::InvalidFilter(_))));
         assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, None);
+    }
+
+    #[test]
+    fn update_playlist_description() {
+        let mut lib = Library::open_in_memory().unwrap();
+        lib.create_playlist("P", Some("first"), FilterSpec::default()).unwrap();
+        let p = lib.update_playlist("P", None, FilterSpec::default()).unwrap();
+        assert_eq!(p.description.as_deref(), Some("first"));
+        let p = lib.update_playlist("P", Some("second"), FilterSpec::default()).unwrap();
+        assert_eq!(lib.playlist("P").unwrap().description, p.description);
+        let p = lib.update_playlist("P", Some(""), FilterSpec::default()).unwrap();
+        assert_eq!(p.description, None);
+        assert_eq!(lib.playlist("P").unwrap().description, None);
     }
 
     #[test]

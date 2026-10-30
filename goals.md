@@ -29,11 +29,11 @@
 | BPM range             | `weave search --bpm-min 90 --bpm-max 140`                     | Inclusive bounds; unknown BPM does not match.                  |
 | Combined filters      | `weave search --tag-all bachata --tag-none live --bpm-min 90` | Apply every provided filter group.                             |
 | Metadata search       | `weave search --artist "Romeo Santos" --year-min 1990`        | Filter by indexed metadata (title, artist, album, genre, year). Results are paged like `list`. |
-| Create smart playlist | `weave playlist create "Bachata 90s" --tag-all bachata,90s`   | Save filters, not track membership.                            |
+| Create smart playlist | `weave playlist create "Bachata 90s" --description "Slow" --tag-all bachata,90s` | Save filters, not track membership. |
 | Show playlist         | `weave playlist show "Bachata 90s"`                           | Evaluate its saved filters.                                    |
 | Update playlist       | `weave playlist update "Bachata 90s" --bpm-min 90`            | Change specified filters; retain others.                       |
 | Play playlist         | `weave playlist play "Bachata 90s"`                           | Queue current matching tracks.                                 |
-| List playlists        | `weave playlist list`                                         | Show saved dynamic playlists.                                  |
+| List playlists        | `weave playlist list`                                         | Table of NAME, DESCRIPTION, TYPE (`dynamic`; manual playlists do not exist yet) and RULESET. |
 | List backends         | `weave backend list`                                          | Show registered backends and capabilities.                     |
 | Inspect backend       | `weave backend show local`                                    | Show capabilities and availability.                            |
 
@@ -117,6 +117,7 @@ erDiagram
 - Descriptive metadata (title, artist, album, album artist, genre, composer, year, track/disc number, duration, BPM) lives in an indexed `TRACK_METADATA` table (one row per track, with lowercased copies for filtering and ordering); `TRACK` holds identity only.
 - A track may have multiple sources.
 - Smart playlists persist filters and resolve membership on demand.
+- Until 0.1 the schema is a single squashed migration; older databases are rejected (delete and re-import). After 0.1 migrations are append-only.
 - Use migrations, transactions, and indexes for tags and source mappings.
 
 ### Backend contract

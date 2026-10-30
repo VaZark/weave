@@ -1,18 +1,7 @@
 //! Translates a `FilterSpec` into parameterized SQL. No user text is interpolated.
 
-use rusqlite::{Connection, functions::FunctionFlags, types::Value};
-use weave_core::{Error, FilterSpec, Result, normalize_tag};
-
-/// SQLite's built-in `lower()` is ASCII-only; register a Unicode-aware one.
-pub fn register_functions(conn: &Connection) -> Result<()> {
-    conn.create_scalar_function(
-        "ulower",
-        1,
-        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|s| s.to_lowercase())),
-    )
-    .map_err(|e| Error::Storage(e.to_string()))
-}
+use rusqlite::types::Value;
+use weave_core::{FilterSpec, normalize_tag};
 
 pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, m.composer, \
                            m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
