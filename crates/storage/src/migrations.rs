@@ -90,6 +90,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          sleep_soft       INTEGER NOT NULL,             -- finish the playing track first
          stop_after_track INTEGER NOT NULL,             -- stop scheduled for the end of this track
          current_position INTEGER,
+         source           TEXT NOT NULL,                -- JSON QueueSource: manual, playlist or search
          volume           REAL NOT NULL,                -- 0.0 to 1.0
          position_ms      INTEGER NOT NULL,             -- position anchor ...
          position_at      INTEGER NOT NULL,             -- ... taken at this unix ms
@@ -99,8 +100,8 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
      );
      INSERT INTO player_state
          (id, status, repeat, shuffle, end_of_queue, sleep_until, sleep_soft, stop_after_track,
-          current_position, volume, position_ms, position_at, start_seq, seek_seq)
-         VALUES (1, 'stopped', 'off', 0, 'stop', NULL, 0, 0, NULL, 1.0, 0, 0, 0, 0);"];
+          current_position, source, volume, position_ms, position_at, start_seq, seek_seq)
+         VALUES (1, 'stopped', 'off', 0, 'stop', NULL, 0, 0, NULL, '{\"kind\":\"manual\"}', 1.0, 0, 0, 0, 0);"];
 
 /// FNV-1a over the schema text, kept positive and non-zero (zero means "empty database").
 fn fingerprint() -> i64 {

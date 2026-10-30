@@ -24,7 +24,7 @@ use weave_core::{
     EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField, parse_duration,
     parse_span,
 };
-use weave_engine::Library;
+use weave_engine::{Library, PlayPick};
 
 use output::{
     out, print_columns, print_json, print_page, print_playlist, print_playlists, print_queue,
@@ -49,7 +49,12 @@ struct Cli {
     #[arg(long, global = true)]
     show_ids: bool,
     /// Never start the playback host automatically.
-    #[arg(long, global = true, env = "WEAVE_NO_HOST")]
+    #[arg(
+        long,
+        global = true,
+        env = "WEAVE_NO_HOST",
+        value_parser = BoolishValueParser::new()
+    )]
     no_host: bool,
     #[command(subcommand)]
     command: Cmd,
@@ -109,8 +114,16 @@ enum Cmd {
     /// Show and edit the play queue.
     #[command(subcommand)]
     Queue(QueueCmd),
-    /// Replace the queue with one track and start it. Session state only: audio output arrives in 0.a4.
-    Play { track_id: String },
+    /// Start playing: a track (`play <ID>`), a playlist (`play playlist <ID>`), or a shuffled or random
+    /// pick from the library (`play shuffle`, `play random`, both taking the search filters).
+    /// The queue then plays that one source; hand-picked tracks are not mixed into a playlist or a search.
+    #[command(args_conflicts_with_subcommands = true, arg_required_else_help = true)]
+    Play {
+        /// The track to play.
+        track_id: Option<String>,
+        #[command(subcommand)]
+        what: Option<PlayWhat>,
+    },
     /// Pause the current track.
     Pause,
     /// Resume a paused track, or restart the current one after a stop.
@@ -201,6 +214,23 @@ enum DevCmd {
 }
 
 #[derive(Subcommand)]
+enum PlayWhat {
+    /// Play a playlist from the start (same as `playlist play`).
+    Playlist { name: String },
+    /// Play everything matching the filters (the whole library if none) in random order, from a
+    /// random track, with shuffle on.
+    Shuffle {
+        #[command(flatten)]
+        filter: FilterArgs,
+    },
+    /// Play one random track matching the filters.
+    Random {
+        #[command(flatten)]
+        filter: FilterArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum PlaylistCmd {
     /// Save a dynamic playlist (filters, sort and limit, not membership), or an empty manual one.
     Create {
@@ -241,13 +271,8 @@ enum PlaylistCmd {
         #[arg(required = true)]
         track_ids: Vec<String>,
     },
-    /// Replace the queue with the playlist's tracks and start it (or add them with --append).
-    Play {
-        name: String,
-        /// Add to the end of the queue instead of replacing it.
-        #[arg(long)]
-        append: bool,
-    },
+    /// Replace the queue with the playlist's tracks and start it.
+    Play { name: String },
     /// List saved playlists.
     List,
 }
@@ -256,13 +281,11 @@ enum PlaylistCmd {
 enum QueueCmd {
     /// Show the queue.
     Show,
-    /// Add tracks (or a playlist's tracks) to the end of the queue.
+    /// Add tracks to the end of a manual queue. A queue started from a playlist or a search refuses
+    /// them: `queue clear` or `play <track>` first.
     Add {
-        #[arg(required_unless_present = "playlist")]
+        #[arg(required = true)]
         track_ids: Vec<String>,
-        /// Add this playlist's tracks.
-        #[arg(long)]
-        playlist: Option<String>,
         /// Insert after the current track instead of at the end.
         #[arg(long)]
         next: bool,
@@ -604,18 +627,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 outln!("removed {n} track(s)")
             })?;
         }
-        Cmd::Playlist(PlaylistCmd::Play { name, append }) => {
-            playing(&lib.play_playlist(&name, append)?)?;
-        }
+        Cmd::Playlist(PlaylistCmd::Play { name }) => playing(&lib.play_playlist(&name)?)?,
         Cmd::Playlist(PlaylistCmd::List) => print_playlists(json, show_ids, &lib.playlists()?)?,
 
         Cmd::Queue(QueueCmd::Show) => print_queue(json, show_ids, &lib.session()?)?,
-        Cmd::Queue(QueueCmd::Add {
-            track_ids,
-            playlist,
-            next,
-        }) => {
-            let n = lib.queue_add_all(&track_ids, playlist.as_deref(), next)?;
+        Cmd::Queue(QueueCmd::Add { track_ids, next }) => {
+            let n = lib.queue_add(&track_ids, next)?;
             out(json, &serde_json::json!({ "added": n }), || {
                 outln!("queued {n} track(s)")
             })?;
@@ -628,7 +645,25 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Queue(QueueCmd::Clear) => session(&lib.queue_clear()?)?,
         Cmd::Queue(QueueCmd::End { mode }) => session(&lib.set_end_of_queue(mode)?)?,
 
-        Cmd::Play { track_id } => playing(&lib.play_track(&track_id)?)?,
+        Cmd::Play { track_id, what } => {
+            let view = match (track_id, what) {
+                (_, Some(PlayWhat::Playlist { name })) => lib.play_playlist(&name)?,
+                (_, Some(PlayWhat::Shuffle { filter })) => {
+                    lib.play_search(filter.into(), PlayPick::Shuffle)?
+                }
+                (_, Some(PlayWhat::Random { filter })) => {
+                    lib.play_search(filter.into(), PlayPick::Random)?
+                }
+                (Some(id), None) => lib.play_track(&id)?,
+                (None, None) => {
+                    return Err(Error::InvalidInput(
+                        "give a track ID, or one of: playlist, shuffle, random".into(),
+                    )
+                    .into());
+                }
+            };
+            playing(&view)?
+        }
         Cmd::Pause => session(&lib.pause()?)?,
         Cmd::Resume => playing(&lib.resume()?)?,
         Cmd::Stop => session(&lib.stop()?)?,
@@ -882,7 +917,84 @@ fn parse_volume(input: &str) -> Result<f32, Error> {
 mod arg_tests {
     use std::time::Duration;
 
+    use clap::Parser;
+
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("weave-player").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn play_takes_a_track_a_playlist_or_a_random_pick() {
+        assert!(matches!(
+            parse(&["play", "some-track-local"]).unwrap().command,
+            Cmd::Play {
+                track_id: Some(_),
+                what: None
+            }
+        ));
+        assert!(matches!(
+            parse(&["play", "playlist", "mix"]).unwrap().command,
+            Cmd::Play {
+                track_id: None,
+                what: Some(PlayWhat::Playlist { .. })
+            }
+        ));
+        let Cmd::Play {
+            what: Some(PlayWhat::Shuffle { filter }),
+            ..
+        } = parse(&[
+            "play",
+            "shuffle",
+            "--tag-all",
+            "bachata,90s",
+            "--bpm-min",
+            "90",
+            "--limit",
+            "20",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not a shuffle")
+        };
+        let spec = FilterSpec::from(filter);
+        assert_eq!(
+            (spec.tag_all, spec.bpm_min, spec.limit),
+            (vec!["bachata".into(), "90s".into()], Some(90.0), Some(20))
+        );
+        assert!(
+            matches!(
+                parse(&["play", "random"]).unwrap().command,
+                Cmd::Play {
+                    what: Some(PlayWhat::Random { .. }),
+                    ..
+                }
+            ),
+            "filters are optional"
+        );
+        assert!(parse(&["play", "random", "--favorite", "--rating-min", "4"]).is_ok());
+    }
+
+    #[test]
+    fn a_bare_play_asks_for_something_and_a_track_cannot_be_combined_with_a_subcommand() {
+        let err = parse(&["play"]).err().expect("needs an argument");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        assert!(parse(&["play", "a-track", "random"]).is_err());
+    }
+
+    #[test]
+    fn mixing_flags_are_gone() {
+        assert!(parse(&["queue", "add", "x", "--playlist", "mix"]).is_err());
+        assert!(parse(&["playlist", "play", "mix", "--append"]).is_err());
+        assert!(parse(&["playlist", "play", "mix"]).is_ok());
+        assert!(parse(&["queue", "add", "a", "b", "--next"]).is_ok());
+        assert!(parse(&["queue", "add"]).is_err(), "at least one track");
+    }
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)

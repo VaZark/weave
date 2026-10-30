@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result, Rng, TrackId};
+use crate::{Error, FilterSpec, Result, Rng, TrackId};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +39,21 @@ pub enum EndOfQueue {
     Continue,
 }
 text_enum!(EndOfQueue { Stop => "stop", Continue => "continue" });
+
+/// Where the queue's tracks came from. A queue has exactly one source: tracks added by
+/// hand, a playlist, or a library search. Sources are not mixed; the single exception is
+/// recommended tracks appended at the end by `EndOfQueue::Continue`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueueSource {
+    /// Tracks the user added one by one (or a single played track).
+    #[default]
+    Manual,
+    /// A playlist, by its slug ID, as it was when it started playing.
+    Playlist { id: String },
+    /// Everything matching a filter, as it was when it started playing.
+    Search { filter: Box<FilterSpec> },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SleepTimer {
@@ -74,6 +89,7 @@ pub struct PlayerState {
     pub stop_after_track: bool,
     /// Index into `Queue::items` of the current track.
     pub current: Option<usize>,
+    pub source: QueueSource,
     /// 0.0 (mute) to 1.0.
     pub volume: f32,
     /// Position anchor: where playback was at `position_at_ms` (unix milliseconds). While
@@ -96,6 +112,7 @@ impl Default for PlayerState {
             sleep: None,
             stop_after_track: false,
             current: None,
+            source: QueueSource::Manual,
             volume: 1.0,
             position_ms: 0,
             position_at_ms: 0,
@@ -206,10 +223,16 @@ impl Queue {
         self.rebuild_order(rng);
     }
 
-    /// Replace the queue and start at its first track in play order.
+    /// Replace the queue and start it: at the first track, or at a random one when shuffle
+    /// is on (so a shuffled queue does not always open with the same track).
     pub fn replace(&mut self, tracks: Vec<TrackId>, rng: &mut Rng) {
         self.items = tracks;
-        self.state.current = (!self.items.is_empty()).then_some(0);
+        let start = if self.state.shuffle && !self.items.is_empty() {
+            rng.below(self.items.len())
+        } else {
+            0
+        };
+        self.state.current = (!self.items.is_empty()).then_some(start);
         if self.items.is_empty() {
             self.halt();
         } else {
@@ -294,6 +317,9 @@ impl Queue {
         if self.state.current.is_none() {
             self.halt();
         }
+        if self.items.is_empty() {
+            self.state.source = QueueSource::Manual;
+        }
         Ok(())
     }
 
@@ -330,6 +356,7 @@ impl Queue {
         self.items.clear();
         self.order.clear();
         self.state.current = None;
+        self.state.source = QueueSource::Manual;
         self.halt();
     }
 
@@ -667,7 +694,11 @@ mod tests {
             q.replace(ids(&["a", "b", "c"]), &mut rng);
             q.append(ids(&["x", "y"]), &mut rng);
             q.assert_valid();
-            assert_eq!(q.order[0], 0, "the playing track is not displaced");
+            assert_eq!(
+                Some(q.order[0]),
+                q.state.current,
+                "the playing track is not displaced"
+            );
             assert_eq!(names(&q), ["a", "b", "c", "x", "y"]);
         }
     }
@@ -997,6 +1028,66 @@ mod tests {
             (s.status, s.volume, s.start_seq, s.seek_seq),
             (PlayStatus::Stopped, 1.0, 0, 0)
         );
+    }
+
+    #[test]
+    fn a_shuffled_replace_starts_at_a_random_track_and_visits_each_once() {
+        let mut starts = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let mut rng = Rng::new(seed);
+            let mut q = Queue::default();
+            q.state.shuffle = true;
+            q.replace(ids(&["a", "b", "c", "d"]), &mut rng);
+            q.assert_valid();
+            assert_eq!(Some(q.order[0]), q.state.current);
+            starts.insert(q.state.current.unwrap());
+        }
+        assert_eq!(starts.len(), 4, "every track can open a shuffled queue");
+
+        let mut q = Queue::default();
+        q.replace(ids(&["a", "b"]), &mut Rng::new(1));
+        assert_eq!(
+            q.state.current,
+            Some(0),
+            "an unshuffled queue starts at the top"
+        );
+    }
+
+    #[test]
+    fn the_source_defaults_to_manual_and_resets_when_the_queue_empties() {
+        let mut rng = Rng::new(1);
+        let mut q = Queue::default();
+        assert_eq!(q.state.source, QueueSource::Manual);
+
+        q.replace(ids(&["a", "b"]), &mut rng);
+        q.state.source = QueueSource::Playlist { id: "mix".into() };
+        q.remove(&[0]).unwrap();
+        assert_eq!(
+            q.state.source,
+            QueueSource::Playlist { id: "mix".into() },
+            "still has a track"
+        );
+        q.remove(&[0]).unwrap();
+        assert_eq!(q.state.source, QueueSource::Manual, "emptied by removing");
+
+        q.replace(ids(&["a"]), &mut rng);
+        q.state.source = QueueSource::Search {
+            filter: Box::default(),
+        };
+        q.clear();
+        assert_eq!(q.state.source, QueueSource::Manual, "emptied by clearing");
+    }
+
+    #[test]
+    fn sources_serialize_with_a_kind_tag() {
+        let json = serde_json::to_string(&QueueSource::Playlist { id: "mix".into() }).unwrap();
+        assert_eq!(json, r#"{"kind":"playlist","id":"mix"}"#);
+        assert_eq!(
+            serde_json::to_string(&QueueSource::Manual).unwrap(),
+            r#"{"kind":"manual"}"#
+        );
+        let back: QueueSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, QueueSource::Playlist { id: "mix".into() });
     }
 
     #[test]

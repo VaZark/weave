@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use weave_core::{FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, Track};
+use weave_core::{
+    FilterSpec, PlayStatus, Playlist, PlaylistKind, QueueSource, SearchResult, Track,
+};
 use weave_engine::SessionView;
 
 use crate::{Failure, PageArgs};
@@ -295,6 +297,16 @@ fn sleep_label(v: &SessionView) -> String {
     }
 }
 
+fn source_label(v: &SessionView) -> String {
+    match &v.state.source {
+        QueueSource::Manual => "manual".into(),
+        QueueSource::Playlist { id } => {
+            format!("playlist {}", v.source_name.as_deref().unwrap_or(id))
+        }
+        QueueSource::Search { filter } => format!("search {}", describe(filter)),
+    }
+}
+
 fn clock(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)
 }
@@ -322,6 +334,8 @@ fn track_label(t: &Track) -> String {
 fn session_json(v: &SessionView, with_tracks: bool) -> serde_json::Value {
     let mut j = serde_json::json!({
         "status": v.state.status,
+        "source": v.state.source,
+        "source_name": v.source_name,
         "position": v.state.current.map(|c| c + 1),
         "length": v.tracks.len(),
         "current": v.current(),
@@ -360,6 +374,7 @@ pub fn print_session(
         if show_ids {
             rows.push(("ID", current.map_or_else(dash, |t| t.id.0.clone())));
         }
+        rows.push(("Source", source_label(v)));
         rows.extend([
             (
                 "Position",
@@ -424,8 +439,9 @@ pub fn print_queue(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Fa
         show_ids.then_some(&ids[..]),
     );
     eprintln!(
-        "{} track(s) · shuffle {} · repeat {} · end of queue: {}",
+        "{} track(s) · source: {} · shuffle {} · repeat {} · end of queue: {}",
         v.tracks.len(),
+        source_label(v),
         on_off(v.state.shuffle),
         v.state.repeat,
         v.state.end_of_queue

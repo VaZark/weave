@@ -13,7 +13,7 @@ use weave_core::{
 use weave_local::LocalBackend;
 use weave_storage::Storage;
 
-pub use player::SessionView;
+pub use player::{PlayPick, SessionView};
 pub use weave_storage::ImportStats;
 
 pub struct BackendInfo {

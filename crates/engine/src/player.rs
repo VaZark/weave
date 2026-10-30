@@ -1,19 +1,29 @@
 //! Playback session orchestration: queue edits, transport state, shuffle/repeat,
 //! end-of-queue behavior and the sleep timer. The session is persisted after every
-//! operation, so separate CLI invocations share it. No audio is produced here; a
-//! playback backend will follow `SessionView` (0.a4).
+//! operation, so separate CLI invocations share it. No audio is produced here; the
+//! playback host (a resident process) follows `SessionView` and plays it.
 //!
-//! There is no background process: the sleep timer is checked whenever the session is
-//! read or changed, and playback is stopped at that point if it ran out.
+//! The sleep timer is checked whenever the session is read or changed (the host does so
+//! every 100 ms), and playback is stopped at that point if it ran out.
 
 use std::time::Duration;
 
 use weave_core::{
-    Advance, AdvanceReason, Backend, CapabilityGroup, EndOfQueue, Error, Lyrics, Page, PlayStatus,
-    Playback, PlayerState, Queue, RepeatMode, Result, SleepSetting, SourceRef, Track, TrackId,
+    Advance, AdvanceReason, Backend, CapabilityGroup, EndOfQueue, Error, FilterSpec, Lyrics, Page,
+    PlayStatus, Playback, PlayerState, Queue, QueueSource, RepeatMode, Result, SleepSetting,
+    SourceRef, Track, TrackId,
 };
 
 use crate::{Library, autoplay};
+
+/// How `play_search` picks from what a filter matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayPick {
+    /// All matches, in random order, with shuffle on.
+    Shuffle,
+    /// One random match.
+    Random,
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionView {
@@ -24,6 +34,8 @@ pub struct SessionView {
     pub sleep_remaining: Option<Duration>,
     /// Where playback is in the current track.
     pub position: Duration,
+    /// The display name of the playlist when the queue's source is one.
+    pub source_name: Option<String>,
 }
 
 impl SessionView {
@@ -100,7 +112,15 @@ impl Library {
             tracks: self.storage.tracks_by_slugs(&slugs)?,
             sleep_remaining,
             position: Duration::from_millis(queue.position_ms(self.now_ms())),
+            source_name: self.source_name(&queue.state.source),
         })
+    }
+
+    fn source_name(&self, source: &QueueSource) -> Option<String> {
+        match source {
+            QueueSource::Playlist { id } => self.storage.playlist(id).ok().map(|p| p.name),
+            _ => None,
+        }
     }
 
     fn commit(&mut self, queue: &Queue) -> Result<SessionView> {
@@ -112,17 +132,6 @@ impl Library {
         ids.iter()
             .map(|id| Ok(self.storage.track(id)?.id))
             .collect()
-    }
-
-    fn playlist_slugs(&self, name: &str) -> Result<Vec<TrackId>> {
-        let (p, result) = self.playlist_tracks(name, Page::ALL)?;
-        if result.tracks.is_empty() {
-            return Err(Error::InvalidInput(format!(
-                "playlist \"{}\" has no tracks",
-                p.name
-            )));
-        }
-        Ok(result.tracks.into_iter().map(|t| t.id).collect())
     }
 
     // --- reading -----------------------------------------------------------
@@ -245,36 +254,77 @@ impl Library {
 
     // --- starting playback -------------------------------------------------
 
-    /// Replace the queue with one track and start it.
+    /// Replace the queue with one track and start it (a manual queue).
     pub fn play_track(&mut self, id: &str) -> Result<SessionView> {
         let track = self.resolve(&[id.to_string()])?;
         let mut queue = self.load_session()?;
         queue.replace(track, &mut self.rng);
+        queue.state.source = QueueSource::Manual;
         self.commit_started(&mut queue)
     }
 
-    /// Replace the queue with a playlist's tracks and start it, or (`append`) add
-    /// them to the end without disturbing playback.
-    pub fn play_playlist(&mut self, name: &str, append: bool) -> Result<SessionView> {
-        let tracks = self.playlist_slugs(name)?;
-        let mut queue = self.load_session()?;
-        if append {
-            queue.append(tracks, &mut self.rng);
-            self.commit(&queue)
-        } else {
-            queue.replace(tracks, &mut self.rng);
-            self.commit_started(&mut queue)
+    /// Replace the queue with a playlist's current tracks and start it. The queue then
+    /// belongs to that playlist: tracks cannot be mixed in by hand.
+    pub fn play_playlist(&mut self, name: &str) -> Result<SessionView> {
+        let (playlist, result) = self.playlist_tracks(name, Page::ALL)?;
+        if result.tracks.is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "playlist \"{}\" has no tracks",
+                playlist.name
+            )));
         }
+        let mut queue = self.load_session()?;
+        queue.replace(
+            result.tracks.into_iter().map(|t| t.id).collect(),
+            &mut self.rng,
+        );
+        queue.state.source = QueueSource::Playlist { id: playlist.id };
+        self.commit_started(&mut queue)
+    }
+
+    /// Replace the queue with what a filter matches right now and start it: all of it in
+    /// random order (`Shuffle`, which also turns shuffle on), or one random match (`Random`).
+    /// The filter's own sort and limit apply first.
+    pub fn play_search(&mut self, filter: FilterSpec, pick: PlayPick) -> Result<SessionView> {
+        let filter = filter.normalized();
+        let matches = self.storage.search(&filter, Page::ALL)?;
+        if matches.tracks.is_empty() {
+            return Err(Error::InvalidInput(
+                "nothing in the library matches those filters".into(),
+            ));
+        }
+        let mut tracks: Vec<TrackId> = matches.tracks.into_iter().map(|t| t.id).collect();
+        let mut queue = self.load_session()?;
+        match pick {
+            PlayPick::Shuffle => queue.state.shuffle = true,
+            PlayPick::Random => {
+                let i = self.rng.below(tracks.len());
+                tracks = vec![tracks.swap_remove(i)];
+            }
+        }
+        queue.replace(tracks, &mut self.rng);
+        queue.state.source = QueueSource::Search {
+            filter: Box::new(filter),
+        };
+        self.commit_started(&mut queue)
     }
 
     // --- queue editing -----------------------------------------------------
 
     /// Add tracks to the end of the queue, or right after the current one (`next`).
-    /// Returns how many were added.
+    /// Returns how many were added. A queue started from a playlist or a search does not
+    /// take hand-picked tracks: clear it, or play a track, to start a manual queue.
     pub fn queue_add(&mut self, ids: &[String], next: bool) -> Result<usize> {
         let tracks = self.resolve(ids)?;
         let n = tracks.len();
         let mut queue = self.load_session()?;
+        if queue.state.source != QueueSource::Manual && !queue.is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "the queue is playing {}; adding tracks by hand would mix sources \
+                 (run `queue clear`, or play a track to start a manual queue)",
+                self.describe_source(&queue.state.source)
+            )));
+        }
         if next {
             queue.insert_next(tracks, &mut self.rng);
         } else {
@@ -284,27 +334,17 @@ impl Library {
         Ok(n)
     }
 
-    /// Add tracks and/or a playlist's tracks in one step: everything is resolved first, so a
-    /// bad ID or playlist name changes nothing. Returns how many were added.
-    pub fn queue_add_all(
-        &mut self,
-        ids: &[String],
-        playlist: Option<&str>,
-        next: bool,
-    ) -> Result<usize> {
-        let mut tracks = self.resolve(ids)?;
-        if let Some(name) = playlist {
-            tracks.extend(self.playlist_slugs(name)?);
+    fn describe_source(&self, source: &QueueSource) -> String {
+        match source {
+            QueueSource::Manual => "a manual queue".into(),
+            QueueSource::Playlist { id } => {
+                format!(
+                    "playlist \"{}\"",
+                    self.source_name(source).unwrap_or_else(|| id.clone())
+                )
+            }
+            QueueSource::Search { .. } => "a search".into(),
         }
-        let n = tracks.len();
-        let mut queue = self.load_session()?;
-        if next {
-            queue.insert_next(tracks, &mut self.rng);
-        } else {
-            queue.append(tracks, &mut self.rng);
-        }
-        self.commit(&queue)?;
-        Ok(n)
     }
 
     /// Remove by 1-based positions.
@@ -576,41 +616,69 @@ mod tests {
     }
 
     #[test]
-    fn playlist_play_replaces_or_appends_and_rejects_empty() {
+    fn playlist_play_replaces_the_queue_and_rejects_an_empty_playlist() {
         let (mut lib, _) = library(3);
+        lib.queue_add(&[id(2)], false).unwrap();
         lib.create_manual_playlist("Mix", None).unwrap();
         assert!(matches!(
-            lib.play_playlist("mix", false),
+            lib.play_playlist("mix"),
             Err(Error::InvalidInput(_))
         ));
-        lib.playlist_add("mix", &[id(3), id(1)]).unwrap();
-        let v = lib.play_playlist("mix", false).unwrap();
-        assert_eq!((titles(&v), now(&v)), (vec!["t3", "t1"], Some("t3")));
-        let v = lib.play_playlist("mix", true).unwrap();
         assert_eq!(
-            (titles(&v), now(&v)),
-            (vec!["t3", "t1", "t3", "t1"], Some("t3"))
+            titles(&lib.session().unwrap()),
+            ["t2"],
+            "a failed play changes nothing"
         );
+
+        lib.playlist_add("mix", &[id(3), id(1)]).unwrap();
+        let v = lib.play_playlist("Mix").unwrap();
+        assert_eq!((titles(&v), now(&v)), (vec!["t3", "t1"], Some("t3")));
+        assert_eq!(v.state.source, QueueSource::Playlist { id: "mix".into() });
+        assert_eq!(v.source_name.as_deref(), Some("Mix"));
     }
 
     #[test]
-    fn queue_add_all_is_all_or_nothing() {
+    fn a_queue_has_one_source_and_hand_picked_tracks_do_not_mix_in() {
         let (mut lib, _) = library(3);
         lib.create_manual_playlist("Mix", None).unwrap();
-        lib.playlist_add("mix", &[id(3)]).unwrap();
-        assert_eq!(lib.queue_add_all(&[id(1)], Some("mix"), false).unwrap(), 2);
-        assert_eq!(titles(&lib.session().unwrap()), ["t1", "t3"]);
+        lib.playlist_add("mix", &[id(1), id(2)]).unwrap();
+        lib.play_playlist("mix").unwrap();
 
-        assert!(lib.queue_add_all(&[id(2)], Some("nope"), false).is_err());
-        assert!(
-            lib.queue_add_all(&[id(2), "nope".into()], Some("mix"), false)
-                .is_err()
-        );
+        for next in [false, true] {
+            let err = lib.queue_add(&[id(3)], next).unwrap_err().to_string();
+            assert!(
+                err.contains("playlist \"Mix\"") && err.contains("queue clear"),
+                "{err}"
+            );
+        }
         assert_eq!(
             titles(&lib.session().unwrap()),
-            ["t1", "t3"],
-            "failed adds change nothing"
+            ["t1", "t2"],
+            "nothing was added"
         );
+
+        // starting a track makes it a manual queue again; so does clearing
+        lib.play_track(&id(3)).unwrap();
+        assert_eq!(lib.session().unwrap().state.source, QueueSource::Manual);
+        lib.queue_add(&[id(1)], false).unwrap();
+        lib.play_playlist("mix").unwrap();
+        lib.queue_clear().unwrap();
+        lib.queue_add(&[id(3)], false).unwrap();
+        assert_eq!(titles(&lib.session().unwrap()), ["t3"]);
+
+        // removing every track also ends the playlist's hold on the queue
+        lib.play_playlist("mix").unwrap();
+        lib.queue_remove(&[1, 2]).unwrap();
+        assert_eq!(lib.session().unwrap().state.source, QueueSource::Manual);
+        lib.queue_add(&[id(3)], false).unwrap();
+    }
+
+    #[test]
+    fn a_unknown_id_added_to_a_manual_queue_changes_nothing() {
+        let (mut lib, _) = library(2);
+        lib.queue_add(&[id(1)], false).unwrap();
+        assert!(lib.queue_add(&[id(2), "nope".into()], false).is_err());
+        assert_eq!(titles(&lib.session().unwrap()), ["t1"]);
     }
 
     #[test]
@@ -628,7 +696,7 @@ mod tests {
             ..Default::default()
         };
         lib.create_playlist("Top", None, filter).unwrap();
-        let v = lib.play_playlist("top", false).unwrap();
+        let v = lib.play_playlist("top").unwrap();
         assert_eq!(titles(&v), ["t2", "t3"]);
     }
 
@@ -948,7 +1016,7 @@ mod tests {
             (
                 "playlist play",
                 Box::new(|l| {
-                    l.play_playlist("mix", false).unwrap();
+                    l.play_playlist("mix").unwrap();
                 }),
             ),
         ];
@@ -1298,6 +1366,159 @@ mod tests {
             "a fake backend"
         );
         assert_eq!(lib.lyrics(&id(1)).unwrap(), None);
+    }
+
+    /// t1-t3 tagged bachata, t4 zouk; every library gets its own seed.
+    fn library_with_tags(seed: u64) -> Library {
+        let clock = Rc::new(Cell::new(1_000_000));
+        let mut lib = Library::open_in_memory()
+            .unwrap()
+            .with_determinism(seed, move || clock.get());
+        let tracks: Vec<_> = (1..=4)
+            .map(|i| scanned(&format!("t{i}"), Some(100.0)))
+            .collect();
+        lib.import_scanned("fake", &tracks).unwrap();
+        for i in 1..=3 {
+            lib.add_tags(&id(i), &["bachata".to_string()]).unwrap();
+        }
+        lib.add_tags(&id(4), &["zouk".to_string()]).unwrap();
+        lib
+    }
+
+    fn bachata() -> FilterSpec {
+        FilterSpec {
+            tag_all: vec!["bachata".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn play_shuffle_queues_every_match_in_random_order_from_a_random_start() {
+        let mut starts = std::collections::HashSet::new();
+        let mut orders = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let mut lib = library_with_tags(seed);
+            let v = lib.play_search(bachata(), PlayPick::Shuffle).unwrap();
+            let mut queued = titles(&v);
+            queued.sort();
+            assert_eq!(queued, ["t1", "t2", "t3"], "only what the filter matches");
+            assert!(v.state.shuffle && v.state.status == PlayStatus::Playing);
+            assert!(
+                matches!(&v.state.source, QueueSource::Search { filter } if filter.tag_all == ["bachata"])
+            );
+            starts.insert(now(&v).unwrap().to_string());
+
+            // one round plays each track exactly once
+            let mut played = vec![now(&v).unwrap().to_string()];
+            loop {
+                let v = lib.track_ended().unwrap();
+                if v.state.status == PlayStatus::Stopped {
+                    break;
+                }
+                played.push(now(&v).unwrap().to_string());
+            }
+            orders.insert(played.clone());
+            played.sort();
+            assert_eq!(played, ["t1", "t2", "t3"]);
+        }
+        assert_eq!(starts.len(), 3, "any match can open the shuffle");
+        assert!(orders.len() > 2, "the order really varies");
+    }
+
+    #[test]
+    fn play_shuffle_applies_the_filters_sort_and_limit_first() {
+        let mut lib = library_with_tags(3);
+        let filter = FilterSpec {
+            sort: Some(weave_core::Sort {
+                field: weave_core::SortField::Title,
+                descending: true,
+            }),
+            limit: Some(2),
+            ..bachata()
+        };
+        let v = lib.play_search(filter, PlayPick::Shuffle).unwrap();
+        let mut queued = titles(&v);
+        queued.sort();
+        assert_eq!(queued, ["t2", "t3"], "the top two by title, descending");
+    }
+
+    #[test]
+    fn play_random_picks_one_match_and_leaves_the_shuffle_setting_alone() {
+        let mut picks = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let mut lib = library_with_tags(seed);
+            let v = lib.play_search(bachata(), PlayPick::Random).unwrap();
+            assert_eq!(v.tracks.len(), 1);
+            assert!(!v.state.shuffle, "random is a single pick, not a mode");
+            assert!(matches!(v.state.source, QueueSource::Search { .. }));
+            picks.insert(now(&v).unwrap().to_string());
+        }
+        let picks: Vec<_> = {
+            let mut p: Vec<_> = picks.into_iter().collect();
+            p.sort();
+            p
+        };
+        assert_eq!(
+            picks,
+            ["t1", "t2", "t3"],
+            "never the zouk track, and not always the same one"
+        );
+    }
+
+    #[test]
+    fn a_search_that_matches_nothing_is_an_error_and_changes_nothing() {
+        let mut lib = library_with_tags(1);
+        lib.queue_add(&[id(4)], false).unwrap();
+        let none = FilterSpec {
+            tag_all: vec!["metal".into()],
+            ..Default::default()
+        };
+        for pick in [PlayPick::Shuffle, PlayPick::Random] {
+            assert!(matches!(
+                lib.play_search(none.clone(), pick),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+        let bad = FilterSpec {
+            bpm_min: Some(9.0),
+            bpm_max: Some(1.0),
+            ..Default::default()
+        };
+        assert!(matches!(
+            lib.play_search(bad, PlayPick::Random),
+            Err(Error::InvalidFilter(_))
+        ));
+        assert_eq!(titles(&lib.session().unwrap()), ["t4"]);
+    }
+
+    #[test]
+    fn a_search_queue_does_not_take_hand_picked_tracks_either() {
+        let mut lib = library_with_tags(1);
+        lib.play_search(bachata(), PlayPick::Shuffle).unwrap();
+        let err = lib.queue_add(&[id(4)], false).unwrap_err().to_string();
+        assert!(err.contains("a search"), "{err}");
+    }
+
+    #[test]
+    fn a_playlist_may_fall_through_to_recommendations_without_changing_its_source() {
+        let mut lib = tagged_library();
+        lib.create_manual_playlist("Mix", None).unwrap();
+        lib.playlist_add("mix", &["x-seed-fake".into()]).unwrap();
+        lib.play_playlist("mix").unwrap();
+        lib.set_end_of_queue(EndOfQueue::Continue).unwrap();
+
+        let v = lib.track_ended().unwrap();
+        assert_eq!(v.state.status, PlayStatus::Playing);
+        assert!(
+            v.tracks.len() > 1,
+            "similar tracks were appended: {:?}",
+            titles(&v)
+        );
+        assert_eq!(v.state.source, QueueSource::Playlist { id: "mix".into() });
+        assert!(
+            lib.queue_add(&["x-untagged-fake".into()], false).is_err(),
+            "still not open to hand-picked tracks"
+        );
     }
 
     fn tagged_library() -> Library {

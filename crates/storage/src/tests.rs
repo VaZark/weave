@@ -826,6 +826,13 @@ fn session_round_trips_queue_order_and_state() {
     );
     q.state.stop_after_track = true;
     q.state.volume = 0.25;
+    q.state.source = weave_core::QueueSource::Search {
+        filter: Box::new(FilterSpec {
+            tag_all: tags(&["bachata"]),
+            bpm_min: Some(90.0),
+            ..Default::default()
+        }),
+    };
     q.set_position(12_345, 99);
     q.state.start_seq = 7;
     q.state.seek_seq = 3;
