@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use lofty::file::TaggedFileExt;
+use lofty::probe::Probe;
 use lofty::prelude::*;
 use lofty::tag::ItemKey;
 use walkdir::WalkDir;
@@ -11,8 +12,6 @@ use weave_core::{
 };
 
 pub const BACKEND_ID: &str = "local";
-
-const EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "wv", "ape"];
 
 #[derive(Debug, Default)]
 pub struct LocalBackend;
@@ -35,8 +34,9 @@ impl Backend for LocalBackend {
 }
 
 impl LocalBackend {
-    /// Recursively scan `root` (or a single file) for audio files. Unreadable
-    /// or untagged files are still indexed, with the file stem as title.
+    /// Recursively scan `root` (or a single file) for audio files, detected by
+    /// content. Untagged or partly unreadable audio is still indexed, with the
+    /// file stem as title.
     pub fn scan(&self, root: &Path) -> Result<Vec<ScannedTrack>> {
         if !root.exists() {
             return Err(Error::NotFound(format!("path {}", root.display())));
@@ -52,10 +52,15 @@ impl LocalBackend {
     }
 }
 
+/// Audio is recognized by file content (magic bytes), not by extension, so
+/// mislabeled files are handled correctly and non-audio files are never indexed.
 fn is_audio(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+    // `Probe::open` would fall back to the extension when the content is not
+    // recognized; build the probe from a bare reader so only content counts.
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    Probe::new(std::io::BufReader::new(file))
+        .guess_file_type()
+        .is_ok_and(|p| p.file_type().is_some())
 }
 
 fn read_track(path: &Path) -> ScannedTrack {
@@ -100,17 +105,48 @@ fn read_track(path: &Path) -> ScannedTrack {
 mod tests {
     use super::*;
 
-    #[test]
-    fn indexes_audio_by_extension_without_touching_files() {
+    /// Smallest well-formed WAV: PCM header and an empty data chunk.
+    fn tiny_wav() -> Vec<u8> {
+        let mut w = Vec::new();
+        w.extend(b"RIFF");
+        w.extend(36u32.to_le_bytes());
+        w.extend(b"WAVEfmt ");
+        w.extend(16u32.to_le_bytes());
+        for v in [1u16, 1] {
+            w.extend(v.to_le_bytes()); // PCM, mono
+        }
+        w.extend(8000u32.to_le_bytes());
+        w.extend(16000u32.to_le_bytes());
+        w.extend(2u16.to_le_bytes());
+        w.extend(16u16.to_le_bytes());
+        w.extend(b"data");
+        w.extend(0u32.to_le_bytes());
+        w
+    }
+
+    fn temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("weave-local-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("sub/Song One.MP3"), b"not really audio").unwrap();
-        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        dir
+    }
 
-        let tracks = LocalBackend.scan(&dir).unwrap();
-        assert_eq!(tracks.len(), 1);
-        assert_eq!(tracks[0].metadata.title, "Song One");
-        assert_eq!(std::fs::read(dir.join("sub/Song One.MP3")).unwrap(), b"not really audio");
+    #[test]
+    fn detects_audio_by_content_without_touching_files() {
+        let dir = temp_dir();
+        let wav = tiny_wav();
+        std::fs::write(dir.join("sub/Song One.wav"), &wav).unwrap();
+        std::fs::write(dir.join("mislabeled.dat"), &wav).unwrap(); // audio, wrong extension
+        std::fs::write(dir.join("no_extension"), &wav).unwrap();
+        std::fs::write(dir.join("fake.mp3"), b"not really audio").unwrap(); // right extension, not audio
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+        std::fs::write(dir.join("empty.flac"), b"").unwrap();
+
+        let mut titles: Vec<_> =
+            LocalBackend.scan(&dir).unwrap().into_iter().map(|t| t.metadata.title).collect();
+        titles.sort();
+        assert_eq!(titles, ["Song One", "mislabeled", "no_extension"]);
+        assert_eq!(std::fs::read(dir.join("sub/Song One.wav")).unwrap(), wav);
+        assert_eq!(std::fs::read(dir.join("fake.mp3")).unwrap(), b"not really audio");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -14,7 +14,7 @@
 
 | Feature               | CLI                                                           | Behavior                                                       |
 | --------------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
-| Import music          | `weave import ~/Music`                                        | Index files without modifying them; prevent duplicate imports. |
+| Import music          | `weave import ~/Music`                                        | Index audio files (recognized by content, not extension) without modifying them; prevent duplicate imports. |
 | List tracks           | `weave list [--page N --limit N \| --all]`                    | Paged table (default 50) with column titles, metadata and tags; `--json` for structured output. A track's ID is its readable slug. |
 | Play                  | `weave play <track-id>`                                       | Play an available local source.                                |
 | Playback controls     | `weave pause`, `weave resume`, `weave next`                   | Control the active playback session.                           |
