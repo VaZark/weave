@@ -2,7 +2,7 @@
 //! so it is stored and loaded whole, inside one transaction.
 
 use rusqlite::params;
-use weave_core::{Error, PlayerState, Queue, Result, TrackId};
+use weave_core::{Error, PlayerState, Queue, Result, SleepTimer, TrackId};
 
 use crate::{Storage, db_err};
 
@@ -12,17 +12,20 @@ fn corrupt(what: &str, e: String) -> Error {
 
 impl Storage {
     pub fn load_queue(&self) -> Result<Queue> {
-        let (status, repeat, shuffle, end, sleep, current): (
+        let (status, repeat, shuffle, end, sleep, soft, stop_after, current): (
             String,
             String,
             bool,
             String,
             Option<i64>,
+            bool,
+            bool,
             Option<i64>,
         ) = self
             .conn
             .query_row(
-                "SELECT status, repeat, shuffle, end_of_queue, sleep_until, current_position
+                "SELECT status, repeat, shuffle, end_of_queue, sleep_until, sleep_soft,
+                        stop_after_track, current_position
                  FROM player_state WHERE id = 1",
                 [],
                 |r| {
@@ -33,6 +36,8 @@ impl Storage {
                         r.get(3)?,
                         r.get(4)?,
                         r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
                     ))
                 },
             )
@@ -60,7 +65,11 @@ impl Storage {
                 repeat: repeat.parse().map_err(|e| corrupt("repeat", e))?,
                 shuffle,
                 end_of_queue: end.parse().map_err(|e| corrupt("end_of_queue", e))?,
-                sleep_until_ms: sleep,
+                sleep: sleep.map(|at_ms| SleepTimer {
+                    at_ms,
+                    stop_after: soft,
+                }),
+                stop_after_track: stop_after,
                 current: current.and_then(|p| rows.iter().position(|r| r.0 == p)),
             },
             items: rows.into_iter().map(|r| TrackId(r.1)).collect(),
@@ -103,13 +112,16 @@ impl Storage {
         let s = &queue.state;
         tx.execute(
             "UPDATE player_state SET status = ?1, repeat = ?2, shuffle = ?3, end_of_queue = ?4,
-                 sleep_until = ?5, current_position = ?6 WHERE id = 1",
+                 sleep_until = ?5, sleep_soft = ?6, stop_after_track = ?7, current_position = ?8
+             WHERE id = 1",
             params![
                 s.status.as_str(),
                 s.repeat.as_str(),
                 s.shuffle,
                 s.end_of_queue.as_str(),
-                s.sleep_until_ms,
+                s.sleep.map(|t| t.at_ms),
+                s.sleep.is_some_and(|t| t.stop_after),
+                s.stop_after_track,
                 s.current.map(|c| c as i64),
             ],
         )

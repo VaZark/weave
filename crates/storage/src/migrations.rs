@@ -85,9 +85,13 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          shuffle          INTEGER NOT NULL,
          end_of_queue     TEXT NOT NULL,
          sleep_until      INTEGER,                      -- unix milliseconds
+         sleep_soft       INTEGER NOT NULL,             -- finish the playing track first
+         stop_after_track INTEGER NOT NULL,             -- stop scheduled for the end of this track
          current_position INTEGER
      );
-     INSERT INTO player_state VALUES (1, 'stopped', 'off', 0, 'stop', NULL, NULL);"];
+     INSERT INTO player_state
+         (id, status, repeat, shuffle, end_of_queue, sleep_until, sleep_soft, stop_after_track, current_position)
+         VALUES (1, 'stopped', 'off', 0, 'stop', NULL, 0, 0, NULL);"];
 
 pub fn run(conn: &mut Connection) -> Result<()> {
     let db = |e: rusqlite::Error| Error::Storage(e.to_string());

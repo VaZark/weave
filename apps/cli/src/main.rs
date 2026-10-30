@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use weave_core::{
-    EndOfQueue, Error, FilterSpec, Page, RepeatMode, Sort, SortField, parse_duration,
+    EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField, parse_duration,
 };
 use weave_engine::Library;
 
@@ -130,6 +130,10 @@ enum Cmd {
     Sleep {
         #[arg(value_name = "DURATION|off")]
         after: String,
+        /// When the delay runs out during a track, let that track finish and stop after it
+        /// (instead of cutting it off). The stop is scheduled when the track starts.
+        #[arg(long)]
+        stop_after: bool,
     },
     /// Inspect backends.
     #[command(subcommand)]
@@ -570,13 +574,19 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Now => session(&lib.session()?)?,
         Cmd::Shuffle { on } => session(&lib.set_shuffle(on)?)?,
         Cmd::Repeat { mode } => session(&lib.set_repeat(mode)?)?,
-        Cmd::Sleep { after } => {
-            let after = if after.eq_ignore_ascii_case("off") {
-                None
+        Cmd::Sleep { after, stop_after } => {
+            let setting = if after.eq_ignore_ascii_case("off") {
+                if stop_after {
+                    return Err(Error::InvalidInput("--stop-after needs a duration".into()).into());
+                }
+                SleepSetting::Off
             } else {
-                Some(parse_duration(&after).map_err(Error::InvalidInput)?)
+                SleepSetting::In {
+                    delay: parse_duration(&after).map_err(Error::InvalidInput)?,
+                    stop_after,
+                }
             };
-            session(&lib.set_sleep(after)?)?;
+            session(&lib.set_sleep(setting)?)?;
         }
 
         Cmd::Backend(BackendCmd::List) => {

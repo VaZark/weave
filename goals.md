@@ -45,7 +45,7 @@
 | Shuffle | `weave-player shuffle on` | Play the queue in random order, current track first; each track plays once per round. |
 | Repeat | `weave-player repeat off\|song\|playlist` | `song` replays the current track when it ends (skipping still moves on); `playlist` loops the whole queue. |
 | End of queue | `weave-player queue end stop\|continue` | `stop` ends playback; `continue` appends similar tracks (shared tags, BPM near the queue's average) and keeps going. |
-| Sleep timer | `weave-player sleep 30m`, `weave-player sleep off` | Stop playback after a delay (`45s`, `30m`, `1h30m`; a bare number is minutes). |
+| Sleep timer | `weave-player sleep 30m`, `weave-player sleep 30m --stop-after`, `weave-player sleep off` | Stop playback after a delay (`45s`, `30m`, `1h30m`; a bare number is minutes). With `--stop-after`, a delay that runs out during a track lets that track finish and stops after it, instead of cutting it off. |
 | List backends | `weave-player backend list` | Show registered backends and capabilities. |
 | Inspect backend | `weave-player backend show local` | Show capabilities and availability. |
 
@@ -187,8 +187,21 @@ and the future GUI. 0.a3 covers the state and rules; actual audio output arrives
 0.a4, which will follow this state and report when a track ends (`Library::track_ended`).
 
 - **No background process.** The session is persisted after every operation, so separate `weave-player` runs share
-  it. The sleep timer is a stored deadline checked whenever the session is read or changed: once it has passed,
-  playback is stopped (the position is kept) and the timer cleared.
+  it.
+- **Sleep timer:** a stored deadline, checked whenever the session is read or changed (any command that touches it)
+  and at every track change. Once it has passed, a plain timer stops playback (the position is kept) and is cleared.
+  A `--stop-after` timer does not cut the track off: it schedules a stop for the end of the track that is playing.
+  - Whenever a track starts (play, next, previous, jump, a track ending, resume after a stop, removing the current
+    track), if the timer would come due before that track ends, the engine schedules the stop right then
+    (`stop_after_track`). If not, the timer is left alone and checked again at the next track change.
+  - The scheduled stop belongs to the current track: when that track ends by itself, playback stops there and the
+    next track never starts (this also beats repeat-song). Skipping keeps it for the new current track; `stop` or a
+    new `sleep` request clears it.
+  - If the track's duration is unknown the engine cannot tell in advance, so the timer is handled when its deadline
+    passes (a stop is scheduled then) or at the next track change.
+  - A timer coming due while paused never stops the track mid-way; it waits for the track to finish.
+  - When audio arrives (0.a4) the player must also wake at the deadline to apply a plain timer; the check itself is
+    the same engine call.
 - **Queue:** an ordered list that may contain duplicates, plus a play order. Without shuffle the play order is the
   list order. `queue add --next` inserts right after the current track in both orders. Removing the current track
   moves to what would have played next. Positions in commands are 1-based.

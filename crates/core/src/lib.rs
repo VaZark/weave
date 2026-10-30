@@ -20,7 +20,10 @@ pub use duration::parse_duration;
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, Sort, SortField, normalize_tag};
 pub use playlist::{Playlist, PlaylistKind};
-pub use queue::{Advance, AdvanceReason, EndOfQueue, PlayStatus, PlayerState, Queue, RepeatMode};
+pub use queue::{
+    Advance, AdvanceReason, EndOfQueue, PlayStatus, PlayerState, Queue, RepeatMode, SleepSetting,
+    SleepTimer,
+};
 pub use rng::Rng;
 pub use slug::{playlist_slug, slugify, track_slug};
 pub use track::{Metadata, Page, SearchResult, Tag, Track, TrackId};

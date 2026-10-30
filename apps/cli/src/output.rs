@@ -280,6 +280,21 @@ fn human(d: Duration) -> String {
     }
 }
 
+fn sleep_label(v: &SessionView) -> String {
+    match (v.state.sleep, v.sleep_remaining, v.state.stop_after_track) {
+        (Some(t), Some(left), _) => {
+            let tail = if t.stop_after {
+                ", then stops after the track"
+            } else {
+                ""
+            };
+            format!("{} left{tail}", human(left))
+        }
+        (_, _, true) => "stops after this track".into(),
+        _ => dash(),
+    }
+}
+
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
 }
@@ -301,6 +316,8 @@ fn session_json(v: &SessionView, with_tracks: bool) -> serde_json::Value {
         "repeat": v.state.repeat,
         "end_of_queue": v.state.end_of_queue,
         "sleep_remaining_secs": v.sleep_remaining.map(|d| d.as_secs()),
+        "sleep_stop_after": v.state.sleep.map(|t| t.stop_after),
+        "stop_after_track": v.state.stop_after_track,
     });
     if with_tracks {
         j["tracks"] = serde_json::json!(v.tracks);
@@ -329,11 +346,7 @@ pub fn print_session(json: bool, show_ids: bool, v: &SessionView) -> Result<(), 
             ("Shuffle", on_off(v.state.shuffle).into()),
             ("Repeat", v.state.repeat.to_string()),
             ("End of queue", v.state.end_of_queue.to_string()),
-            (
-                "Sleep timer",
-                v.sleep_remaining
-                    .map_or_else(dash, |d| format!("{} left", human(d))),
-            ),
+            ("Sleep timer", sleep_label(v)),
         ]);
         for (k, val) in rows {
             outln!("{k:<13} {val}");

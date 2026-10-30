@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use weave_core::{
     Advance, AdvanceReason, EndOfQueue, Error, Page, PlayStatus, PlayerState, Queue, RepeatMode,
-    Result, Track, TrackId,
+    Result, SleepSetting, Track, TrackId,
 };
 
 use crate::{Library, autoplay};
@@ -41,21 +41,46 @@ impl Library {
         (self.clock)()
     }
 
-    /// Load the session, first stopping playback if the sleep timer ran out.
-    fn load_session(&mut self) -> Result<Queue> {
+    /// Load the session, first handling a sleep timer that came due (see
+    /// `Queue::apply_sleep`). Also reports whether it did.
+    fn load_session_checked(&mut self) -> Result<(Queue, bool)> {
         let mut queue = self.storage.load_queue()?;
-        if queue.apply_sleep(self.now_ms()) {
+        let fired = queue.apply_sleep(self.now_ms());
+        if fired {
             self.storage.save_queue(&queue)?;
         }
-        Ok(queue)
+        Ok((queue, fired))
+    }
+
+    fn load_session(&mut self) -> Result<Queue> {
+        Ok(self.load_session_checked()?.0)
+    }
+
+    /// Every time a track starts playing: if a stop-after timer comes due while it
+    /// plays, schedule the stop for the end of this track; otherwise leave things be.
+    fn schedule_stop(&self, queue: &mut Queue) -> Result<()> {
+        if queue.state.status != PlayStatus::Playing || queue.state.sleep.is_none() {
+            return Ok(());
+        }
+        if let Some(id) = queue.current_track() {
+            let duration = self.storage.track(&id.0)?.metadata.duration_ms;
+            queue.schedule_sleep_for_track(self.now_ms(), duration);
+        }
+        Ok(())
+    }
+
+    /// Save after an operation that started a track.
+    fn commit_started(&mut self, queue: &mut Queue) -> Result<SessionView> {
+        self.schedule_stop(queue)?;
+        self.commit(queue)
     }
 
     fn view(&self, queue: &Queue) -> Result<SessionView> {
         let slugs: Vec<String> = queue.items.iter().map(|t| t.0.clone()).collect();
         let sleep_remaining = queue
             .state
-            .sleep_until_ms
-            .map(|at| Duration::from_millis((at - self.now_ms()).max(0) as u64));
+            .sleep
+            .map(|t| Duration::from_millis((t.at_ms - self.now_ms()).max(0) as u64));
         Ok(SessionView {
             state: queue.state.clone(),
             tracks: self.storage.tracks_by_slugs(&slugs)?,
@@ -108,7 +133,7 @@ impl Library {
         let track = self.resolve(&[id.to_string()])?;
         let mut queue = self.load_session()?;
         queue.replace(track, &mut self.rng);
-        self.commit(&queue)
+        self.commit_started(&mut queue)
     }
 
     /// Replace the queue with a playlist's tracks and start it, or (`append`) add
@@ -118,10 +143,11 @@ impl Library {
         let mut queue = self.load_session()?;
         if append {
             queue.append(tracks, &mut self.rng);
+            self.commit(&queue)
         } else {
             queue.replace(tracks, &mut self.rng);
+            self.commit_started(&mut queue)
         }
-        self.commit(&queue)
     }
 
     // --- queue editing -----------------------------------------------------
@@ -171,7 +197,12 @@ impl Library {
             .map(|&p| to_index(p))
             .collect::<Result<Vec<_>>>()?;
         let mut queue = self.load_session()?;
+        let before = queue.current_track().cloned();
         queue.remove(&indexes)?;
+        if queue.current_track().cloned() != before {
+            // The current track was removed and the next one took over.
+            return self.commit_started(&mut queue);
+        }
         self.commit(&queue)
     }
 
@@ -194,7 +225,7 @@ impl Library {
         let index = to_index(position)?;
         let mut queue = self.load_session()?;
         queue.jump(index)?;
-        self.commit(&queue)
+        self.commit_started(&mut queue)
     }
 
     // --- transport ---------------------------------------------------------
@@ -207,7 +238,11 @@ impl Library {
 
     pub fn resume(&mut self) -> Result<SessionView> {
         let mut queue = self.load_session()?;
+        let restarting = queue.state.status == PlayStatus::Stopped;
         queue.resume()?;
+        if restarting {
+            return self.commit_started(&mut queue);
+        }
         self.commit(&queue)
     }
 
@@ -226,12 +261,17 @@ impl Library {
     pub fn previous(&mut self) -> Result<SessionView> {
         let mut queue = self.load_session()?;
         queue.previous()?;
-        self.commit(&queue)
+        self.commit_started(&mut queue)
     }
 
     /// A playback backend reports that the current track finished by itself.
     pub fn track_ended(&mut self) -> Result<SessionView> {
-        if self.load_session()?.state.status != PlayStatus::Playing {
+        let (queue, fired) = self.load_session_checked()?;
+        if queue.state.status != PlayStatus::Playing {
+            if fired {
+                // A timer stopped playback just before this report: nothing left to do.
+                return self.view(&queue);
+            }
             return Err(Error::InvalidInput("nothing is playing".into()));
         }
         self.advance(AdvanceReason::TrackEnded)
@@ -250,7 +290,8 @@ impl Library {
                 queue.advance(reason, &mut self.rng);
             }
         }
-        self.commit(&queue)
+        // A track change: check whether a stop needs scheduling (no-op without a timer).
+        self.commit_started(&mut queue)
     }
 
     // --- modes and timer ---------------------------------------------------
@@ -273,11 +314,11 @@ impl Library {
         self.commit(&queue)
     }
 
-    /// Stop playback after `after`; `None` cancels the timer.
-    pub fn set_sleep(&mut self, after: Option<Duration>) -> Result<SessionView> {
+    /// Set, replace or cancel the sleep timer (see `SleepSetting`). A timer with
+    /// `stop_after` waits for the track playing when it comes due to finish.
+    pub fn set_sleep(&mut self, setting: SleepSetting) -> Result<SessionView> {
         let mut queue = self.load_session()?;
-        let at = after.map(|d| self.now_ms().saturating_add(d.as_millis() as i64));
-        queue.set_sleep_until(at);
+        queue.set_sleep(setting, self.now_ms());
         self.commit(&queue)
     }
 }
@@ -298,10 +339,14 @@ mod tests {
                 title: title.into(),
                 artist: Some("x".into()),
                 bpm,
+                duration_ms: Some(TRACK_MS),
                 ..Default::default()
             },
         }
     }
+
+    /// Every test track is three minutes long unless a test says otherwise.
+    const TRACK_MS: u64 = 180_000;
 
     /// Library with tracks t1..tN (bpm 100), a controllable clock, and a fixed seed.
     fn library(n: usize) -> (Library, Rc<Cell<i64>>) {
@@ -315,6 +360,13 @@ mod tests {
             .collect();
         lib.import_scanned("fake", &tracks).unwrap();
         (lib, clock)
+    }
+
+    fn timer(secs: u64, stop_after: bool) -> SleepSetting {
+        SleepSetting::In {
+            delay: Duration::from_secs(secs),
+            stop_after,
+        }
     }
 
     fn id(n: usize) -> String {
@@ -531,7 +583,7 @@ mod tests {
         let (mut lib, clock) = library(2);
         lib.queue_add(&[id(1), id(2)], false).unwrap();
         lib.next().unwrap();
-        let v = lib.set_sleep(Some(Duration::from_secs(30 * 60))).unwrap();
+        let v = lib.set_sleep(timer(30 * 60, false)).unwrap();
         assert_eq!(v.sleep_remaining, Some(Duration::from_secs(1800)));
 
         clock.set(clock.get() + 29 * 60_000);
@@ -560,17 +612,244 @@ mod tests {
         let (mut lib, clock) = library(2);
         lib.queue_add(&[id(1), id(2)], false).unwrap();
         lib.next().unwrap();
-        lib.set_sleep(Some(Duration::from_secs(60))).unwrap();
-        assert_eq!(lib.set_sleep(None).unwrap().sleep_remaining, None);
+        lib.set_sleep(timer(60, false)).unwrap();
+        assert_eq!(
+            lib.set_sleep(SleepSetting::Off).unwrap().sleep_remaining,
+            None
+        );
         clock.set(clock.get() + 3_600_000);
         assert_eq!(lib.session().unwrap().state.status, PlayStatus::Playing);
 
-        lib.set_sleep(Some(Duration::from_secs(60))).unwrap();
+        lib.set_sleep(timer(60, false)).unwrap();
         clock.set(clock.get() + 120_000);
         assert!(
             lib.pause().is_err(),
             "the timer already stopped playback before pause ran"
         );
+    }
+
+    fn advance_clock(clock: &Cell<i64>, secs: i64) {
+        clock.set(clock.get() + secs * 1000);
+    }
+
+    #[test]
+    fn plain_timer_after_the_deadline_makes_a_track_end_report_a_no_op() {
+        let (mut lib, clock) = library(3);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.next().unwrap();
+        lib.set_sleep(timer(60, false)).unwrap();
+        advance_clock(&clock, 180); // the track ends well after the deadline
+        let v = lib.track_ended().unwrap();
+        assert_eq!((now(&v), v.state.status), (Some("t1"), PlayStatus::Stopped));
+        assert!(
+            lib.track_ended().is_err(),
+            "a second report has nothing to stop"
+        );
+    }
+
+    #[test]
+    fn stop_after_schedules_the_stop_when_the_deadline_falls_inside_the_starting_track() {
+        let (mut lib, clock) = library(3);
+        lib.queue_add(&[id(1), id(2), id(3)], false).unwrap();
+        lib.set_sleep(timer(100, true)).unwrap(); // due 100 s from now
+        let v = lib.next().unwrap(); // t1 starts: 0..180 s, so the deadline falls inside it
+        assert_eq!(now(&v), Some("t1"));
+        assert!(v.state.stop_after_track && v.state.sleep.is_none() && v.sleep_remaining.is_none());
+
+        advance_clock(&clock, 180);
+        let v = lib.track_ended().unwrap();
+        assert_eq!(
+            (now(&v), v.state.status),
+            (Some("t1"), PlayStatus::Stopped),
+            "stopped after t1, t2 never started"
+        );
+        assert!(!v.state.stop_after_track);
+    }
+
+    #[test]
+    fn stop_after_is_left_alone_while_the_deadline_is_beyond_the_track() {
+        let (mut lib, clock) = library(4);
+        lib.queue_add(&(1..=4).map(id).collect::<Vec<_>>(), false)
+            .unwrap();
+        lib.set_sleep(timer(600, true)).unwrap(); // 10 minutes
+        let v = lib.next().unwrap(); // t1: 0..180
+        assert!(!v.state.stop_after_track && v.sleep_remaining.is_some());
+        advance_clock(&clock, 180);
+        let v = lib.track_ended().unwrap(); // t2: 180..360
+        assert_eq!(now(&v), Some("t2"));
+        assert!(!v.state.stop_after_track);
+        advance_clock(&clock, 180);
+        let v = lib.track_ended().unwrap(); // t3: 360..540, still before 600
+        assert!(!v.state.stop_after_track && v.sleep_remaining.is_some());
+        advance_clock(&clock, 180);
+        let v = lib.track_ended().unwrap(); // t4: 540..720 contains 600
+        assert_eq!(now(&v), Some("t4"));
+        assert!(v.state.stop_after_track && v.state.sleep.is_none());
+        advance_clock(&clock, 180);
+        assert_eq!(lib.track_ended().unwrap().state.status, PlayStatus::Stopped);
+    }
+
+    #[test]
+    fn stop_after_with_unknown_duration_is_decided_when_it_comes_due() {
+        let clock = Rc::new(Cell::new(1_000_000));
+        let c = clock.clone();
+        let mut lib = Library::open_in_memory()
+            .unwrap()
+            .with_determinism(5, move || c.get());
+        let no_duration = |t: &str| ScannedTrack {
+            external_id: t.into(),
+            metadata: Metadata {
+                title: t.into(),
+                artist: Some("x".into()),
+                ..Default::default()
+            },
+        };
+        lib.import_scanned("fake", &[no_duration("t1"), no_duration("t2")])
+            .unwrap();
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.set_sleep(timer(60, true)).unwrap();
+        let v = lib.next().unwrap();
+        assert!(
+            !v.state.stop_after_track && v.sleep_remaining.is_some(),
+            "nothing to compare against yet"
+        );
+
+        advance_clock(&clock, 90);
+        let v = lib.session().unwrap(); // the deadline passed while t1 plays
+        assert_eq!(v.state.status, PlayStatus::Playing);
+        assert!(v.state.stop_after_track && v.state.sleep.is_none());
+        let v = lib.track_ended().unwrap();
+        assert_eq!((now(&v), v.state.status), (Some("t1"), PlayStatus::Stopped));
+    }
+
+    #[test]
+    fn stop_after_timer_that_comes_due_while_paused_waits_for_the_track_to_end() {
+        let (mut lib, clock) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.set_sleep(timer(600, true)).unwrap();
+        lib.next().unwrap();
+        lib.pause().unwrap();
+        advance_clock(&clock, 900);
+        let v = lib.resume().unwrap();
+        assert_eq!(
+            v.state.status,
+            PlayStatus::Playing,
+            "a paused track is not stopped by the timer"
+        );
+        assert!(v.state.stop_after_track);
+        assert_eq!(lib.track_ended().unwrap().state.status, PlayStatus::Stopped);
+    }
+
+    #[test]
+    fn scheduled_stop_follows_a_skip_and_is_cleared_by_stop_and_by_a_new_timer() {
+        let (mut lib, _) = library(3);
+        lib.queue_add(&[id(1), id(2), id(3)], false).unwrap();
+        lib.set_sleep(timer(60, true)).unwrap();
+        assert!(lib.next().unwrap().state.stop_after_track); // t1 scheduled
+        let v = lib.next().unwrap(); // skip to t2
+        assert_eq!(now(&v), Some("t2"));
+        assert!(
+            v.state.stop_after_track,
+            "the stop now applies to the new current track"
+        );
+
+        assert!(!lib.stop().unwrap().state.stop_after_track);
+        lib.resume().unwrap();
+        lib.set_sleep(timer(60, true)).unwrap();
+        lib.queue_jump(3).unwrap(); // scheduled again for t3
+        assert!(lib.session().unwrap().state.stop_after_track);
+        let v = lib.set_sleep(SleepSetting::Off).unwrap();
+        assert!(!v.state.stop_after_track && v.state.sleep.is_none());
+    }
+
+    #[test]
+    fn every_way_of_starting_a_track_checks_the_timer() {
+        // resume after a stop, previous, jump, play, playlist play, and removing the current track.
+        type Starter = Box<dyn Fn(&mut Library)>;
+        let starters: Vec<(&str, Starter)> = vec![
+            (
+                "play_track",
+                Box::new(|l| {
+                    l.play_track(&id(2)).unwrap();
+                }),
+            ),
+            (
+                "queue_jump",
+                Box::new(|l| {
+                    l.queue_jump(2).unwrap();
+                }),
+            ),
+            (
+                "previous",
+                Box::new(|l| {
+                    l.queue_jump(2).unwrap();
+                    l.set_sleep(timer(60, true)).unwrap();
+                    l.previous().unwrap();
+                }),
+            ),
+            (
+                "resume after stop",
+                Box::new(|l| {
+                    l.stop().unwrap();
+                    l.resume().unwrap();
+                }),
+            ),
+            (
+                "remove current",
+                Box::new(|l| {
+                    l.queue_remove(&[1]).unwrap();
+                }),
+            ),
+            (
+                "playlist play",
+                Box::new(|l| {
+                    l.play_playlist("mix", false).unwrap();
+                }),
+            ),
+        ];
+        for (name, start) in starters {
+            let (mut lib, _) = library(3);
+            lib.create_manual_playlist("Mix", None).unwrap();
+            lib.playlist_add("mix", &[id(1), id(2)]).unwrap();
+            lib.queue_add(&[id(1), id(2), id(3)], false).unwrap();
+            lib.next().unwrap();
+            lib.set_sleep(timer(60, true)).unwrap();
+            start(&mut lib);
+            let v = lib.session().unwrap();
+            assert!(
+                v.state.stop_after_track,
+                "{name}: a stop should be scheduled"
+            );
+        }
+    }
+
+    #[test]
+    fn pausing_and_resuming_do_not_reschedule_or_disturb_a_pending_timer() {
+        let (mut lib, _) = library(2);
+        lib.queue_add(&[id(1), id(2)], false).unwrap();
+        lib.next().unwrap();
+        lib.set_sleep(timer(600, true)).unwrap(); // beyond the 3 minute track
+        lib.pause().unwrap();
+        let v = lib.resume().unwrap();
+        assert!(!v.state.stop_after_track && v.state.sleep.is_some());
+    }
+
+    #[test]
+    fn timer_state_survives_reopening_the_database() {
+        let dir = std::env::temp_dir().join(format!("weave-sleep-{}", uuid_like()));
+        let path = dir.join("lib.db");
+        {
+            let mut lib = Library::open(&path).unwrap();
+            lib.import_scanned("fake", &[scanned("t1", None), scanned("t2", None)])
+                .unwrap();
+            lib.queue_add(&[id(1), id(2)], false).unwrap();
+            lib.next().unwrap();
+            lib.set_sleep(timer(600, true)).unwrap();
+        }
+        let mut lib = Library::open(&path).unwrap();
+        let v = lib.session().unwrap();
+        assert!(v.state.sleep.is_some_and(|t| t.stop_after) && v.sleep_remaining.is_some());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn tagged_library() -> Library {

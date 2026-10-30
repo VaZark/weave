@@ -817,7 +817,14 @@ fn session_round_trips_queue_order_and_state() {
     q.state.end_of_queue = EndOfQueue::Continue;
     q.replace(slugs.iter().map(|t| TrackId(t.clone())).collect(), &mut rng);
     q.append(vec![TrackId(slugs[0].clone())], &mut rng); // duplicates are fine
-    q.set_sleep_until(Some(123_456));
+    q.set_sleep(
+        weave_core::SleepSetting::In {
+            delay: std::time::Duration::from_secs(90),
+            stop_after: true,
+        },
+        1_000,
+    );
+    q.state.stop_after_track = true;
     q.jump(2).unwrap();
     s.save_queue(&q).unwrap();
 

@@ -40,14 +40,38 @@ pub enum EndOfQueue {
 }
 text_enum!(EndOfQueue { Stop => "stop", Continue => "continue" });
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepTimer {
+    /// Unix milliseconds at which the timer comes due.
+    pub at_ms: i64,
+    /// Stop-after timer: when due during a track, let that track finish and stop after it
+    /// instead of stopping immediately.
+    pub stop_after: bool,
+}
+
+/// What the user asks for with `sleep`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepSetting {
+    /// Cancel any timer and any scheduled stop.
+    Off,
+    /// Come due after `delay`; `stop_after` lets the track playing at that moment finish.
+    In {
+        delay: std::time::Duration,
+        stop_after: bool,
+    },
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
     pub status: PlayStatus,
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub end_of_queue: EndOfQueue,
-    /// Unix milliseconds at which the sleep timer stops playback.
-    pub sleep_until_ms: Option<i64>,
+    /// A pending sleep timer.
+    pub sleep: Option<SleepTimer>,
+    /// A stop is scheduled for the end of the current track: set when a stop-after timer
+    /// comes due during it. Follows the current track, so skipping keeps it.
+    pub stop_after_track: bool,
     /// Index into `Queue::items` of the current track.
     pub current: Option<usize>,
 }
@@ -81,6 +105,12 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Stopped is also the end of any pending stop-after-track.
+    fn halt(&mut self) {
+        self.state.status = PlayStatus::Stopped;
+        self.state.stop_after_track = false;
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -119,11 +149,11 @@ impl Queue {
     pub fn replace(&mut self, tracks: Vec<TrackId>, rng: &mut Rng) {
         self.items = tracks;
         self.state.current = (!self.items.is_empty()).then_some(0);
-        self.state.status = if self.items.is_empty() {
-            PlayStatus::Stopped
+        if self.items.is_empty() {
+            self.halt();
         } else {
-            PlayStatus::Playing
-        };
+            self.state.status = PlayStatus::Playing;
+        }
         self.rebuild_order(rng);
     }
 
@@ -201,7 +231,7 @@ impl Queue {
         });
         self.state.current = survivor.map(remap);
         if self.state.current.is_none() {
-            self.state.status = PlayStatus::Stopped;
+            self.halt();
         }
         Ok(())
     }
@@ -239,7 +269,7 @@ impl Queue {
         self.items.clear();
         self.order.clear();
         self.state.current = None;
-        self.state.status = PlayStatus::Stopped;
+        self.halt();
     }
 
     /// Make the track at a 0-based list position current and start playing.
@@ -257,7 +287,7 @@ impl Queue {
 
     pub fn advance(&mut self, reason: AdvanceReason, rng: &mut Rng) -> Advance {
         if self.items.is_empty() {
-            self.state.status = PlayStatus::Stopped;
+            self.halt();
             return Advance::Stopped;
         }
         let Some(current) = self.state.current else {
@@ -265,6 +295,10 @@ impl Queue {
             self.state.status = PlayStatus::Playing;
             return Advance::Moved;
         };
+        if reason == AdvanceReason::TrackEnded && self.state.stop_after_track {
+            self.halt();
+            return Advance::Stopped;
+        }
         if reason == AdvanceReason::TrackEnded && self.state.repeat == RepeatMode::Song {
             self.state.status = PlayStatus::Playing;
             return Advance::Moved;
@@ -291,13 +325,13 @@ impl Queue {
         if self.state.end_of_queue == EndOfQueue::Continue {
             return Advance::NeedsMore;
         }
-        self.state.status = PlayStatus::Stopped;
+        self.halt();
         Advance::Stopped
     }
 
     /// Nothing left to play (used when `continue` finds no similar tracks).
     pub fn stop_at_end(&mut self) {
-        self.state.status = PlayStatus::Stopped;
+        self.halt();
     }
 
     /// Previous track in play order. At the start it restarts the current track, or
@@ -341,23 +375,54 @@ impl Queue {
     }
 
     pub fn stop(&mut self) {
-        self.state.status = PlayStatus::Stopped;
+        self.halt();
     }
 
-    pub fn set_sleep_until(&mut self, at_ms: Option<i64>) {
-        self.state.sleep_until_ms = at_ms;
+    /// Apply a `sleep` request. A new request replaces any timer and any scheduled stop.
+    pub fn set_sleep(&mut self, setting: SleepSetting, now_ms: i64) {
+        self.state.sleep = match setting {
+            SleepSetting::Off => None,
+            SleepSetting::In { delay, stop_after } => Some(SleepTimer {
+                at_ms: now_ms.saturating_add(delay.as_millis() as i64),
+                stop_after,
+            }),
+        };
+        self.state.stop_after_track = false;
     }
 
-    /// Stops playback if the sleep timer has run out. Returns whether it fired.
+    /// Called when the timer may have come due (before any operation). A plain timer
+    /// stops playback. A stop-after timer instead schedules a stop at the end of the
+    /// current track and lets it play on. Returns whether the
+    /// state changed.
     pub fn apply_sleep(&mut self, now_ms: i64) -> bool {
-        match self.state.sleep_until_ms {
-            Some(at) if at <= now_ms => {
-                self.state.sleep_until_ms = None;
-                self.state.status = PlayStatus::Stopped;
-                true
-            }
-            _ => false,
+        let Some(timer) = self.state.sleep.filter(|t| t.at_ms <= now_ms) else {
+            return false;
+        };
+        self.state.sleep = None;
+        if timer.stop_after && self.state.status != PlayStatus::Stopped {
+            self.state.stop_after_track = true;
+        } else {
+            self.halt();
         }
+        true
+    }
+
+    /// Called whenever a track starts playing. If a stop-after timer comes due
+    /// while this track plays, schedule the stop now: the track is allowed to finish
+    /// and playback stops after it. Otherwise the timer is left alone. Needs the
+    /// track's duration; with an unknown duration the timer is handled when it comes
+    /// due (or at the next track change) instead. Returns whether a stop was scheduled.
+    pub fn schedule_sleep_for_track(&mut self, now_ms: i64, duration_ms: Option<u64>) -> bool {
+        let (Some(timer), Some(duration)) = (self.state.sleep, duration_ms) else {
+            return false;
+        };
+        let ends_at = now_ms.saturating_add(duration.min(i64::MAX as u64) as i64);
+        if timer.stop_after && timer.at_ms <= ends_at {
+            self.state.sleep = None;
+            self.state.stop_after_track = true;
+            return true;
+        }
+        false
     }
 
     /// Checks the invariants every operation must preserve.
@@ -675,18 +740,143 @@ mod tests {
         assert!(Queue::default().resume().is_err());
     }
 
+    use std::time::Duration;
+
+    fn timer(q: &mut Queue, now: i64, secs: u64, stop_after: bool) {
+        q.set_sleep(
+            SleepSetting::In {
+                delay: Duration::from_secs(secs),
+                stop_after,
+            },
+            now,
+        );
+    }
+
     #[test]
-    fn sleep_timer_stops_playback_once() {
+    fn plain_timer_stops_playback_once() {
         let (mut q, _) = started(&["a"]);
-        q.set_sleep_until(Some(1_000));
+        timer(&mut q, 0, 1, false);
         assert!(!q.apply_sleep(999));
         assert_eq!(q.state.status, PlayStatus::Playing);
         assert!(q.apply_sleep(1_000));
-        assert_eq!(
-            (q.state.status, q.state.sleep_until_ms),
-            (PlayStatus::Stopped, None)
-        );
+        assert_eq!((q.state.status, q.state.sleep), (PlayStatus::Stopped, None));
         assert!(!q.apply_sleep(2_000));
+    }
+
+    #[test]
+    fn stop_after_timer_coming_due_lets_the_track_finish_then_stops() {
+        let (mut q, mut rng) = started(&["a", "b"]);
+        timer(&mut q, 0, 60, true);
+        assert!(q.apply_sleep(60_000));
+        assert_eq!(q.state.status, PlayStatus::Playing, "the track plays on");
+        assert!((q.state.sleep, q.state.stop_after_track) == (None, true));
+        assert_eq!(
+            q.advance(AdvanceReason::TrackEnded, &mut rng),
+            Advance::Stopped
+        );
+        assert_eq!(
+            (current(&q), q.state.status),
+            (Some("a"), PlayStatus::Stopped)
+        );
+        assert!(
+            !q.state.stop_after_track,
+            "stopping clears the scheduled stop"
+        );
+    }
+
+    #[test]
+    fn stop_after_timer_with_nothing_playing_just_clears() {
+        let (mut q, _) = started(&["a"]);
+        q.stop();
+        timer(&mut q, 0, 1, true);
+        assert!(q.apply_sleep(1_000));
+        assert!((q.state.sleep, q.state.stop_after_track) == (None, false));
+    }
+
+    #[test]
+    fn scheduling_at_track_start_only_when_the_deadline_falls_inside_the_track() {
+        let (mut q, _) = started(&["a"]);
+        timer(&mut q, 0, 100, true); // due at 100_000 ms
+        // a 60 s track starting at 0 ends at 60_000: the deadline is later, so leave it
+        assert!(!q.schedule_sleep_for_track(0, Some(60_000)));
+        assert!(q.state.sleep.is_some() && !q.state.stop_after_track);
+        // a 60 s track starting at 50 s ends at 110 s: the deadline falls inside it
+        assert!(q.schedule_sleep_for_track(50_000, Some(60_000)));
+        assert!((q.state.sleep, q.state.stop_after_track) == (None, true));
+    }
+
+    #[test]
+    fn deadline_exactly_at_the_end_of_the_track_counts_as_inside() {
+        let (mut q, _) = started(&["a"]);
+        timer(&mut q, 0, 60, true);
+        assert!(q.schedule_sleep_for_track(0, Some(60_000)));
+    }
+
+    #[test]
+    fn scheduling_ignores_plain_timers_and_unknown_durations() {
+        let (mut q, _) = started(&["a"]);
+        timer(&mut q, 0, 10, false);
+        assert!(
+            !q.schedule_sleep_for_track(0, Some(600_000)),
+            "plain timers stop at the deadline"
+        );
+        timer(&mut q, 0, 10, true);
+        assert!(
+            !q.schedule_sleep_for_track(0, None),
+            "unknown duration: decided when it comes due"
+        );
+        assert!(q.state.sleep.is_some());
+        assert!(!Queue::default().schedule_sleep_for_track(0, Some(1)));
+    }
+
+    #[test]
+    fn scheduled_stop_follows_the_track_across_skips_but_not_a_stop() {
+        let (mut q, mut rng) = started(&["a", "b", "c"]);
+        q.state.stop_after_track = true;
+        q.advance(AdvanceReason::UserSkip, &mut rng);
+        assert!(
+            q.state.stop_after_track,
+            "skipping keeps it for the new current track"
+        );
+        assert_eq!(
+            q.advance(AdvanceReason::TrackEnded, &mut rng),
+            Advance::Stopped
+        );
+        assert_eq!(current(&q), Some("b"));
+
+        q.resume().unwrap();
+        q.state.stop_after_track = true;
+        q.stop();
+        assert!(!q.state.stop_after_track);
+    }
+
+    #[test]
+    fn scheduled_stop_beats_repeat_song() {
+        let (mut q, mut rng) = started(&["a"]);
+        q.state.repeat = RepeatMode::Song;
+        q.state.stop_after_track = true;
+        assert_eq!(
+            q.advance(AdvanceReason::TrackEnded, &mut rng),
+            Advance::Stopped
+        );
+    }
+
+    #[test]
+    fn a_new_request_replaces_timer_and_scheduled_stop() {
+        let (mut q, _) = started(&["a"]);
+        timer(&mut q, 0, 5, true);
+        q.state.stop_after_track = true;
+        q.set_sleep(SleepSetting::Off, 0);
+        assert!((q.state.sleep, q.state.stop_after_track) == (None, false));
+        timer(&mut q, 0, 5, false);
+        q.state.stop_after_track = true;
+        timer(&mut q, 0, 9, true);
+        assert!(
+            !q.state.stop_after_track
+                && q.state
+                    .sleep
+                    .is_some_and(|t| t.at_ms == 9_000 && t.stop_after)
+        );
     }
 
     #[test]
