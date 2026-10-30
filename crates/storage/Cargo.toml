@@ -10,7 +10,7 @@ license.workspace = true
 sqlite-from-source = ["rusqlite/bundled"]
 
 [dependencies]
-weave-core.workspace = true
 rusqlite = "0.37"
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
+weave-core.workspace = true

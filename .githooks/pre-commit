@@ -1,0 +1,37 @@
+#!/bin/sh
+# Formats staged markdown with dprint (config: dprint.json) and re-stages it.
+# Enable once per clone with:  git config core.hooksPath .githooks
+
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.md')
+[ -z "$files" ] && exit 0
+
+if ! command -v dprint >/dev/null 2>&1; then
+  echo "pre-commit: dprint not found on PATH; install it from https://dprint.dev/install/" >&2
+  exit 1
+fi
+
+# A file with unstaged edits is only checked: formatting and re-adding it would stage those edits too.
+clean=""
+partial=""
+for f in $files; do
+  if git diff --quiet -- "$f"; then clean="$clean $f"; else partial="$partial $f"; fi
+done
+
+if [ -n "$clean" ]; then
+  # shellcheck disable=SC2086
+  dprint fmt $clean >/dev/null || exit 1
+  # shellcheck disable=SC2086
+  if ! git diff --quiet -- $clean; then
+    # shellcheck disable=SC2086
+    git add $clean
+    echo "pre-commit: formatted markdown:$clean" >&2
+  fi
+fi
+
+if [ -n "$partial" ]; then
+  # shellcheck disable=SC2086
+  if ! dprint check $partial >/dev/null 2>&1; then
+    echo "pre-commit: not formatted, and left alone because of unstaged changes; run: dprint fmt$partial" >&2
+    exit 1
+  fi
+fi

@@ -9,5 +9,5 @@ sqlite-from-source = ["weave-storage/sqlite-from-source"]
 
 [dependencies]
 weave-core.workspace = true
-weave-storage.workspace = true
 weave-local.workspace = true
+weave-storage.workspace = true

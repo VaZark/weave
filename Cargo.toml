@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/storage",
-    "crates/engine",
-    "backends/local",
-    "apps/cli",
+  "apps/cli",
+  "backends/local",
+  "crates/core",
+  "crates/engine",
+  "crates/storage",
 ]
 
 [workspace.package]
@@ -14,10 +14,10 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-weave-core = { path = "crates/core" }
-weave-storage = { path = "crates/storage" }
-weave-engine = { path = "crates/engine" }
-weave-local = { path = "backends/local" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+weave-core = { path = "crates/core" }
+weave-engine = { path = "crates/engine" }
+weave-local = { path = "backends/local" }
+weave-storage = { path = "crates/storage" }

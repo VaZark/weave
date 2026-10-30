@@ -40,6 +40,8 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
+Markdown is formatted with [dprint's markdown plugin](https://dprint.dev/plugins/markdown/) (`dprint fmt`, configured in `dprint.json`). Install dprint however you like ([install page](https://dprint.dev/install/)); it must be on your `PATH`. A pre-commit hook formats staged markdown and re-stages it; enable it once per clone with `git config core.hooksPath .githooks`.
+
 Use a throwaway library while developing so your real one is never touched:
 
 ```bash

@@ -14,8 +14,8 @@ path = "src/main.rs"
 sqlite-from-source = ["weave-engine/sqlite-from-source"]
 
 [dependencies]
-weave-core.workspace = true
-weave-engine.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
 serde.workspace = true
 serde_json.workspace = true
-clap = { version = "4", features = ["derive", "env"] }
+weave-core.workspace = true
+weave-engine.workspace = true
