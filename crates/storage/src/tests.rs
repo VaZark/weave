@@ -5,7 +5,7 @@ use weave_core::{
 
 fn scanned(path: &str, title: &str, artist: &str, bpm: Option<f64>) -> ScannedTrack {
     ScannedTrack {
-        external_id: path.into(),
+        path: path.into(),
         metadata: Metadata {
             title: title.into(),
             artist: Some(artist.into()),
@@ -30,15 +30,12 @@ fn tags(v: &[&str]) -> Vec<String> {
 /// a: bachata,90s @100  b: bachata,live @90  c: zouk,90s @140  d: untagged, no bpm
 fn fixture() -> (Storage, Vec<Track>) {
     let mut s = Storage::open_in_memory().unwrap();
-    s.import_tracks(
-        "local",
-        &[
-            scanned("/a", "A", "Romeo Santos", Some(100.0)),
-            scanned("/b", "B", "Aventura", Some(90.0)),
-            scanned("/c", "C", "Kaysha", Some(140.0)),
-            scanned("/d", "D", "Édith", None),
-        ],
-    )
+    s.import_tracks(&[
+        scanned("/a", "A", "Romeo Santos", Some(100.0)),
+        scanned("/b", "B", "Aventura", Some(90.0)),
+        scanned("/c", "C", "Kaysha", Some(140.0)),
+        scanned("/d", "D", "Édith", None),
+    ])
     .unwrap();
     let everything = all(&s, &FilterSpec::default());
     let id = |n: &str| {
@@ -61,14 +58,14 @@ fn import_is_idempotent() {
     let mut s = Storage::open_in_memory().unwrap();
     let t = [scanned("/x", "X", "Y", None)];
     assert_eq!(
-        s.import_tracks("local", &t).unwrap(),
+        s.import_tracks(&t).unwrap(),
         ImportStats {
             added: 1,
             skipped: 0
         }
     );
     assert_eq!(
-        s.import_tracks("local", &t).unwrap(),
+        s.import_tracks(&t).unwrap(),
         ImportStats {
             added: 0,
             skipped: 1
@@ -83,7 +80,7 @@ fn tag_all_any_none() {
     let f = |all: &[&str], any: &[&str], none: &[&str]| FilterSpec {
         tag_all: tags(all),
         tag_any: tags(any),
-        tag_none: tags(none),
+        tag_exclude: tags(none),
         ..Default::default()
     };
     assert_eq!(names(&all(&s, &f(&["bachata", "90s"], &[], &[]))), ["A"]);
@@ -234,8 +231,7 @@ fn migrations_are_idempotent_on_reopen() {
     let path = dir.join("lib.db");
     {
         let mut s = Storage::open(&path).unwrap();
-        s.import_tracks("local", &[scanned("/x", "X", "Y", None)])
-            .unwrap();
+        s.import_tracks(&[scanned("/x", "X", "Y", None)]).unwrap();
     }
     let s = Storage::open(&path).unwrap();
     assert_eq!(all(&s, &FilterSpec::default()).len(), 1);
@@ -293,13 +289,10 @@ fn tracks_carry_tags_and_full_metadata() {
         bpm: Some(120.5),
         ..Default::default()
     };
-    s.import_tracks(
-        "local",
-        &[ScannedTrack {
-            external_id: "/t".into(),
-            metadata: m.clone(),
-        }],
-    )
+    s.import_tracks(&[ScannedTrack {
+        path: "/t".into(),
+        metadata: m.clone(),
+    }])
     .unwrap();
     let t = all(&s, &FilterSpec::default()).remove(0);
     s.add_tags(&t.id.0, &tags(&["zz", "Aa"])).unwrap();
@@ -315,7 +308,7 @@ fn tracks_carry_tags_and_full_metadata() {
 fn genre_and_year_filters() {
     let mut s = Storage::open_in_memory().unwrap();
     let mk = |p: &str, genre: Option<&str>, year: Option<i32>| ScannedTrack {
-        external_id: p.into(),
+        path: p.into(),
         metadata: Metadata {
             title: p.into(),
             genre: genre.map(Into::into),
@@ -323,14 +316,11 @@ fn genre_and_year_filters() {
             ..Default::default()
         },
     };
-    s.import_tracks(
-        "local",
-        &[
-            mk("a", Some("Bachata"), Some(1994)),
-            mk("b", Some("Zouk"), Some(2005)),
-            mk("c", None, None),
-        ],
-    )
+    s.import_tracks(&[
+        mk("a", Some("Bachata"), Some(1994)),
+        mk("b", Some("Zouk"), Some(2005)),
+        mk("c", None, None),
+    ])
     .unwrap();
     let f = FilterSpec {
         tag_all: tags(&["genre:bachata"]),
@@ -352,7 +342,7 @@ fn genre_and_year_filters() {
 #[test]
 fn internal_key_prefix_still_resolves() {
     let (s, fx) = fixture();
-    assert_eq!(fx[0].id.0, "aventura-b-local");
+    assert_eq!(fx[0].id.0, "aventura-b");
     let internal: String = s
         .conn
         .query_row(
@@ -396,7 +386,7 @@ fn queries_use_indexes_on_the_metadata_table() {
 fn slugs_are_assigned_unique_and_resolvable() {
     let mut s = Storage::open_in_memory().unwrap();
     let mk = |p: &str, artist: Option<&str>, album: Option<&str>, title: &str| ScannedTrack {
-        external_id: p.into(),
+        path: p.into(),
         metadata: Metadata {
             title: title.into(),
             artist: artist.map(Into::into),
@@ -404,14 +394,11 @@ fn slugs_are_assigned_unique_and_resolvable() {
             ..Default::default()
         },
     };
-    s.import_tracks(
-        "local",
-        &[
-            mk("/1", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
-            mk("/2", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
-            mk("/3", None, None, "Mystery"),
-        ],
-    )
+    s.import_tracks(&[
+        mk("/1", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
+        mk("/2", Some("Romeo Santos"), Some("Fórmula"), "Don't Stop"),
+        mk("/3", None, None, "Mystery"),
+    ])
     .unwrap();
     // Identical sort keys tie-break on the internal key, so compare as a sorted set.
     let mut slugs: Vec<String> = all(&s, &FilterSpec::default())
@@ -422,28 +409,19 @@ fn slugs_are_assigned_unique_and_resolvable() {
     assert_eq!(
         slugs,
         [
-            "romeo-santos-fórmula-dont-stop-local",
-            "romeo-santos-fórmula-dont-stop-local-2",
-            "unknown-mystery-local",
+            "romeo-santos-fórmula-dont-stop",
+            "romeo-santos-fórmula-dont-stop-2",
+            "unknown-mystery",
         ]
     );
     // exact, differently-written, and via tag operations
     assert_eq!(
-        s.track("romeo-santos-fórmula-dont-stop-local-2")
-            .unwrap()
-            .id
-            .0,
+        s.track("romeo-santos-fórmula-dont-stop-2").unwrap().id.0,
         slugs[1]
     );
-    assert_eq!(s.track("Unknown / Mystery / LOCAL").unwrap().id.0, slugs[2]);
-    assert_eq!(
-        s.add_tags("unknown-mystery-local", &tags(&["x"])).unwrap(),
-        1
-    );
-    assert!(matches!(
-        s.track("nope-nope-local"),
-        Err(Error::NotFound(_))
-    ));
+    assert_eq!(s.track("Unknown / Mystery").unwrap().id.0, slugs[2]);
+    assert_eq!(s.add_tags("unknown-mystery", &tags(&["x"])).unwrap(), 1);
+    assert!(matches!(s.track("nope-nope"), Err(Error::NotFound(_))));
     assert!(matches!(
         s.track("x'; DROP TABLE tracks;--"),
         Err(Error::NotFound(_))
@@ -490,7 +468,7 @@ fn ids_of(tracks: &[Track]) -> Vec<&str> {
 fn annotated() -> Storage {
     let mut s = Storage::open_in_memory().unwrap();
     let mk = |t: &str, artist: &str, year: Option<i32>, bpm: Option<f64>| ScannedTrack {
-        external_id: t.into(),
+        path: t.into(),
         metadata: Metadata {
             title: t.into(),
             artist: Some(artist.into()),
@@ -500,15 +478,12 @@ fn annotated() -> Storage {
             ..Default::default()
         },
     };
-    s.import_tracks(
-        "local",
-        &[
-            mk("A", "x", Some(1990), Some(100.0)),
-            mk("B", "x", Some(2000), None),
-            mk("C", "y", None, Some(80.0)),
-            mk("D", "y", Some(1980), Some(120.0)),
-        ],
-    )
+    s.import_tracks(&[
+        mk("A", "x", Some(1990), Some(100.0)),
+        mk("B", "x", Some(2000), None),
+        mk("C", "y", None, Some(80.0)),
+        mk("D", "y", Some(1980), Some(120.0)),
+    ])
     .unwrap();
     s
 }
@@ -631,20 +606,14 @@ fn sort_by_rating_and_duration() {
 fn sort_by_added_orders_newest_first_with_stable_ties() {
     let s = annotated();
     s.conn
-        .execute(
-            "UPDATE tracks SET added_at = 100 WHERE slug LIKE '%-a-%'",
-            [],
-        )
+        .execute("UPDATE tracks SET added_at = 100 WHERE slug LIKE '%-a'", [])
+        .unwrap();
+    s.conn
+        .execute("UPDATE tracks SET added_at = 300 WHERE slug LIKE '%-c'", [])
         .unwrap();
     s.conn
         .execute(
-            "UPDATE tracks SET added_at = 300 WHERE slug LIKE '%-c-%'",
-            [],
-        )
-        .unwrap();
-    s.conn
-        .execute(
-            "UPDATE tracks SET added_at = 200 WHERE slug LIKE '%-b-%' OR slug LIKE '%-d-%'",
+            "UPDATE tracks SET added_at = 200 WHERE slug LIKE '%-b' OR slug LIKE '%-d'",
             [],
         )
         .unwrap();
@@ -857,16 +826,28 @@ fn saving_a_queue_with_an_unknown_track_fails_without_changing_the_saved_one() {
 }
 
 #[test]
-fn sources_are_listed_in_the_order_they_were_added() {
+fn a_track_has_one_source_file() {
     let mut s = Storage::open_in_memory().unwrap();
-    s.import_tracks("local", &[scanned("/a.mp3", "A", "x", None)])
+    s.import_tracks(&[scanned("/a.mp3", "A", "x", None)])
         .unwrap();
     let a = all(&s, &FilterSpec::default())[0].id.0.clone();
+    assert_eq!(s.source_path(&a).unwrap().as_deref(), Some("/a.mp3"));
+    assert!(matches!(s.source_path("nope"), Err(Error::NotFound(_))));
+}
+
+#[test]
+fn the_instance_has_a_name_and_a_playback_switch() {
+    let mut s = Storage::open_in_memory().unwrap();
+    let fresh = s.instance().unwrap();
+    assert!(!fresh.name.is_empty() && fresh.playback, "{fresh:?}");
     assert_eq!(
-        s.sources(&a).unwrap(),
-        [("local".to_string(), "/a.mp3".to_string())]
+        s.set_instance_name(" Vaz's Desktop ").unwrap().name,
+        "vazs-desktop"
     );
-    assert!(matches!(s.sources("nope"), Err(Error::NotFound(_))));
+    assert!(s.set_instance_name("???").is_err());
+    let i = s.set_playback_allowed(false).unwrap();
+    assert_eq!((i.name.as_str(), i.playback), ("vazs-desktop", false));
+    assert!(s.set_playback_allowed(true).unwrap().playback);
 }
 
 #[test]

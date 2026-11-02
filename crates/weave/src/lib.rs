@@ -47,7 +47,7 @@ mod player;
 
 /// The domain types: tracks, filters, playlists, the queue and its state, errors.
 pub use weave_core as core;
-pub use weave_engine::{BackendInfo, ImportStats, Library, SessionView};
+pub use weave_engine::{ImportStats, Library, SessionView};
 
 pub use player::{
     Audio, DEFAULT_TICK, PlaybackFactory, Player, PlayerEvent, PlayerOptions, lock_path,

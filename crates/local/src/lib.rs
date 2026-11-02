@@ -1,5 +1,5 @@
-//! Bundled `local` backend: read-only file scanning, lyrics lookup and (with the `audio`
-//! feature) playback. Files are never modified.
+//! Local files: read-only scanning, lyrics lookup and (with the `audio` feature) playback.
+//! Files are never modified.
 
 #[cfg(feature = "audio")]
 mod playback;
@@ -11,50 +11,19 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use walkdir::WalkDir;
-use weave_core::{
-    Backend, CapabilityDescriptor, CapabilityGroup, CapabilityState, Error, Lyrics, Metadata,
-    Result, ScannedTrack,
-};
+use weave_core::{Error, Lyrics, Metadata, Result, ScannedTrack};
 
 #[cfg(feature = "audio")]
 pub use playback::LocalPlayback;
 
-pub const BACKEND_ID: &str = "local";
-
 #[derive(Debug, Default)]
-pub struct LocalBackend;
+pub struct LocalFiles;
 
-impl Backend for LocalBackend {
-    fn id(&self) -> &str {
-        BACKEND_ID
-    }
-
-    fn capabilities(&self) -> Vec<CapabilityDescriptor> {
-        let cap = |group, name: &str, state| CapabilityDescriptor {
-            group,
-            name: name.into(),
-            state,
-        };
-        // Whether a sound device is actually present is only known when a host opens one.
-        let audio = CapabilityState {
-            supported: cfg!(feature = "audio"),
-            authorized: true,
-            available: cfg!(feature = "audio"),
-        };
-        vec![
-            cap(CapabilityGroup::Library, "read", CapabilityState::READY),
-            cap(CapabilityGroup::Metadata, "read", CapabilityState::READY),
-            cap(CapabilityGroup::Playback, "control", audio),
-            cap(CapabilityGroup::Assets, "lyrics", CapabilityState::READY),
-        ]
-    }
-}
-
-impl LocalBackend {
-    /// Lyrics for a source: a `.lrc` file next to the audio file, else lyrics embedded in
+impl LocalFiles {
+    /// Lyrics for an audio file: a `.lrc` file next to the audio file, else lyrics embedded in
     /// its tags (synchronized when they contain LRC timestamps). `None` when there are none.
-    pub fn lyrics(&self, external_id: &str) -> Result<Option<Lyrics>> {
-        let path = PathBuf::from(external_id);
+    pub fn lyrics(&self, path: &str) -> Result<Option<Lyrics>> {
+        let path = PathBuf::from(path);
         for ext in ["lrc", "LRC"] {
             if let Ok(bytes) = std::fs::read(path.with_extension(ext))
                 && let Some(l) = Lyrics::parse(&String::from_utf8_lossy(&bytes))
@@ -80,7 +49,7 @@ impl LocalBackend {
         }
         let mut out = Vec::new();
         for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
-            let entry = entry.map_err(|e| Error::Backend(e.to_string()))?;
+            let entry = entry.map_err(|e| Error::Player(e.to_string()))?;
             if entry.file_type().is_file() && is_audio(entry.path()) {
                 out.push(read_track(entry.path()));
             }
@@ -103,7 +72,7 @@ fn is_audio(path: &Path) -> bool {
 }
 
 fn read_track(path: &Path) -> ScannedTrack {
-    let external_id = path
+    let path_string = path
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
@@ -144,7 +113,7 @@ fn read_track(path: &Path) -> ScannedTrack {
         }
     }
     ScannedTrack {
-        external_id,
+        path: path_string,
         metadata: m,
     }
 }
@@ -190,7 +159,7 @@ mod tests {
         std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
         std::fs::write(dir.join("empty.flac"), b"").unwrap();
 
-        let mut titles: Vec<_> = LocalBackend
+        let mut titles: Vec<_> = LocalFiles
             .scan(&dir)
             .unwrap()
             .into_iter()
@@ -223,10 +192,7 @@ mod tests {
         let song = dir.join("Song.wav");
         write_silent_wav(&song, 1);
         std::fs::write(dir.join("Song.lrc"), "[00:01.00]hello\n[00:02.00]world").unwrap();
-        let l = LocalBackend
-            .lyrics(&song.to_string_lossy())
-            .unwrap()
-            .unwrap();
+        let l = LocalFiles.lyrics(&song.to_string_lossy()).unwrap().unwrap();
         assert!(l.synced);
         assert_eq!(l.lines.len(), 2);
         std::fs::remove_dir_all(dir).unwrap();
@@ -243,10 +209,7 @@ mod tests {
         tag.insert_text(ItemKey::Lyrics, "[00:05.00]embedded line".into());
         tag.save_to_path(&song, WriteOptions::default()).unwrap();
 
-        let l = LocalBackend
-            .lyrics(&song.to_string_lossy())
-            .unwrap()
-            .unwrap();
+        let l = LocalFiles.lyrics(&song.to_string_lossy()).unwrap().unwrap();
         assert_eq!(
             (l.synced, l.lines[0].text.as_str()),
             (true, "embedded line")
@@ -254,10 +217,7 @@ mod tests {
 
         // a sidecar wins over the embedded text
         std::fs::write(dir.join("Tagged.lrc"), "[00:01.00]sidecar line").unwrap();
-        let l = LocalBackend
-            .lyrics(&song.to_string_lossy())
-            .unwrap()
-            .unwrap();
+        let l = LocalFiles.lyrics(&song.to_string_lossy()).unwrap().unwrap();
         assert_eq!(l.lines[0].text, "sidecar line");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -267,40 +227,27 @@ mod tests {
         let dir = temp_dir();
         let song = dir.join("Plain.wav");
         write_silent_wav(&song, 1);
-        assert_eq!(LocalBackend.lyrics(&song.to_string_lossy()).unwrap(), None);
-        assert_eq!(LocalBackend.lyrics("/nonexistent/song.mp3").unwrap(), None);
+        assert_eq!(LocalFiles.lyrics(&song.to_string_lossy()).unwrap(), None);
+        assert_eq!(LocalFiles.lyrics("/nonexistent/song.mp3").unwrap(), None);
         std::fs::write(dir.join("Plain.lrc"), "  \n").unwrap();
         assert_eq!(
-            LocalBackend.lyrics(&song.to_string_lossy()).unwrap(),
+            LocalFiles.lyrics(&song.to_string_lossy()).unwrap(),
             None,
             "an empty sidecar is ignored"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn playback_capability_follows_the_audio_feature() {
-        let cap = LocalBackend
-            .capabilities()
-            .into_iter()
-            .find(|c| c.group == CapabilityGroup::Playback)
-            .unwrap();
-        assert_eq!(cap.state.supported, cfg!(feature = "audio"));
-    }
-
     #[cfg(feature = "audio")]
     mod audio {
         use std::time::{Duration, Instant};
 
-        use weave_core::{Playback, SourceRef};
+        use weave_core::Playback;
 
         use super::*;
 
-        fn source(path: &Path) -> SourceRef {
-            SourceRef {
-                backend_id: BACKEND_ID.into(),
-                external_id: path.to_string_lossy().into_owned(),
-            }
+        fn source(path: &Path) -> String {
+            path.to_string_lossy().into_owned()
         }
 
         /// Plays silence, but still needs an output device; skipped where there is none.
@@ -348,22 +295,14 @@ mod tests {
         }
 
         #[test]
-        fn rejects_foreign_sources_and_missing_files() {
+        fn rejects_missing_files() {
             let Ok(mut p) = LocalPlayback::open() else {
                 return;
             };
-            let foreign = SourceRef {
-                backend_id: "spotify".into(),
-                external_id: "x".into(),
-            };
-            assert!(matches!(
-                p.start(&foreign, Duration::ZERO),
-                Err(Error::Backend(_))
-            ));
             let missing = source(Path::new("/nonexistent/song.mp3"));
             assert!(matches!(
                 p.start(&missing, Duration::ZERO),
-                Err(Error::Backend(_))
+                Err(Error::Player(_))
             ));
             assert!(p.seek(Duration::from_secs(1)).is_err(), "nothing is loaded");
         }
@@ -372,7 +311,7 @@ mod tests {
     #[test]
     fn missing_path_is_not_found() {
         assert!(matches!(
-            LocalBackend.scan(Path::new("/nonexistent/weave")),
+            LocalFiles.scan(Path::new("/nonexistent/weave")),
             Err(Error::NotFound(_))
         ));
     }

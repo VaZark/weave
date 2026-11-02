@@ -10,8 +10,8 @@ pub enum Error {
     InvalidInput(String),
     #[error("storage error: {0}")]
     Storage(String),
-    #[error("backend error: {0}")]
-    Backend(String),
+    #[error("player error: {0}")]
+    Player(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

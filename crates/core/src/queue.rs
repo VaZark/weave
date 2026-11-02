@@ -1,6 +1,6 @@
 //! Playback session state: queue, cursor, shuffle, repeat, end-of-queue behavior and
 //! sleep timer. Pure data and rules; persistence lives in storage and orchestration in
-//! the engine. No audio is involved: a future playback backend observes this state.
+//! the engine. No audio is involved: a playback host observes this state.
 
 use std::collections::HashSet;
 

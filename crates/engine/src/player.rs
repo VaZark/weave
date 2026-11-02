@@ -9,9 +9,8 @@
 use std::time::Duration;
 
 use weave_core::{
-    Advance, AdvanceReason, Backend, CapabilityGroup, EndOfQueue, Error, FilterSpec, Lyrics, Page,
-    PlayStatus, Playback, PlayerState, Queue, RepeatMode, Result, SleepSetting, SourceRef, Track,
-    TrackId,
+    Advance, AdvanceReason, EndOfQueue, Error, FilterSpec, Lyrics, Page, PlayStatus, Playback,
+    PlayerState, Queue, RepeatMode, Result, SleepSetting, Track, TrackId,
 };
 
 use crate::{Library, autoplay};
@@ -172,31 +171,36 @@ impl Library {
             .transpose()
     }
 
-    /// The source a playback backend can play for a track.
-    pub fn playback_source(&self, track_id: &str) -> Result<SourceRef> {
-        let playable = self.local.capabilities().iter().any(|c| {
-            c.group == CapabilityGroup::Playback && c.state.supported && c.state.available
-        });
+    /// The audio file behind a track.
+    pub fn playback_path(&self, track_id: &str) -> Result<String> {
         self.storage
-            .sources(track_id)?
-            .into_iter()
-            .find(|(backend, _)| playable && backend == self.local.id())
-            .map(|(backend_id, external_id)| SourceRef {
-                backend_id,
-                external_id,
-            })
-            .ok_or_else(|| Error::InvalidInput(format!("no playable source for \"{track_id}\"")))
+            .source_path(track_id)?
+            .ok_or_else(|| Error::InvalidInput(format!("no file to play for \"{track_id}\"")))
     }
 
-    /// A player for the host to drive (needs the `audio` feature and an output device).
+    /// Fails on a remote-only instance, which never makes sound itself.
+    pub fn ensure_playback_allowed(&self) -> Result<()> {
+        if self.storage.instance()?.playback {
+            Ok(())
+        } else {
+            Err(Error::InvalidInput(
+                "this instance is remote-only (playback is off); turn it on with `instance playback on`"
+                    .into(),
+            ))
+        }
+    }
+
+    /// A player for the host to drive (needs the `audio` feature, an output device and an
+    /// instance that may play).
     pub fn open_playback(&self) -> Result<Box<dyn Playback>> {
+        self.ensure_playback_allowed()?;
         #[cfg(feature = "audio")]
         {
             self.local.playback()
         }
         #[cfg(not(feature = "audio"))]
         {
-            Err(Error::Backend("this build has no audio support".into()))
+            Err(Error::Player("this build has no audio support".into()))
         }
     }
 
@@ -221,16 +225,12 @@ impl Library {
             .report_position(start_seq, position.as_millis() as u64, now)
     }
 
-    /// Synchronized or plain lyrics for a track, if any of its sources has them.
+    /// Synchronized or plain lyrics for a track, if its file has them.
     pub fn lyrics(&self, track_id: &str) -> Result<Option<Lyrics>> {
-        for (backend, external_id) in self.storage.sources(track_id)? {
-            if backend == self.local.id()
-                && let Some(l) = self.local.lyrics(&external_id)?
-            {
-                return Ok(Some(l));
-            }
+        match self.storage.source_path(track_id)? {
+            Some(path) => self.local.lyrics(&path),
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     // --- starting playback -------------------------------------------------
@@ -395,7 +395,7 @@ impl Library {
         self.commit_started(&mut queue)
     }
 
-    /// A playback backend reports that the current track finished by itself.
+    /// The playback host reports that the current track finished by itself.
     pub fn track_ended(&mut self) -> Result<SessionView> {
         let (queue, fired) = self.load_session_checked()?;
         if queue.state.status != PlayStatus::Playing {
@@ -488,7 +488,7 @@ mod tests {
 
     fn scanned(title: &str, bpm: Option<f64>) -> ScannedTrack {
         ScannedTrack {
-            external_id: title.into(),
+            path: title.into(),
             metadata: Metadata {
                 title: title.into(),
                 artist: Some("x".into()),
@@ -512,7 +512,7 @@ mod tests {
         let tracks: Vec<_> = (1..=n)
             .map(|i| scanned(&format!("t{i}"), Some(100.0)))
             .collect();
-        lib.import_scanned("fake", &tracks).unwrap();
+        lib.import_scanned(&tracks).unwrap();
         (lib, clock)
     }
 
@@ -524,7 +524,7 @@ mod tests {
     }
 
     fn id(n: usize) -> String {
-        format!("x-t{n}-fake")
+        format!("x-t{n}")
     }
 
     fn titles(v: &SessionView) -> Vec<&str> {
@@ -558,7 +558,7 @@ mod tests {
         let path = dir.join("lib.db");
         {
             let mut lib = Library::open(&path).unwrap();
-            lib.import_scanned("fake", &[scanned("t1", None), scanned("t2", None)])
+            lib.import_scanned(&[scanned("t1", None), scanned("t2", None)])
                 .unwrap();
             lib.queue_add(&[id(1), id(2)], None, false).unwrap();
             lib.queue_jump(2).unwrap();
@@ -865,14 +865,14 @@ mod tests {
             .unwrap()
             .with_determinism(5, move || c.get());
         let no_duration = |t: &str| ScannedTrack {
-            external_id: t.into(),
+            path: t.into(),
             metadata: Metadata {
                 title: t.into(),
                 artist: Some("x".into()),
                 ..Default::default()
             },
         };
-        lib.import_scanned("fake", &[no_duration("t1"), no_duration("t2")])
+        lib.import_scanned(&[no_duration("t1"), no_duration("t2")])
             .unwrap();
         lib.queue_add(&[id(1), id(2)], None, false).unwrap();
         lib.set_sleep(timer(60, true)).unwrap();
@@ -1052,7 +1052,7 @@ mod tests {
         let path = dir.join("lib.db");
         {
             let mut lib = Library::open(&path).unwrap();
-            lib.import_scanned("fake", &[scanned("t1", None), scanned("t2", None)])
+            lib.import_scanned(&[scanned("t1", None), scanned("t2", None)])
                 .unwrap();
             lib.queue_add(&[id(1), id(2)], None, false).unwrap();
             lib.next().unwrap();
@@ -1285,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn lyrics_and_playback_sources_come_from_the_local_backend() {
+    fn lyrics_and_the_playback_path_come_from_the_local_file() {
         let (lib, dir) = real_files();
         let all = lib
             .search(&FilterSpec::default(), Page::ALL)
@@ -1298,29 +1298,29 @@ mod tests {
         assert!(l.synced && l.lines.len() == 2);
         assert_eq!(lib.lyrics(&other.id.0).unwrap(), None);
         assert!(matches!(lib.lyrics("nope"), Err(Error::NotFound(_))));
-
-        let source = lib.playback_source(&song.id.0);
-        if cfg!(feature = "audio") {
-            let s = source.unwrap();
-            assert!(s.backend_id == "local" && s.external_id.ends_with("song.wav"));
-        } else {
-            assert!(
-                matches!(source, Err(Error::InvalidInput(_))),
-                "no audio support, nothing is playable"
-            );
-            assert!(matches!(lib.open_playback(), Err(Error::Backend(_))));
+        assert!(lib.playback_path(&song.id.0).unwrap().ends_with("song.wav"));
+        if !cfg!(feature = "audio") {
+            assert!(matches!(lib.open_playback(), Err(Error::Player(_))));
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn sources_of_other_backends_are_not_playable_here() {
-        let (lib, _) = library(1);
-        assert!(
-            matches!(lib.playback_source(&id(1)), Err(Error::InvalidInput(_))),
-            "a fake backend"
+    fn a_remote_only_instance_never_opens_playback() {
+        let (mut lib, _) = library(1);
+        assert!(lib.ensure_playback_allowed().is_ok());
+        let i = lib.set_playback_allowed(false).unwrap();
+        assert!(!i.playback);
+        assert!(matches!(
+            lib.open_playback(),
+            Err(Error::InvalidInput(m)) if m.contains("remote-only")
+        ));
+        lib.set_playback_allowed(true).unwrap();
+        assert!(lib.ensure_playback_allowed().is_ok());
+        assert_eq!(
+            lib.set_instance_name("Living Room").unwrap().name,
+            "living-room"
         );
-        assert_eq!(lib.lyrics(&id(1)).unwrap(), None);
     }
 
     /// t1-t3 tagged bachata, t4 zouk; every library gets its own seed.
@@ -1332,7 +1332,7 @@ mod tests {
         let tracks: Vec<_> = (1..=4)
             .map(|i| scanned(&format!("t{i}"), Some(100.0)))
             .collect();
-        lib.import_scanned("fake", &tracks).unwrap();
+        lib.import_scanned(&tracks).unwrap();
         for i in 1..=3 {
             lib.add_tags(&id(i), &["bachata".to_string()]).unwrap();
         }
@@ -1416,7 +1416,7 @@ mod tests {
     fn a_playlist_falls_through_to_recommendations_at_its_end() {
         let mut lib = tagged_library();
         lib.create_manual_playlist("Mix", None).unwrap();
-        lib.playlist_add("mix", &["x-seed-fake".into()]).unwrap();
+        lib.playlist_add("mix", &["x-seed".into()]).unwrap();
         lib.play_playlist("mix", false).unwrap();
         lib.set_end_of_queue(EndOfQueue::Continue).unwrap();
 
@@ -1578,10 +1578,9 @@ mod tests {
         .into_iter()
         .map(|(t, b)| scanned(t, Some(b)))
         .collect();
-        lib.import_scanned("fake", &tracks).unwrap();
+        lib.import_scanned(&tracks).unwrap();
         let tag = |lib: &mut Library, t: &str, tag: &str| {
-            lib.add_tags(&format!("x-{t}-fake"), &[tag.to_string()])
-                .unwrap();
+            lib.add_tags(&format!("x-{t}"), &[tag.to_string()]).unwrap();
         };
         for t in ["seed", "match-a", "match-b", "too-fast"] {
             tag(&mut lib, t, "bachata");
@@ -1593,7 +1592,7 @@ mod tests {
     #[test]
     fn continue_appends_similar_tracks_and_keeps_playing() {
         let mut lib = tagged_library();
-        lib.play_track("x-seed-fake").unwrap();
+        lib.play_track("x-seed").unwrap();
         lib.set_end_of_queue(EndOfQueue::Continue).unwrap();
         let v = lib.track_ended().unwrap();
         assert_eq!(v.state.status, PlayStatus::Playing);
@@ -1608,7 +1607,7 @@ mod tests {
     #[test]
     fn continue_stops_when_nothing_is_similar() {
         let mut lib = tagged_library();
-        lib.play_track("x-other-genre-fake").unwrap();
+        lib.play_track("x-other-genre").unwrap();
         lib.set_end_of_queue(EndOfQueue::Continue).unwrap();
         let v = lib.track_ended().unwrap();
         assert_eq!((v.state.status, v.tracks.len()), (PlayStatus::Stopped, 1));
@@ -1617,7 +1616,7 @@ mod tests {
     #[test]
     fn stop_mode_stops_at_the_end() {
         let mut lib = tagged_library();
-        lib.play_track("x-seed-fake").unwrap();
+        lib.play_track("x-seed").unwrap();
         let v = lib.track_ended().unwrap();
         assert_eq!((v.state.status, v.tracks.len()), (PlayStatus::Stopped, 1));
     }

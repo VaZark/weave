@@ -102,7 +102,7 @@ pub struct FilterSpec {
     /// `=genre:bachata` matches explicit assignments of that tag only (`has_exact`).
     pub tag_all: Vec<String>,
     pub tag_any: Vec<String>,
-    pub tag_none: Vec<String>,
+    pub tag_exclude: Vec<String>,
     /// Keyed tag conditions, ANDed with each other and with everything else.
     pub tag_clauses: Vec<TagClause>,
     /// Numeric ranges over keyed tag values; every range must match (AND).
@@ -126,7 +126,7 @@ pub struct FilterSpec {
 impl FilterSpec {
     /// Trim, drop empties and duplicates (by normalized form, keeping first spelling).
     pub fn normalized(mut self) -> Self {
-        for list in [&mut self.tag_all, &mut self.tag_any, &mut self.tag_none] {
+        for list in [&mut self.tag_all, &mut self.tag_any, &mut self.tag_exclude] {
             let mut seen: Vec<(bool, String)> = Vec::new();
             list.retain_mut(|t| {
                 *t = t.trim().to_string();
@@ -243,8 +243,8 @@ impl FilterSpec {
         if !update.tag_any.is_empty() {
             self.tag_any = update.tag_any;
         }
-        if !update.tag_none.is_empty() {
-            self.tag_none = update.tag_none;
+        if !update.tag_exclude.is_empty() {
+            self.tag_exclude = update.tag_exclude;
         }
         if !update.tag_clauses.is_empty() {
             self.tag_clauses = update.tag_clauses;

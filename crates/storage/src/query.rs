@@ -92,7 +92,7 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
     for (op, list) in [
         (TagOp::All, &f.tag_all),
         (TagOp::Any, &f.tag_any),
-        (TagOp::Exclude, &f.tag_none),
+        (TagOp::Exclude, &f.tag_exclude),
     ] {
         if list.is_empty() {
             continue;

@@ -128,7 +128,7 @@ mod remote {
         let tracks: Vec<_> = ["a", "b", "c"]
             .iter()
             .map(|t| ScannedTrack {
-                external_id: (*t).into(),
+                path: (*t).into(),
                 metadata: Metadata {
                     title: (*t).into(),
                     artist: Some("x".into()),
@@ -137,13 +137,9 @@ mod remote {
                 },
             })
             .collect();
-        lib.import_scanned("fake", &tracks).unwrap();
-        lib.queue_add(
-            &["x-a-fake".into(), "x-b-fake".into(), "x-c-fake".into()],
-            None,
-            false,
-        )
-        .unwrap();
+        lib.import_scanned(&tracks).unwrap();
+        lib.queue_add(&["x-a".into(), "x-b".into(), "x-c".into()], None, false)
+            .unwrap();
         (lib, clock)
     }
 
@@ -238,7 +234,7 @@ mod remote {
     #[test]
     fn the_snapshot_describes_the_session_for_the_desktop() {
         let (mut lib, _) = lib();
-        lib.play_track("x-b-fake").unwrap();
+        lib.play_track("x-b").unwrap();
         lib.set_volume(0.25).unwrap();
         let snap = snapshot_of(&lib.session().unwrap(), Some("la la".into()));
         let track = snap.track.unwrap();
@@ -272,7 +268,7 @@ mod fake_player {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
-    use weave_core::{RepeatMode, ScannedTrack, SleepSetting, SourceRef};
+    use weave_core::{RepeatMode, ScannedTrack, SleepSetting};
 
     use super::*;
 
@@ -287,12 +283,15 @@ mod fake_player {
     struct FakePlayback(Rc<RefCell<Fake>>);
 
     impl Playback for FakePlayback {
-        fn start(&mut self, source: &SourceRef, from: Duration) -> weave_core::Result<()> {
+        fn start(&mut self, source: &str, from: Duration) -> weave_core::Result<()> {
             let mut f = self.0.borrow_mut();
             if f.fail_start {
-                return Err(Error::Backend("device went away".into()));
+                return Err(Error::Player("device went away".into()));
             }
-            let file = Path::new(&source.external_id)
+            if source.ends_with(".ogg") {
+                return Err(Error::Player("cannot decode".into()));
+            }
+            let file = Path::new(source)
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
@@ -390,7 +389,7 @@ mod fake_player {
         }
 
         fn id(&self, title: &str) -> String {
-            format!("unknown-{title}-local")
+            format!("unknown-{title}")
         }
 
         fn tick(&mut self) -> Vec<PlayerEvent> {
@@ -543,16 +542,17 @@ mod fake_player {
         assert!(events.contains(&PlayerEvent::SleepStopped), "{events:?}");
     }
 
+    /// A track whose file cannot be decoded (the fake rejects `.ogg`).
     fn add_unplayable(r: &mut Rig, title: &str) -> String {
         let t = ScannedTrack {
-            external_id: format!("{title}.ogg"),
+            path: format!("{title}.ogg"),
             metadata: weave_core::Metadata {
                 title: title.into(),
                 ..Default::default()
             },
         };
-        r.lib.import_scanned("elsewhere", &[t]).unwrap();
-        format!("unknown-{title}-elsewhere")
+        r.lib.import_scanned(&[t]).unwrap();
+        format!("unknown-{title}")
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Human-readable alternative track IDs: `artist[-album]-song-source`.
+//! Human-readable alternative track IDs: `artist[-album]-song`.
 //!
 //! A slug only ever contains lowercase Unicode letters/digits and `-`, so it is
 //! safe in URLs, shells and SQL literals (queries are parameterized regardless).
@@ -49,9 +49,9 @@ fn segment(input: &str) -> String {
     capped.trim_end_matches('-').to_string()
 }
 
-/// `artist[-album]-song-source`. Unknown artist → `unknown`, unusable title →
+/// `artist[-album]-song`. Unknown artist → `unknown`, unusable title →
 /// `untitled`; the album is left out when absent. Uniqueness is the caller's job.
-pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str, source: &str) -> String {
+pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str) -> String {
     let or = |s: String, fallback: &str| {
         if s.is_empty() {
             fallback.to_string()
@@ -65,7 +65,6 @@ pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str, source
         parts.push(album);
     }
     parts.push(or(segment(title), "untitled"));
-    parts.push(or(segment(source), "unknown"));
     parts.join("-")
 }
 
@@ -106,12 +105,12 @@ mod tests {
     #[test]
     fn parts_are_capped_but_whole_slugs_are_not_truncated() {
         let long = "ab ".repeat(40);
-        let slug = track_slug(Some(&long), None, "t", "local");
-        let artist = slug.strip_suffix("-t-local").unwrap();
+        let slug = track_slug(Some(&long), None, "t");
+        let artist = slug.strip_suffix("-t").unwrap();
         assert!(artist.chars().count() <= 48 && !artist.ends_with('-'));
         // Re-normalizing a finished slug must be a no-op, however long.
         assert_eq!(slugify(&slug), slug);
-        let long_slug = format!("{}-song-local", "a".repeat(120));
+        let long_slug = format!("{}-song", "a".repeat(120));
         assert_eq!(slugify(&long_slug), long_slug);
     }
 
@@ -128,18 +127,11 @@ mod tests {
             track_slug(
                 Some("Romeo Santos"),
                 Some("Fórmula, Vol. 2"),
-                "Propuesta Indecente",
-                "local"
+                "Propuesta Indecente"
             ),
-            "romeo-santos-fórmula-vol-2-propuesta-indecente-local"
+            "romeo-santos-fórmula-vol-2-propuesta-indecente"
         );
-        assert_eq!(
-            track_slug(None, None, "Song", "local"),
-            "unknown-song-local"
-        );
-        assert_eq!(
-            track_slug(Some("!!"), Some(""), "???", "Local"),
-            "unknown-untitled-local"
-        );
+        assert_eq!(track_slug(None, None, "Song"), "unknown-song");
+        assert_eq!(track_slug(Some("!!"), Some(""), "???"), "unknown-untitled");
     }
 }

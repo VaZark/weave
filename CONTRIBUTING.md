@@ -81,12 +81,11 @@ weave-player dev seed                # 60 tracks with tags, favorites, ratings a
 weave-player dev seed --count 100    # up to 100
 ```
 
-It is idempotent: running it again adds nothing that already exists. Seeded tracks use the backend id `seed`
-(their IDs end in `-seed`) and have no files, so they are not playable. Then try:
+It is idempotent: running it again adds nothing that already exists. Seeded tracks have no files behind them, so they are not playable. Then try:
 
 ```bash
 weave-player list --show-ids    # --show-ids adds the slug ID column
-weave-player search --tag-all bachata,90s --bpm-min 90
+weave-player search --tag-all bachata,90s --tag-range bpm=90..
 weave-player playlist list
 weave-player playlist show "Bachata 90s"
 weave-player play playlist road-trip --shuffle   # fill the queue (seeded tracks have no files, so nothing plays)
@@ -96,7 +95,7 @@ weave-player now
 ```
 
 In a debug build, `weave-player dev finish-track` simulates the current track ending by itself, which is what the
-playback backend will report; use it to try repeat, shuffle and `queue end continue`.
+playback host will report; use it to try repeat, shuffle and `queue end continue`.
 
 To import real music instead (files are only read, never modified):
 
@@ -108,10 +107,10 @@ weave-player import ~/Music
 
 ```text
 crates/weave/      the library to embed: re-exports the crates below and runs the embedded Player
-crates/core/       types, FilterSpec, track slugs, backend contracts
+crates/core/       types, FilterSpec, track slugs, instance identity
 crates/storage/    SQLite schema, migrations, query building
 crates/engine/     the single API frontends call
-backends/local/    file scanning (audio detected by content, not extension)
+crates/local/     file scanning, lyrics and playback (audio detected by content, not extension)
 apps/cli/          the `weave-player` binary, a frontend over `weave` only (src/dev.rs is debug-only)
 ```
 

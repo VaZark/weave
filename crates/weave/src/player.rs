@@ -157,7 +157,7 @@ impl Player {
     pub fn start(db: impl AsRef<Path>, options: PlayerOptions) -> Result<Player> {
         let db = db.as_ref().to_path_buf();
         let lock = HostLock::acquire(&db)
-            .map_err(|e| Error::Backend(format!("cannot take the player lock: {e}")))?
+            .map_err(|e| Error::Player(format!("cannot take the player lock: {e}")))?
             .ok_or_else(|| {
                 Error::AlreadyExists("a player is already running for this library".into())
             })?;
@@ -172,7 +172,7 @@ impl Player {
                 let _lock = lock;
                 run(&db, options, &events_tx, &ready_tx, &flag);
             })
-            .map_err(|e| Error::Backend(format!("cannot start the player thread: {e}")))?;
+            .map_err(|e| Error::Player(format!("cannot start the player thread: {e}")))?;
 
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Player {
@@ -186,7 +186,7 @@ impl Player {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err(Error::Backend("the player stopped while starting".into()))
+                Err(Error::Player("the player stopped while starting".into()))
             }
         }
     }
@@ -234,6 +234,7 @@ fn run(
 ) {
     let setup = || -> Result<(Library, Host)> {
         let mut lib = Library::open(db)?;
+        lib.ensure_playback_allowed()?; // a remote-only instance never plays
         lib.clear_host_quit()?; // an old quit request must not end this player at once
         let playback = match options.audio {
             Audio::Off => None,

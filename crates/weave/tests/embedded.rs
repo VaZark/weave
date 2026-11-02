@@ -29,7 +29,7 @@ fn library_with_fake_tracks(db: &Path, titles: &[&str]) -> Library {
     let tracks: Vec<_> = titles
         .iter()
         .map(|t| ScannedTrack {
-            external_id: (*t).into(),
+            path: (*t).into(),
             metadata: Metadata {
                 title: (*t).into(),
                 artist: Some("x".into()),
@@ -38,12 +38,12 @@ fn library_with_fake_tracks(db: &Path, titles: &[&str]) -> Library {
             },
         })
         .collect();
-    lib.import_scanned("fake", &tracks).unwrap();
+    lib.import_scanned(&tracks).unwrap();
     lib
 }
 
 fn id(title: &str) -> String {
-    format!("x-{title}-fake")
+    format!("x-{title}")
 }
 
 /// The next event matching `want`, or a failure after `secs`.
@@ -72,7 +72,7 @@ fn the_player_follows_what_another_handle_does_to_the_session() {
     });
     assert_eq!(e.to_string(), "now on \"a\"");
     assert_eq!(e.name(), "track");
-    assert_eq!(e.track(), Some("x-a-fake"));
+    assert_eq!(e.track(), Some("x-a"));
 
     lib.pause().unwrap();
     wait_for(&player, 3, |e| {
@@ -188,7 +188,7 @@ fn a_failing_audio_output_fails_start_and_leaves_no_lock_behind() {
     let options = PlayerOptions {
         audio: Audio::Custom(Box::new(|| {
             let _ = FailingOutput;
-            Err(Error::Backend("no sound card".into()))
+            Err(Error::Player("no sound card".into()))
         })),
         ..PlayerOptions::silent()
     };
@@ -208,13 +208,26 @@ fn a_library_that_cannot_be_opened_fails_start() {
     cleanup(&db);
 }
 
+#[test]
+fn a_remote_only_instance_cannot_start_a_player_until_playback_is_allowed() {
+    let db = temp_db("remote-only");
+    let mut lib = library_with_fake_tracks(&db, &["a"]);
+    lib.set_playback_allowed(false).unwrap();
+    let err = Player::start(&db, PlayerOptions::silent()).err().unwrap();
+    assert!(err.to_string().contains("remote-only"), "{err}");
+    assert!(!Player::is_running(&db), "no lock is left behind");
+    lib.set_playback_allowed(true).unwrap();
+    assert!(Player::start(&db, PlayerOptions::silent()).is_ok());
+    cleanup(&db);
+}
+
 // --- with sound: needs the `audio` feature because only then are local files playable ----
 
 #[cfg(feature = "audio")]
 mod with_custom_output {
     use std::sync::{Arc, Mutex};
 
-    use weave::core::{Playback, Result, SourceRef};
+    use weave::core::{Playback, Result};
 
     use super::*;
 
@@ -227,8 +240,8 @@ mod with_custom_output {
     struct Recording(Arc<Mutex<Log>>);
 
     impl Playback for Recording {
-        fn start(&mut self, source: &SourceRef, from: Duration) -> Result<()> {
-            let file = Path::new(&source.external_id)
+        fn start(&mut self, source: &str, from: Duration) -> Result<()> {
+            let file = Path::new(source)
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
@@ -326,12 +339,8 @@ mod with_custom_output {
         };
         let player = Player::start(&db, options).unwrap();
 
-        lib.queue_add(
-            &["unknown-one-local".into(), "unknown-two-local".into()],
-            None,
-            false,
-        )
-        .unwrap();
+        lib.queue_add(&["unknown-one".into(), "unknown-two".into()], None, false)
+            .unwrap();
         lib.next().unwrap();
         wait_until(3, &log, || {
             calls(&log).contains(&"start one.wav @0".to_string())

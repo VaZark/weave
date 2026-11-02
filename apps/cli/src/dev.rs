@@ -5,9 +5,6 @@ use weave::core::{
     FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagRange, track_slug,
 };
 
-/// Not a registered backend: seeded tracks have no files behind them.
-const SEED_BACKEND: &str = "seed";
-
 pub const MAX_COUNT: usize = 100;
 
 struct Artist {
@@ -85,7 +82,7 @@ pub fn tracks(count: usize) -> Vec<ScannedTrack> {
             let span = |lo: u32, hi: u32| lo + (i as u32 * 37) % (hi - lo + 1);
             let title = format!("{} {}", ADJECTIVES[i % 10], NOUNS[i / 10 % 10]);
             ScannedTrack {
-                external_id: format!("seed:{i:03}"),
+                path: format!("/weave-seed/{i:03}.mp3"), // no file is behind it
                 metadata: Metadata {
                     title,
                     artist: (i % 13 != 12).then(|| a.name.to_string()),
@@ -137,16 +134,11 @@ pub struct Seeded {
 /// Idempotent: re-running adds nothing that already exists.
 pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     let fake = tracks(count);
-    let stats = lib.import_scanned(SEED_BACKEND, &fake)?;
+    let stats = lib.import_scanned(&fake)?;
 
     let slug_of = |t: &ScannedTrack| {
         let m = &t.metadata;
-        track_slug(
-            m.artist.as_deref(),
-            m.album.as_deref(),
-            &m.title,
-            SEED_BACKEND,
-        )
+        track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title)
     };
 
     let mut tagged = 0;
@@ -178,7 +170,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Slow dance nights",
             FilterSpec {
                 tag_all: strs(&["bachata", "90s"]),
-                tag_none: strs(&["live", "remix"]),
+                tag_exclude: strs(&["live", "remix"]),
                 tag_range: vec![TagRange::new("bpm", Some(90.0), None)],
                 ..Default::default()
             },
@@ -295,12 +287,7 @@ mod tests {
             .iter()
             .map(|t| {
                 let m = &t.metadata;
-                track_slug(
-                    m.artist.as_deref(),
-                    m.album.as_deref(),
-                    &m.title,
-                    SEED_BACKEND,
-                )
+                track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title)
             })
             .collect();
         slugs.sort();

@@ -263,7 +263,7 @@ pub fn describe(f: &FilterSpec) -> String {
     for (k, v) in [
         ("tag-all", &f.tag_all),
         ("tag-any", &f.tag_any),
-        ("tag-exclude", &f.tag_none),
+        ("tag-exclude", &f.tag_exclude),
     ] {
         if !v.is_empty() {
             parts.push(format!("--{k} {}", v.join(",")));

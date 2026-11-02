@@ -26,8 +26,8 @@ use weave::core::{
 use weave::{Library, Player, SessionView};
 
 use output::{
-    out, print_columns, print_json, print_page, print_playlist, print_playlist_tracks,
-    print_playlists, print_queue, print_session,
+    out, print_columns, print_page, print_playlist, print_playlist_tracks, print_playlists,
+    print_queue, print_session,
 };
 
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter/state.
@@ -217,9 +217,9 @@ enum Cmd {
         #[arg(long = "for", value_name = "DURATION", requires = "follow")]
         run_for: Option<String>,
     },
-    /// Inspect backends.
+    /// Show or change this instance: the name it goes by on the network and whether it may play.
     #[command(subcommand)]
-    Backend(BackendCmd),
+    Instance(InstanceCmd),
     /// Developer tools (debug builds only).
     #[cfg(debug_assertions)]
     #[command(subcommand)]
@@ -347,9 +347,17 @@ enum QueueCmd {
 }
 
 #[derive(Subcommand)]
-enum BackendCmd {
-    List,
-    Show { id: String },
+enum InstanceCmd {
+    /// Name and capabilities of this instance.
+    Show,
+    /// Rename this instance (stored as a slug).
+    Name { name: String },
+    /// Allow this instance to play audio (`on`), or make it remote-only (`off`): it keeps its
+    /// library and queue and can be controlled, but never makes sound.
+    Playback {
+        #[arg(value_parser = BoolishValueParser::new(), action = clap::ArgAction::Set, value_name = "on|off")]
+        allowed: bool,
+    },
 }
 
 #[derive(Args, Clone, Copy)]
@@ -422,7 +430,7 @@ struct FilterArgs {
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_any: Vec<TagCond>,
     /// Exclude tracks with any of these tags: `live`, `period=80s,70s`.
-    #[arg(long, alias = "tag-none", value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
+    #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_exclude: Vec<TagCond>,
     /// Numeric range on a keyed tag, ends optional: `bpm=90..120`, `bpm=100..`, `year=..1999`.
     #[arg(long, value_name = "KEY=MIN..MAX", value_parser = parse_tag_range)]
@@ -530,13 +538,13 @@ impl From<FilterArgs> for FilterSpec {
     fn from(a: FilterArgs) -> Self {
         let (tag_all, mut tag_clauses) = split_conds(TagOp::All, a.tag_all);
         let (tag_any, any) = split_conds(TagOp::Any, a.tag_any);
-        let (tag_none, none) = split_conds(TagOp::Exclude, a.tag_exclude);
+        let (tag_exclude, none) = split_conds(TagOp::Exclude, a.tag_exclude);
         tag_clauses.extend(any);
         tag_clauses.extend(none);
         FilterSpec {
             tag_all,
             tag_any,
-            tag_none,
+            tag_exclude,
             tag_clauses,
             tag_range: a.tag_range,
             title: a.title,
@@ -605,6 +613,14 @@ fn start_host_if_playing(db: &std::path::Path, cli: &HostPolicy, v: &SessionView
     if cli.no_host || !cfg!(feature = "audio") || v.state.status != PlayStatus::Playing {
         return;
     }
+    if cli.remote_only {
+        if !cli.json {
+            eprintln!(
+                "this instance is remote-only: nothing plays here (`instance playback on` to change)"
+            );
+        }
+        return;
+    }
     match host::ensure_running(db) {
         Ok(Some(log)) if !cli.json => {
             eprintln!("started the playback host (log: {})", log.display())
@@ -617,17 +633,20 @@ fn start_host_if_playing(db: &std::path::Path, cli: &HostPolicy, v: &SessionView
 struct HostPolicy {
     no_host: bool,
     json: bool,
+    /// This instance may not play audio, so no host is started.
+    remote_only: bool,
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {
     let json = cli.json;
     let show_ids = cli.show_ids;
+    let db = cli.db.unwrap_or_else(default_db);
+    let mut lib = Library::open(&db)?;
     let policy = HostPolicy {
         no_host: cli.no_host,
         json,
+        remote_only: !lib.instance()?.playback,
     };
-    let db = cli.db.unwrap_or_else(default_db);
-    let mut lib = Library::open(&db)?;
     let session = |v: &SessionView| print_session(json, show_ids, None, v);
     // Print the session, then start a host if it is playing and none runs.
     let playing = |v: &SessionView| -> Result<(), Failure> {
@@ -918,44 +937,23 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 lyrics::print(json, &track, &found, position.transpose()?)?;
             }
         }
-        Cmd::Backend(BackendCmd::List) => {
-            let bs = lib.backends();
-            if json {
-                print_json(
-                    &bs.iter()
-                        .map(|b| serde_json::json!({ "id": b.id, "capabilities": b.capabilities }))
-                        .collect::<Vec<_>>(),
-                )?;
-            } else {
-                bs.iter()
-                    .for_each(|b| outln!("{}\t{} capabilities", b.id, b.capabilities.len()));
-            }
-        }
-        Cmd::Backend(BackendCmd::Show { id }) => {
-            let b = lib.backend(&id)?;
-            if json {
-                print_json(&serde_json::json!({ "id": b.id, "capabilities": b.capabilities }))?;
-            } else {
-                outln!("{}", b.id);
-                let rows = b
-                    .capabilities
-                    .iter()
-                    .map(|c| {
-                        vec![
-                            format!("{:?}/{}", c.group, c.name),
-                            c.state.supported.to_string(),
-                            c.state.authorized.to_string(),
-                            c.state.available.to_string(),
-                        ]
-                    })
-                    .collect();
-                print_columns(
-                    &["CAPABILITY", "SUPPORTED", "AUTHORIZED", "AVAILABLE"],
-                    rows,
-                    &[],
-                    None,
+        Cmd::Instance(cmd) => {
+            let instance = match cmd {
+                InstanceCmd::Show => lib.instance()?,
+                InstanceCmd::Name { name } => lib.set_instance_name(&name)?,
+                InstanceCmd::Playback { allowed } => lib.set_playback_allowed(allowed)?,
+            };
+            out(json, &instance, || {
+                outln!("name: {}", instance.name);
+                outln!(
+                    "playback: {}",
+                    if instance.playback {
+                        "on"
+                    } else {
+                        "off (remote-only)"
+                    }
                 );
-            }
+            })?;
         }
 
         #[cfg(debug_assertions)]
@@ -1045,9 +1043,7 @@ mod arg_tests {
     #[test]
     fn play_takes_a_track_a_playlist_or_a_filtered_shuffle() {
         assert!(matches!(
-            parse(&["play", "track", "some-track-local"])
-                .unwrap()
-                .command,
+            parse(&["play", "track", "some-track"]).unwrap().command,
             Cmd::Play(PlayCmd::Track { .. })
         ));
         let Cmd::Play(PlayCmd::Playlist { name, shuffle }) =
@@ -1098,7 +1094,7 @@ mod arg_tests {
     #[test]
     fn the_old_play_forms_are_gone() {
         assert!(
-            parse(&["play", "a-track-local"]).is_err(),
+            parse(&["play", "a-track"]).is_err(),
             "a track needs `play track`"
         );
         assert!(
@@ -1183,7 +1179,7 @@ mod arg_tests {
             "practice,90s",
             "--tag-all",
             "genre,style==salsa",
-            "--tag-none",
+            "--tag-exclude",
             "period=80s",
             "--tag-range",
             "bpm=90..120",
@@ -1212,11 +1208,33 @@ mod arg_tests {
         assert!(parse(&["search", "--tag-any", "genre="]).is_err());
         assert!(parse(&["search", "--tag-range", "bpm=fast"]).is_err());
         assert!(parse(&["search", "--tag-range", "bpm"]).is_err());
-        let Cmd::Search { filter, .. } = parse(&["search", "--tag-none", "live"]).unwrap().command
+        let Cmd::Search { filter, .. } =
+            parse(&["search", "--tag-exclude", "live"]).unwrap().command
         else {
             panic!()
         };
-        assert_eq!(FilterSpec::from(filter).tag_none, ["live"]);
+        assert_eq!(FilterSpec::from(filter).tag_exclude, ["live"]);
+        assert!(
+            parse(&["search", "--tag-none", "live"]).is_err(),
+            "the old name is gone"
+        );
+    }
+
+    #[test]
+    fn the_command_line_is_well_formed_and_instance_commands_parse() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+        let Cmd::Instance(InstanceCmd::Playback { allowed }) =
+            parse(&["instance", "playback", "off"]).unwrap().command
+        else {
+            panic!("not an instance command")
+        };
+        assert!(!allowed);
+        assert!(matches!(
+            parse(&["instance"]).map(|c| c.command),
+            Err(_) | Ok(Cmd::Instance(InstanceCmd::Show))
+        ));
+        assert!(parse(&["instance", "playback", "maybe"]).is_err());
     }
 
     #[test]

@@ -36,18 +36,15 @@ fn id(st: &Storage, title: &str) -> String {
 fn fixture() -> Storage {
     let mut st = Storage::open_in_memory().unwrap();
     let t = |n: &str, bpm| ScannedTrack {
-        external_id: n.into(),
+        path: n.into(),
         metadata: Metadata {
             title: n.into(),
             bpm: Some(bpm),
             ..Default::default()
         },
     };
-    st.import_tracks(
-        "local",
-        &[t("T", 90.0), t("S", 110.0), t("B", 130.0), t("Z", 150.0)],
-    )
-    .unwrap();
+    st.import_tracks(&[t("T", 90.0), t("S", 110.0), t("B", 130.0), t("Z", 150.0)])
+        .unwrap();
     st.create_tag("genre:bachata", None).unwrap();
     st.create_tag("genre:bachata-traditional", Some("genre:bachata"))
         .unwrap();
@@ -70,7 +67,7 @@ fn has_includes_descendants_has_exact_does_not_and_none_excludes_them() {
     let st = fixture();
     let f = |all: &[&str], none: &[&str]| FilterSpec {
         tag_all: s(all),
-        tag_none: s(none),
+        tag_exclude: s(none),
         ..Default::default()
     };
     assert_eq!(find(&st, f(&["genre:bachata"], &[])), ["B", "S", "T"]);
@@ -234,7 +231,7 @@ fn numeric_ranges_compare_numbers_not_text() {
 fn import_turns_metadata_into_ordinary_tags() {
     let mut st = Storage::open_in_memory().unwrap();
     let t = ScannedTrack {
-        external_id: "/a".into(),
+        path: "/a".into(),
         metadata: Metadata {
             title: "A".into(),
             artist: Some("Aventura".into()),
@@ -244,7 +241,7 @@ fn import_turns_metadata_into_ordinary_tags() {
             ..Default::default()
         },
     };
-    st.import_tracks("local", std::slice::from_ref(&t)).unwrap();
+    st.import_tracks(std::slice::from_ref(&t)).unwrap();
     let i = id(&st, "A");
     // genre, year and bpm only: artist (like title and album) identifies the track
     assert_eq!(
@@ -259,7 +256,7 @@ fn import_turns_metadata_into_ordinary_tags() {
     // adding what is already there is a no-op; a re-import changes nothing
     assert_eq!(st.add_tags(&i, &s(&["GENRE:bachata"])).unwrap(), 0);
     st.add_tags(&i, &s(&["practice"])).unwrap();
-    assert_eq!(st.import_tracks("local", &[t]).unwrap().added, 0);
+    assert_eq!(st.import_tracks(&[t]).unwrap().added, 0);
     assert_eq!(
         st.tags(&i).unwrap(),
         ["bpm:90", "genre:Bachata", "practice", "year:1999"]

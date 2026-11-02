@@ -14,8 +14,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
 use weave_core::{
-    Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId,
-    metadata_tags, slugify, track_slug,
+    Error, FilterSpec, Instance, Metadata, Page, Result, ScannedTrack, SearchResult, Track,
+    TrackId, default_instance_name, metadata_tags, parse_instance_name, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -65,21 +65,15 @@ impl Storage {
         Ok(Self { conn })
     }
 
-    /// Insert tracks not yet known by `(backend_id, external_id)`; all-or-nothing.
-    pub fn import_tracks(
-        &mut self,
-        backend_id: &str,
-        tracks: &[ScannedTrack],
-    ) -> Result<ImportStats> {
+    /// Insert tracks whose file path is not yet known; all-or-nothing.
+    pub fn import_tracks(&mut self, tracks: &[ScannedTrack]) -> Result<ImportStats> {
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut stats = ImportStats::default();
         for t in tracks {
             let exists: bool = tx
-                .query_row(
-                    "SELECT 1 FROM sources WHERE backend_id = ?1 AND external_id = ?2",
-                    params![backend_id, t.external_id],
-                    |_| Ok(true),
-                )
+                .query_row("SELECT 1 FROM sources WHERE path = ?1", [&t.path], |_| {
+                    Ok(true)
+                })
                 .optional()
                 .map_err(db_err)?
                 .unwrap_or(false);
@@ -93,12 +87,7 @@ impl Storage {
                 &tx,
                 "tracks",
                 "slug",
-                &track_slug(
-                    m.artist.as_deref(),
-                    m.album.as_deref(),
-                    &m.title,
-                    backend_id,
-                ),
+                &track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title),
             )?;
             tx.execute(
                 "INSERT INTO tracks (id, slug, added_at) VALUES (?1, ?2, CAST(strftime('%s', 'now') AS INTEGER))",
@@ -110,8 +99,8 @@ impl Storage {
                 tags::assign(&tx, &id, &name)?;
             }
             tx.execute(
-                "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
-                params![uuid::Uuid::new_v4().simple().to_string(), id, backend_id, t.external_id],
+                "INSERT INTO sources (track_id, path) VALUES (?1, ?2)",
+                params![id, t.path],
             )
             .map_err(db_err)?;
             stats.added += 1;
@@ -188,7 +177,7 @@ impl Storage {
     }
 
     /// Accepts a slug (normalized, the public ID), or an internal key or unique prefix of one ( with `slugify`,
-    /// so `Romeo Santos-Song-local` finds `romeo-santos-song-local`).
+    /// so `Romeo Santos-Song` finds `romeo-santos-song`).
     /// Returns the internal key.
     pub(crate) fn resolve_id(&self, key: &str) -> Result<String> {
         let key = key.trim();
@@ -290,32 +279,50 @@ impl Storage {
             .collect())
     }
 
-    /// Every source of a track as `(backend_id, external_id)`, oldest first.
-    pub fn sources(&self, track_id: &str) -> Result<Vec<(String, String)>> {
-        let track_id = self.resolve_id(track_id)?;
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT backend_id, external_id FROM sources WHERE track_id = ?1 ORDER BY rowid",
-            )
-            .map_err(db_err)?;
-        stmt.query_map([track_id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(db_err)?
-            .collect::<std::result::Result<_, _>>()
-            .map_err(db_err)
-    }
-
-    /// External reference of a track's source for `backend_id`.
-    pub fn source_ref(&self, track_id: &str, backend_id: &str) -> Result<Option<String>> {
+    /// The file behind a track.
+    pub fn source_path(&self, track_id: &str) -> Result<Option<String>> {
         let track_id = self.resolve_id(track_id)?;
         self.conn
             .query_row(
-                "SELECT external_id FROM sources WHERE track_id = ?1 AND backend_id = ?2",
-                params![track_id, backend_id],
+                "SELECT path FROM sources WHERE track_id = ?1",
+                [track_id],
                 |r| r.get(0),
             )
             .optional()
             .map_err(db_err)
+    }
+
+    /// This instance's name and capabilities.
+    pub fn instance(&self) -> Result<Instance> {
+        let (name, playback): (Option<String>, i64) = self
+            .conn
+            .query_row(
+                "SELECT name, playback FROM instance WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)?;
+        Ok(Instance {
+            name: name.unwrap_or_else(default_instance_name),
+            playback: playback != 0,
+        })
+    }
+
+    /// Name the instance (normalized to a slug).
+    pub fn set_instance_name(&mut self, name: &str) -> Result<Instance> {
+        let name = parse_instance_name(name)?;
+        self.conn
+            .execute("UPDATE instance SET name = ?1 WHERE id = 1", [name])
+            .map_err(db_err)?;
+        self.instance()
+    }
+
+    /// Allow or forbid this instance to play audio; off makes it remote-only.
+    pub fn set_playback_allowed(&mut self, allowed: bool) -> Result<Instance> {
+        self.conn
+            .execute("UPDATE instance SET playback = ?1 WHERE id = 1", [allowed])
+            .map_err(db_err)?;
+        self.instance()
     }
 }
 

@@ -1,5 +1,5 @@
 //! Lyrics, synchronized (LRC) or plain. Pure parsing and lookup; finding the text is a
-//! backend's job.
+//! file reader's job.
 
 use serde::{Deserialize, Serialize};
 

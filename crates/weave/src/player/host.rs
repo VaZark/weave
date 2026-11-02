@@ -211,10 +211,14 @@ impl Host {
                 let track = lib
                     .current_track_if_any()?
                     .ok_or_else(|| Error::InvalidInput("nothing is queued".into()))?;
-                let source = lib.playback_source(&track.id.0).map_err(|e| {
-                    Error::Backend(format!("cannot play \"{}\": {e}", track.metadata.title))
-                })?;
-                p.start(&source, Duration::from_millis(from_ms))?;
+                let cannot = |e: Error| {
+                    Error::Player(format!("cannot play \"{}\": {e}", track.metadata.title))
+                };
+                let path = lib.playback_path(&track.id.0).map_err(cannot)?;
+                p.start(&path, Duration::from_millis(from_ms))
+                    .map_err(|e| {
+                        Error::Player(format!("cannot play \"{}\": {e}", track.metadata.title))
+                    })?;
                 self.skipped = 0;
             }
             Action::Pause => p.pause(),

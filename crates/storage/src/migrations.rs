@@ -40,14 +40,18 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
      CREATE INDEX meta_bpm   ON track_metadata(bpm);
      CREATE INDEX meta_year  ON track_metadata(year);
      CREATE INDEX meta_genre ON track_metadata(genre_norm);
+     -- The file behind a track; kept apart from the track so identity never depends on a path.
      CREATE TABLE sources (
-         id          TEXT PRIMARY KEY,
-         track_id    TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-         backend_id  TEXT NOT NULL,
-         external_id TEXT NOT NULL,
-         UNIQUE (backend_id, external_id)
+         track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+         path     TEXT NOT NULL UNIQUE
      );
-     CREATE INDEX sources_track ON sources(track_id);
+     -- This instance: the one row names it on the network and says what it may do.
+     CREATE TABLE instance (
+         id       INTEGER PRIMARY KEY CHECK (id = 1),
+         name     TEXT,                             -- NULL until chosen: the host name is used
+         playback INTEGER NOT NULL DEFAULT 1        -- 0 = remote-only, never plays audio
+     );
+     INSERT INTO instance (id) VALUES (1);
      -- Tags: an optional key and a value (`genre:bachata`, `practice`), at most one parent.
      -- Identity is independent of the parent; assignments are explicit and flat, and the tree
      -- only widens queries. Cycles are rejected in code, in the same transaction as the change.

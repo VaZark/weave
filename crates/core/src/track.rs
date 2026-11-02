@@ -12,7 +12,7 @@ impl std::fmt::Display for TrackId {
     }
 }
 
-/// Source-neutral descriptive metadata, as reported by a backend.
+/// Descriptive metadata read from a file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     pub title: String,
@@ -30,7 +30,7 @@ pub struct Metadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
-    /// The slug, e.g. `romeo-santos-propuesta-indecente-local`.
+    /// The slug, e.g. `romeo-santos-propuesta-indecente`.
     pub id: TrackId,
     #[serde(flatten)]
     pub metadata: Metadata,
@@ -39,6 +39,14 @@ pub struct Track {
     pub favorite: bool,
     /// 1 to 5 stars; `None` means unrated.
     pub rating: Option<u8>,
+}
+
+/// A file found by a scan, before the engine assigns identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScannedTrack {
+    /// Canonical path of the file.
+    pub path: String,
+    pub metadata: Metadata,
 }
 
 /// Offset/limit window over an ordered result set.

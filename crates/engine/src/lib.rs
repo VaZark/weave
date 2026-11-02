@@ -7,23 +7,18 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_core::{
-    Backend, CapabilityDescriptor, ChildPolicy, Error, FilterSpec, Page, Playlist, PlaylistKind,
-    Result, Rng, ScannedTrack, SearchResult, Tag, Track,
+    ChildPolicy, Error, FilterSpec, Instance, Page, Playlist, PlaylistKind, Result, Rng,
+    ScannedTrack, SearchResult, Tag, Track,
 };
-use weave_local::LocalBackend;
+use weave_local::LocalFiles;
 use weave_storage::Storage;
 
 pub use player::SessionView;
 pub use weave_storage::ImportStats;
 
-pub struct BackendInfo {
-    pub id: String,
-    pub capabilities: Vec<CapabilityDescriptor>,
-}
-
 pub struct Library {
     storage: Storage,
-    local: LocalBackend,
+    local: LocalFiles,
     /// Shuffle randomness; seeded from the clock, replaceable for tests.
     rng: Rng,
     /// Unix milliseconds; replaceable for tests (sleep timer).
@@ -48,7 +43,7 @@ impl Library {
     fn with_storage(storage: Storage) -> Self {
         Self {
             storage,
-            local: LocalBackend,
+            local: LocalFiles,
             rng: Rng::new(system_now_ms() as u64),
             clock: Box::new(system_now_ms),
         }
@@ -65,17 +60,13 @@ impl Library {
 
     pub fn import(&mut self, path: &Path) -> Result<ImportStats> {
         let scanned = self.local.scan(path)?;
-        self.storage.import_tracks(self.local.id(), &scanned)
+        self.storage.import_tracks(&scanned)
     }
 
-    /// Index tracks reported by any backend (also used for fixtures and seed data).
-    /// Already-known `(backend_id, external_id)` pairs are skipped.
-    pub fn import_scanned(
-        &mut self,
-        backend_id: &str,
-        tracks: &[ScannedTrack],
-    ) -> Result<ImportStats> {
-        self.storage.import_tracks(backend_id, tracks)
+    /// Index tracks that were already scanned (also used for fixtures and seed data).
+    /// Already-known file paths are skipped.
+    pub fn import_scanned(&mut self, tracks: &[ScannedTrack]) -> Result<ImportStats> {
+        self.storage.import_tracks(tracks)
     }
 
     pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
@@ -219,20 +210,21 @@ impl Library {
         Ok(p)
     }
 
-    // --- backends ----------------------------------------------------------
+    // --- this instance -----------------------------------------------------
 
-    pub fn backends(&self) -> Vec<BackendInfo> {
-        vec![BackendInfo {
-            id: self.local.id().into(),
-            capabilities: self.local.capabilities(),
-        }]
+    /// The name this instance goes by on the network and what it may do.
+    pub fn instance(&self) -> Result<Instance> {
+        self.storage.instance()
     }
 
-    pub fn backend(&self, id: &str) -> Result<BackendInfo> {
-        self.backends()
-            .into_iter()
-            .find(|b| b.id == id)
-            .ok_or_else(|| Error::NotFound(format!("backend \"{id}\"")))
+    /// Rename the instance (normalized to a slug).
+    pub fn set_instance_name(&mut self, name: &str) -> Result<Instance> {
+        self.storage.set_instance_name(name)
+    }
+
+    /// Allow this instance to play audio, or make it remote-only.
+    pub fn set_playback_allowed(&mut self, allowed: bool) -> Result<Instance> {
+        self.storage.set_playback_allowed(allowed)
     }
 }
 
@@ -310,19 +302,17 @@ mod tests {
     fn import_scanned_is_idempotent() {
         let mut lib = Library::open_in_memory().unwrap();
         let t = ScannedTrack {
-            external_id: "x".into(),
+            path: "x".into(),
             metadata: weave_core::Metadata {
                 title: "T".into(),
                 ..Default::default()
             },
         };
         assert_eq!(
-            lib.import_scanned("fake", std::slice::from_ref(&t))
-                .unwrap()
-                .added,
+            lib.import_scanned(std::slice::from_ref(&t)).unwrap().added,
             1
         );
-        assert_eq!(lib.import_scanned("fake", &[t]).unwrap().skipped, 1);
+        assert_eq!(lib.import_scanned(&[t]).unwrap().skipped, 1);
     }
 
     fn lib_with(titles: &[&str]) -> Library {
@@ -330,7 +320,7 @@ mod tests {
         let tracks: Vec<_> = titles
             .iter()
             .map(|t| ScannedTrack {
-                external_id: (*t).into(),
+                path: (*t).into(),
                 metadata: weave_core::Metadata {
                     title: (*t).into(),
                     artist: Some("x".into()),
@@ -338,7 +328,7 @@ mod tests {
                 },
             })
             .collect();
-        lib.import_scanned("fake", &tracks).unwrap();
+        lib.import_scanned(&tracks).unwrap();
         lib
     }
 
@@ -368,7 +358,7 @@ mod tests {
     fn playlist_tracks_follow_the_kind() {
         let mut lib = lib_with(&["a", "b", "c"]);
         lib.create_manual_playlist("Manual", None).unwrap();
-        lib.playlist_add("manual", &["x-c-fake".into(), "x-a-fake".into()])
+        lib.playlist_add("manual", &["x-c".into(), "x-a".into()])
             .unwrap();
         lib.create_playlist("Dynamic", None, FilterSpec::default())
             .unwrap();
@@ -379,17 +369,14 @@ mod tests {
         assert_eq!(titles(&lib, "manual"), ["c", "a"]);
         assert_eq!(titles(&lib, "dynamic"), ["a", "b", "c"]);
         // dynamic membership is live
-        lib.import_scanned(
-            "fake",
-            &[ScannedTrack {
-                external_id: "d".into(),
-                metadata: weave_core::Metadata {
-                    title: "d".into(),
-                    artist: Some("x".into()),
-                    ..Default::default()
-                },
-            }],
-        )
+        lib.import_scanned(&[ScannedTrack {
+            path: "d".into(),
+            metadata: weave_core::Metadata {
+                title: "d".into(),
+                artist: Some("x".into()),
+                ..Default::default()
+            },
+        }])
         .unwrap();
         assert_eq!(titles(&lib, "dynamic").len(), 4);
         assert_eq!(titles(&lib, "manual").len(), 2);
@@ -399,11 +386,8 @@ mod tests {
     fn a_manual_playlists_play_order_can_be_changed_and_playing_follows_it() {
         let mut lib = lib_with(&["a", "b", "c"]);
         lib.create_manual_playlist("Mix", None).unwrap();
-        lib.playlist_add(
-            "mix",
-            &["x-a-fake".into(), "x-b-fake".into(), "x-c-fake".into()],
-        )
-        .unwrap();
+        lib.playlist_add("mix", &["x-a".into(), "x-b".into(), "x-c".into()])
+            .unwrap();
         lib.playlist_move("mix", 3, 1).unwrap();
         let titles = |lib: &Library| -> Vec<String> {
             let (_, r) = lib.playlist_tracks("mix", Page::ALL).unwrap();
@@ -434,24 +418,5 @@ mod tests {
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(titles(&lib), ["c", "a", "b"], "failed moves change nothing");
-    }
-
-    #[test]
-    fn backend_ids_are_slugs() {
-        let lib = Library::open_in_memory().unwrap();
-        for b in lib.backends() {
-            assert_eq!(
-                weave_core::slugify(&b.id),
-                b.id,
-                "backend id must be a slug"
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_backend() {
-        let lib = Library::open_in_memory().unwrap();
-        assert!(lib.backend("local").is_ok());
-        assert!(matches!(lib.backend("spotify"), Err(Error::NotFound(_))));
     }
 }
