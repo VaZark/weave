@@ -85,7 +85,7 @@ It is idempotent: running it again adds nothing that already exists. Seeded trac
 
 ```bash
 weave-player list --show-ids    # --show-ids adds the slug ID column
-weave-player search --tag-all genre:latin --tag-range bpm=90..   # a parent tag matches its children
+weave-player search --tag-all genre:latin --bpm-min 90   # a parent tag matches its children
 weave-player search --tag-all genre:bachata-sensual              # exact: that tag only
 weave-player tag list                                          # the seeded tree: genre:latin > bachata > ...
 weave-player artist list --tag-any genre=latin                 # artists carry tags too

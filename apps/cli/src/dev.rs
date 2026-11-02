@@ -3,7 +3,7 @@
 use weave::Library;
 use weave::core::{
     EntityKind, FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagClause, TagOp,
-    TagRange, parse_credits, track_slug,
+    parse_credits, track_slug,
 };
 
 pub const MAX_COUNT: usize = 100;
@@ -166,7 +166,7 @@ fn ensure_tree(lib: &mut Library) -> Result<()> {
     Ok(())
 }
 
-/// Tags assigned on top of what import derives (`genre:`, `year:`, `bpm:`). Each track gets leaf
+/// Tags assigned on top of the genre tag that import derives. Each track gets leaf
 /// tags only: a sensual bachata track is not also given `genre:latin`, the tree reaches it.
 fn tags_for(t: &ScannedTrack, i: usize) -> Vec<String> {
     let m = &t.metadata;
@@ -256,7 +256,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             FilterSpec {
                 tag_all: strs(&["genre:bachata", "period:90s"]),
                 tag_exclude: strs(&["live", "remix"]),
-                tag_range: vec![TagRange::new("bpm", Some(90.0), None)],
+                bpm_min: Some(90.0),
                 ..Default::default()
             },
         ),
@@ -270,7 +270,8 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
                     values: strs(&["party", "electronic"]),
                     exact: false,
                 }],
-                tag_range: vec![TagRange::new("bpm", Some(115.0), Some(140.0))],
+                bpm_min: Some(115.0),
+                bpm_max: Some(140.0),
                 sort: Some(Sort {
                     field: SortField::Bpm,
                     descending: true,
@@ -302,7 +303,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Old classics",
             "Before 1970",
             FilterSpec {
-                tag_range: vec![TagRange::new("year", None, Some(1969.0))],
+                year_max: Some(1969),
                 ..Default::default()
             },
         ),

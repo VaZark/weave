@@ -3,9 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use weave_core::{
-    FilterSpec, Page, Result, TagName, TagRange, Track, is_numeric_key, normalize_tag,
-};
+use weave_core::{FilterSpec, Page, Result, Track, normalize_tag};
 use weave_storage::Storage;
 
 /// Only the most recent queue entries describe the current mood.
@@ -42,14 +40,6 @@ fn tag_weights(context: &[Track]) -> HashMap<String, usize> {
     let mut weights = HashMap::new();
     for t in context {
         for tag in &t.tags {
-            // Numbers (bpm, year) are compared by closeness, not equality.
-            if TagName::parse_lossy(tag)
-                .key
-                .as_deref()
-                .is_some_and(is_numeric_key)
-            {
-                continue;
-            }
             *weights.entry(normalize_tag(tag)).or_insert(0) += 1;
         }
     }
@@ -77,11 +67,8 @@ fn candidate_filter(context: &[Track]) -> Option<FilterSpec> {
             .take(MAX_TAGS)
             .map(|(t, _)| t.clone())
             .collect(),
-        tag_range: avg
-            .zip(span)
-            .map(|(a, s)| TagRange::new("bpm", Some(a - s), Some(a + s)))
-            .into_iter()
-            .collect(),
+        bpm_min: avg.zip(span).map(|(a, s)| a - s),
+        bpm_max: avg.zip(span).map(|(a, s)| a + s),
         ..Default::default()
     })
 }
@@ -151,8 +138,8 @@ mod tests {
             "most common first, lowercased"
         );
         assert_eq!(
-            f.tag_range,
-            [TagRange::new("bpm", Some(99.0), Some(121.0))],
+            (f.bpm_min, f.bpm_max),
+            (Some(99.0), Some(121.0)),
             "avg 110 +-10%"
         );
     }
@@ -160,15 +147,15 @@ mod tests {
     #[test]
     fn bpm_window_has_a_minimum_span() {
         let f = candidate_filter(&[track("a", &["x"], Some(20.0))]).unwrap();
-        assert_eq!(f.tag_range, [TagRange::new("bpm", Some(15.0), Some(25.0))]);
+        assert_eq!((f.bpm_min, f.bpm_max), (Some(15.0), Some(25.0)));
     }
 
     #[test]
     fn filter_degrades_gracefully() {
         let tags_only = candidate_filter(&[track("a", &["x"], None)]).unwrap();
-        assert_eq!((tags_only.tag_range.len(), tags_only.tag_any.len()), (0, 1));
+        assert_eq!((tags_only.bpm_min, tags_only.tag_any.len()), (None, 1));
         let bpm_only = candidate_filter(&[track("a", &[], Some(100.0))]).unwrap();
-        assert!(bpm_only.tag_any.is_empty() && !bpm_only.tag_range.is_empty());
+        assert!(bpm_only.tag_any.is_empty() && bpm_only.bpm_min.is_some());
         assert!(
             candidate_filter(&[track("a", &[], None)]).is_none(),
             "nothing to go on"

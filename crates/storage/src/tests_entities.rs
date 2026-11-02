@@ -438,10 +438,6 @@ fn tags_go_on_artists_albums_and_playlists_and_are_found_through_the_tree() {
         st.add_tags_to(EntityKind::Artist, "nobody", &s(&["x"]))
             .is_err()
     );
-    assert!(
-        st.add_tags_to(EntityKind::Album, "gold", &s(&["bpm:fast"]))
-            .is_err()
-    );
 
     // the parent reaches the child on artists, exact does not, exclude removes both
     let by = |f: FilterSpec| -> Vec<String> {

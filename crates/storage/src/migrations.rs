@@ -103,11 +103,10 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          normalized_name TEXT NOT NULL UNIQUE,     -- lookup identity
          key             TEXT,                     -- lowercase; NULL for an unkeyed tag
          value           TEXT NOT NULL,
-         value_num       REAL,                     -- the value as a number, when it is one
          parent_id       INTEGER REFERENCES tags(id)
      );
      CREATE INDEX tags_parent  ON tags(parent_id);
-     CREATE INDEX tags_key_num ON tags(key, value_num);
+     CREATE INDEX tags_key ON tags(key);
      CREATE TABLE track_tags (
          track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
          tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,

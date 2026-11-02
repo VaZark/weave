@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result, TagName, is_numeric_key, normalize_tag, parse_tag_ref};
+use crate::{Error, Result, TagName, normalize_tag, parse_tag_ref};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,26 +73,6 @@ impl TagClause {
     }
 }
 
-/// Inclusive numeric bounds on a keyed tag's value (`bpm:90`, `year:1999`, `tempo:120`).
-/// Compared as numbers on an indexed column, never as text. Tracks without a numeric tag of
-/// this key never match.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TagRange {
-    pub key: String,
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-}
-
-impl TagRange {
-    pub fn new(key: &str, min: Option<f64>, max: Option<f64>) -> Self {
-        Self {
-            key: key.into(),
-            min,
-            max,
-        }
-    }
-}
-
 /// Structured, serializable filter shared by the CLI, GUI and saved playlists.
 /// Groups combine with AND; empty/omitted groups do not restrict results.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -105,10 +85,13 @@ pub struct FilterSpec {
     pub tag_exclude: Vec<String>,
     /// Keyed tag conditions, ANDed with each other and with everything else.
     pub tag_clauses: Vec<TagClause>,
-    /// Numeric ranges over keyed tag values; every range must match (AND).
-    pub tag_range: Vec<TagRange>,
-    /// Case-insensitive substrings of the track's identifying fields. Genre, year and BPM are
-    /// tags: use `genre:bachata` or a `tag_range` over `bpm` / `year`.
+    /// Bounds on the track's own BPM and year (inclusive; an unknown value never matches).
+    pub bpm_min: Option<f64>,
+    pub bpm_max: Option<f64>,
+    pub year_min: Option<i32>,
+    pub year_max: Option<i32>,
+    /// Case-insensitive substrings of the track's identifying fields. The genre is a tag:
+    /// use `genre:bachata`.
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -156,9 +139,6 @@ impl FilterSpec {
         }
         self.tag_clauses
             .retain(|c| !c.keys.is_empty() && !c.values.is_empty());
-        for r in &mut self.tag_range {
-            r.key = r.key.trim().to_lowercase();
-        }
         for field in [&mut self.title, &mut self.artist, &mut self.album] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
@@ -175,36 +155,28 @@ impl FilterSpec {
                 }
             }
         }
-        for r in &self.tag_range {
-            let named = TagName::parse_lossy(&format!("{}:0", r.key));
-            if named.key.as_deref() != Some(r.key.as_str()) {
-                return Err(Error::InvalidFilter(format!(
-                    "\"{}\" is not a tag key",
-                    r.key
-                )));
-            }
-            if r.min.is_none() && r.max.is_none() {
-                return Err(Error::InvalidFilter(format!(
-                    "the {} range needs a minimum or a maximum",
-                    r.key
-                )));
-            }
-            for v in [r.min, r.max].into_iter().flatten() {
-                if !v.is_finite() || (is_numeric_key(&r.key) && v < 0.0) {
-                    return Err(Error::InvalidFilter(format!(
-                        "the {} range has an invalid bound",
-                        r.key
-                    )));
-                }
-            }
-            if let (Some(min), Some(max)) = (r.min, r.max)
-                && min > max
+        for (name, v) in [("bpm-min", self.bpm_min), ("bpm-max", self.bpm_max)] {
+            if let Some(v) = v
+                && (!v.is_finite() || v < 0.0)
             {
                 return Err(Error::InvalidFilter(format!(
-                    "the {} minimum ({min}) is greater than its maximum ({max})",
-                    r.key
+                    "{name} must be a non-negative number"
                 )));
             }
+        }
+        if let (Some(min), Some(max)) = (self.bpm_min, self.bpm_max)
+            && min > max
+        {
+            return Err(Error::InvalidFilter(format!(
+                "bpm-min ({min}) is greater than bpm-max ({max})"
+            )));
+        }
+        if let (Some(min), Some(max)) = (self.year_min, self.year_max)
+            && min > max
+        {
+            return Err(Error::InvalidFilter(format!(
+                "year-min ({min}) is greater than year-max ({max})"
+            )));
         }
         for (name, v) in [
             ("rating-min", self.rating_min),
@@ -247,9 +219,10 @@ impl FilterSpec {
         if !update.tag_clauses.is_empty() {
             self.tag_clauses = update.tag_clauses;
         }
-        if !update.tag_range.is_empty() {
-            self.tag_range = update.tag_range;
-        }
+        self.bpm_min = update.bpm_min.or(self.bpm_min);
+        self.bpm_max = update.bpm_max.or(self.bpm_max);
+        self.year_min = update.year_min.or(self.year_min);
+        self.year_max = update.year_max.or(self.year_max);
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
@@ -265,26 +238,44 @@ impl FilterSpec {
 mod tests {
     use super::*;
 
-    fn ranged(key: &str, min: Option<f64>, max: Option<f64>) -> FilterSpec {
-        FilterSpec {
-            tag_range: vec![TagRange::new(key, min, max)],
+    #[test]
+    fn the_tracks_own_bpm_and_year_bounds_are_validated() {
+        let bad = |f: FilterSpec| f.validate().is_err();
+        assert!(bad(FilterSpec {
+            bpm_min: Some(140.0),
+            bpm_max: Some(90.0),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            bpm_min: Some(f64::NAN),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            bpm_max: Some(-1.0),
+            ..Default::default()
+        }));
+        assert!(bad(FilterSpec {
+            year_min: Some(2000),
+            year_max: Some(1990),
+            ..Default::default()
+        }));
+        let ok = FilterSpec {
+            bpm_min: Some(90.0),
+            bpm_max: Some(90.0),
+            year_min: Some(1990),
+            year_max: Some(1990),
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
+        let merged = FilterSpec {
+            bpm_max: Some(140.0),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn rejects_inverted_range() {
-        assert!(ranged("bpm", Some(140.0), Some(90.0)).validate().is_err());
-        assert!(
-            ranged("year", Some(2000.0), Some(1990.0))
-                .validate()
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn accepts_equal_bounds() {
-        assert!(ranged("bpm", Some(90.0), Some(90.0)).validate().is_ok());
+        .merged(FilterSpec {
+            bpm_min: Some(90.0),
+            ..Default::default()
+        });
+        assert_eq!((merged.bpm_min, merged.bpm_max), (Some(90.0), Some(140.0)));
     }
 
     #[test]
@@ -350,15 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nan_negative_and_empty_ranges() {
-        assert!(ranged("bpm", Some(f64::NAN), None).validate().is_err());
-        assert!(ranged("bpm", None, Some(-1.0)).validate().is_err());
-        assert!(ranged("bpm", None, None).validate().is_err());
-        assert!(ranged("bad key", Some(1.0), None).validate().is_err());
-        assert!(ranged("tempo", Some(-5.0), None).validate().is_ok()); // free-form keys may be negative
-    }
-
-    #[test]
     fn normalized_dedupes_case_insensitively_keeping_first_spelling() {
         let f = FilterSpec {
             tag_all: vec![
@@ -381,12 +363,14 @@ mod tests {
             title: Some("x".into()),
             ..Default::default()
         };
-        let m = base.merged(ranged("bpm", Some(90.0), Some(140.0)));
-        assert_eq!(m.tag_all, vec!["a"]);
-        assert_eq!(m.title.as_deref(), Some("x"));
+        let m = base.merged(FilterSpec {
+            tag_any: vec!["b".into()],
+            ..Default::default()
+        });
         assert_eq!(
-            m.tag_range,
-            ranged("bpm", Some(90.0), Some(140.0)).tag_range
+            (m.tag_all, m.tag_any),
+            (vec!["a".to_string()], vec!["b".to_string()])
         );
+        assert_eq!(m.title.as_deref(), Some("x"));
     }
 }

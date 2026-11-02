@@ -125,7 +125,7 @@ pub struct ArtistProfile {
     pub featured_on: Vec<EntityRef>,
     /// The `genre:` tags across the artist's tracks, most common first.
     pub genres: Vec<Count>,
-    /// The other tags across the artist's tracks (numbers like bpm and year left out).
+    /// The other tags across the artist's tracks (the genre tags left out).
     pub track_tags: Vec<Count>,
 }
 

@@ -30,9 +30,9 @@ fn tag_row(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
 pub(crate) fn ensure_tag(tx: &Transaction, name: &TagName) -> Result<i64> {
     let norm = name.normalized();
     tx.execute(
-        "INSERT OR IGNORE INTO tags (name, normalized_name, key, value, value_num)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![name.display(), norm, name.key, name.value, name.number()],
+        "INSERT OR IGNORE INTO tags (name, normalized_name, key, value)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![name.display(), norm, name.key, name.value],
     )
     .map_err(db_err)?;
     tx.query_row(

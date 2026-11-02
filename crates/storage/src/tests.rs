@@ -1,7 +1,5 @@
 use super::*;
-use weave_core::{
-    EndOfQueue, PlayerState, PlaylistKind, Queue, RepeatMode, Rng, Sort, SortField, TagRange,
-};
+use weave_core::{EndOfQueue, PlayerState, PlaylistKind, Queue, RepeatMode, Rng, Sort, SortField};
 
 fn scanned(path: &str, title: &str, artist: &str, bpm: Option<f64>) -> ScannedTrack {
     ScannedTrack {
@@ -110,24 +108,25 @@ fn duplicate_tags_are_not_added_twice() {
     let (mut s, fx) = fixture();
     let a = &fx.iter().find(|t| t.metadata.title == "A").unwrap().id.0;
     assert_eq!(s.add_tags(a, &tags(&["BACHATA", "new"])).unwrap(), 1);
-    assert_eq!(s.tags(a).unwrap(), ["90s", "Bachata", "bpm:100", "new"]);
+    assert_eq!(s.tags(a).unwrap(), ["90s", "Bachata", "new"]);
 }
 
 #[test]
 fn bpm_bounds_inclusive_and_unknown_excluded() {
     let (s, _) = fixture();
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("bpm", Some(90.0), Some(140.0))],
+        bpm_min: Some(90.0),
+        bpm_max: Some(140.0),
         ..Default::default()
     };
     assert_eq!(all(&s, &f).len(), 3);
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("bpm", None, Some(100.0))],
+        bpm_max: Some(100.0),
         ..Default::default()
     };
     assert_eq!(names(&all(&s, &f)), ["B", "A"]);
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("bpm", Some(0.0), None)],
+        bpm_min: Some(0.0),
         ..Default::default()
     };
     assert!(!names(&all(&s, &f)).contains(&"D"));
@@ -137,7 +136,8 @@ fn bpm_bounds_inclusive_and_unknown_excluded() {
 fn rejects_inverted_range() {
     let (s, _) = fixture();
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("bpm", Some(2.0), Some(1.0))],
+        bpm_min: Some(2.0),
+        bpm_max: Some(1.0),
         ..Default::default()
     };
     assert!(matches!(
@@ -181,7 +181,7 @@ fn remove_tags() {
     let (mut s, fx) = fixture();
     let a = &fx.iter().find(|t| t.metadata.title == "A").unwrap().id.0;
     assert_eq!(s.remove_tags(a, &tags(&["BACHATA", "nope"])).unwrap(), 1);
-    assert_eq!(s.tags(a).unwrap(), ["90s", "bpm:100"]);
+    assert_eq!(s.tags(a).unwrap(), ["90s"]);
     assert!(matches!(
         s.remove_tags("missing", &tags(&["x"])),
         Err(Error::NotFound(_))
@@ -211,7 +211,7 @@ fn playlists_are_live_queries() {
         &p.id,
         p.description.as_deref(),
         &FilterSpec {
-            tag_range: vec![TagRange::new("bpm", Some(95.0), None)],
+            bpm_min: Some(95.0),
             ..f
         },
     )
@@ -298,10 +298,7 @@ fn tracks_carry_tags_and_full_metadata() {
     s.add_tags(&t.id.0, &tags(&["zz", "Aa"])).unwrap();
     let t = s.track(&t.id.0).unwrap();
     assert_eq!(t.metadata, m);
-    assert_eq!(
-        t.tags,
-        ["Aa", "bpm:120.5", "genre:Bachata", "year:1994", "zz"]
-    );
+    assert_eq!(t.tags, ["Aa", "genre:Bachata", "zz"]);
 }
 
 #[test]
@@ -328,12 +325,14 @@ fn genre_and_year_filters() {
     };
     assert_eq!(names(&all(&s, &f)), ["a"]);
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("year", Some(1994.0), Some(2005.0))],
+        year_min: Some(1994),
+        year_max: Some(2005),
         ..Default::default()
     };
     assert_eq!(names(&all(&s, &f)), ["a", "b"]);
     let f = FilterSpec {
-        tag_range: vec![TagRange::new("year", Some(2000.0), Some(1990.0))],
+        year_min: Some(2000),
+        year_max: Some(1990),
         ..Default::default()
     };
     assert!(s.search(&f, Page::ALL).is_err());

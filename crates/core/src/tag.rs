@@ -4,15 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Metadata, Result};
 
-/// Keys the importer and the query planner know about. Any other key is valid too.
+/// The one key the importer fills: a track's genre. Every other key is the user's own.
 pub const GENRE: &str = "genre";
-pub const BPM: &str = "bpm";
-pub const YEAR: &str = "year";
-
-/// Blessed keys whose values must be numbers (and are range-queryable).
-pub fn is_numeric_key(key: &str) -> bool {
-    matches!(key, BPM | YEAR)
-}
 
 /// Prefix that makes a filter tag match explicit assignments only (`has_exact`).
 pub const EXACT_PREFIX: char = '=';
@@ -51,7 +44,7 @@ impl TagName {
         }
     }
 
-    /// Parse a tag to assign or create: non-empty, no leading `=`, numeric where the key says so.
+    /// Parse a tag to assign or create: non-empty and not starting with `=`.
     pub fn parse(text: &str) -> Result<Self> {
         let name = Self::parse_lossy(text);
         if name.value.is_empty() {
@@ -61,17 +54,6 @@ impl TagName {
             return Err(Error::InvalidInput(format!(
                 "tag names cannot start with \"{EXACT_PREFIX}\" (it marks exact matches in filters)"
             )));
-        }
-        if let Some(k) = name.key.as_deref().filter(|k| is_numeric_key(k)) {
-            match name.number() {
-                Some(n) if n >= 0.0 => {}
-                _ => {
-                    return Err(Error::InvalidInput(format!(
-                        "the value of a {k} tag must be a non-negative number, got \"{}\"",
-                        name.value
-                    )));
-                }
-            }
         }
         Ok(name)
     }
@@ -87,11 +69,6 @@ impl TagName {
     /// Case-insensitive (Unicode) lookup identity.
     pub fn normalized(&self) -> String {
         self.display().to_lowercase()
-    }
-
-    /// The value as a finite number, when it is one. Drives indexed range queries.
-    pub fn number(&self) -> Option<f64> {
-        self.value.parse::<f64>().ok().filter(|n| n.is_finite())
     }
 }
 
@@ -135,32 +112,18 @@ pub enum ChildPolicy {
     Delete,
 }
 
-/// Tags that supported metadata fields map to: genre, year and bpm.
+/// Tags that imported metadata maps to: the genre. Year, BPM, title, artist and album stay
+/// columns of the track; they are not descriptive tags.
 pub fn metadata_tags(m: &Metadata) -> Vec<TagName> {
-    let mut out = Vec::new();
-    let mut push = |key: &str, value: Option<String>| {
-        if let Some(v) = value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-        {
-            let name = TagName {
-                key: Some(key.into()),
-                value: v,
-            };
-            if TagName::parse(&name.display()).is_ok_and(|p| p == name) {
-                out.push(name);
-            }
-        }
-    };
-    push(GENRE, m.genre.clone());
-    push(YEAR, m.year.filter(|y| *y >= 0).map(|y| y.to_string()));
-    push(
-        BPM,
-        m.bpm
-            .filter(|b| b.is_finite() && *b >= 0.0)
-            .map(|b| b.to_string()),
-    );
-    out
+    let genre = m.genre.as_deref().map(str::trim).filter(|g| !g.is_empty());
+    genre
+        .map(|value| TagName {
+            key: Some(GENRE.into()),
+            value: value.to_string(),
+        })
+        .filter(|name| TagName::parse(&name.display()).is_ok_and(|p| p == *name))
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -186,11 +149,9 @@ mod tests {
     fn validation() {
         assert!(TagName::parse("  ").is_err());
         assert!(TagName::parse("=x").is_err());
-        assert!(TagName::parse("bpm:fast").is_err());
-        assert!(TagName::parse("bpm:-3").is_err());
-        assert!(TagName::parse("bpm:NaN").is_err());
-        assert_eq!(TagName::parse("bpm:90.5").unwrap().number(), Some(90.5));
-        assert!(TagName::parse("tempo:fast").is_ok()); // arbitrary keys stay free-form
+        // keys and values are free-form text; numbers belong in a track's own columns
+        assert!(TagName::parse("tempo:fast").is_ok());
+        assert_eq!(TagName::parse("tempo:90").unwrap().value, "90");
     }
 
     #[test]
@@ -200,11 +161,13 @@ mod tests {
         let m = Metadata {
             title: "t".into(),
             genre: Some("Bachata".into()),
+            artist: Some("Aventura".into()),
             year: Some(1999),
             bpm: Some(90.0),
             ..Default::default()
         };
         let names: Vec<_> = metadata_tags(&m).iter().map(TagName::display).collect();
-        assert_eq!(names, ["genre:Bachata", "year:1999", "bpm:90"]);
+        assert_eq!(names, ["genre:Bachata"], "only the genre becomes a tag");
+        assert!(metadata_tags(&Metadata::default()).is_empty());
     }
 }

@@ -93,31 +93,21 @@ pub fn duration_cell(ms: Option<u64>) -> String {
     ms.map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))
 }
 
-/// The tags not already shown in a column of their own: `hide` lists the keys whose imported
-/// tag the table prints as a column (a subgenre like `genre:bachata-sensual` is still a tag).
-fn tags_cell(t: &Track, hide: &[&str]) -> String {
-    let in_a_column = |tag: &TagName| {
-        let Some(key) = tag.key.as_deref().filter(|k| hide.contains(k)) else {
-            return false;
-        };
-        match key {
-            "genre" => t
-                .metadata
+/// The tags not already shown in a column of their own: with `genre_column`, the imported
+/// genre tag (a subgenre like `genre:bachata-sensual` is still a tag and still shown).
+fn tags_cell(t: &Track, genre_column: bool) -> String {
+    let in_the_column = |tag: &TagName| {
+        genre_column
+            && tag.key.as_deref() == Some("genre")
+            && t.metadata
                 .genre
                 .as_deref()
-                .is_some_and(|g| g.to_lowercase() == tag.value.to_lowercase()),
-            "year" => t
-                .metadata
-                .year
-                .is_some_and(|y| tag.number() == Some(f64::from(y))),
-            "bpm" => t.metadata.bpm.is_some_and(|b| tag.number() == Some(b)),
-            _ => false,
-        }
+                .is_some_and(|g| g.to_lowercase() == tag.value.to_lowercase())
     };
     let shown: Vec<&str> = t
         .tags
         .iter()
-        .filter(|tag| !in_a_column(&TagName::parse_lossy(tag)))
+        .filter(|tag| !in_the_column(&TagName::parse_lossy(tag)))
         .map(String::as_str)
         .collect();
     if shown.is_empty() {
@@ -145,7 +135,7 @@ fn print_table(tracks: &[Track], show_ids: bool, first_order: Option<usize>) {
                 m.bpm.map_or_else(dash, |b| format!("{b}")),
                 duration_cell(m.duration_ms),
                 rating_cell(t),
-                tags_cell(t, &["genre", "year", "bpm"]),
+                tags_cell(t, true),
             ]
         })
         .collect();
@@ -292,16 +282,11 @@ pub fn describe(f: &FilterSpec) -> String {
             c.values.join(",")
         ));
     }
-    for r in &f.tag_range {
-        let end = |v: Option<f64>| v.map_or(String::new(), |v| v.to_string());
-        parts.push(format!(
-            "--tag-range {}={}..{}",
-            r.key,
-            end(r.min),
-            end(r.max)
-        ));
-    }
     let numbers = [
+        ("bpm-min", f.bpm_min.map(|v| v.to_string())),
+        ("bpm-max", f.bpm_max.map(|v| v.to_string())),
+        ("year-min", f.year_min.map(|v| v.to_string())),
+        ("year-max", f.year_max.map(|v| v.to_string())),
         ("rating-min", f.rating_min.map(|v| v.to_string())),
         ("rating-max", f.rating_max.map(|v| v.to_string())),
     ];
@@ -476,7 +461,7 @@ pub fn print_queue(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Fa
                 m.album.clone().unwrap_or_else(dash),
                 m.bpm.map_or_else(dash, |b| format!("{b}")),
                 duration_cell(m.duration_ms),
-                tags_cell(t, &["bpm"]),
+                tags_cell(t, false),
             ]
         })
         .collect();
@@ -519,21 +504,12 @@ mod tests {
 
     #[test]
     fn the_tags_column_skips_only_what_has_its_own_column() {
-        let t = track(&[
-            "bpm:90",
-            "genre:Bachata",
-            "genre:bachata-sensual",
-            "period:90s",
-            "year:1999",
-        ]);
+        let t = track(&["genre:Bachata", "genre:bachata-sensual", "period:90s"]);
+        assert_eq!(tags_cell(&t, true), "genre:bachata-sensual,period:90s");
         assert_eq!(
-            tags_cell(&t, &["genre", "year", "bpm"]),
-            "genre:bachata-sensual,period:90s"
+            tags_cell(&t, false),
+            "genre:Bachata,genre:bachata-sensual,period:90s"
         );
-        assert_eq!(
-            tags_cell(&t, &["bpm"]),
-            "genre:Bachata,genre:bachata-sensual,period:90s,year:1999"
-        );
-        assert_eq!(tags_cell(&track(&["bpm:90"]), &["bpm"]), dash());
+        assert_eq!(tags_cell(&track(&["genre:Bachata"]), true), dash());
     }
 }

@@ -25,7 +25,7 @@ pub use entity::{
     EntityKind, EntityRef, MergeStats, SimilarPair, Stats, TrackDetail, entity_norm, loose_key,
 };
 pub use error::{Error, Result};
-pub use filter::{FilterSpec, Sort, SortField, TagClause, TagOp, TagRange};
+pub use filter::{FilterSpec, Sort, SortField, TagClause, TagOp};
 pub use instance::{Instance, default_instance_name, parse_instance_name};
 pub use lyrics::{LyricLine, Lyrics};
 pub use playback::Playback;
@@ -37,7 +37,6 @@ pub use queue::{
 pub use rng::Rng;
 pub use slug::{album_slug, artist_slug, playlist_slug, slugify, track_slug};
 pub use tag::{
-    BPM, ChildPolicy, EXACT_PREFIX, GENRE, Tag, TagName, YEAR, is_numeric_key, metadata_tags,
-    normalize_tag, parse_tag_ref,
+    ChildPolicy, EXACT_PREFIX, GENRE, Tag, TagName, metadata_tags, normalize_tag, parse_tag_ref,
 };
 pub use track::{Metadata, Page, ScannedTrack, SearchResult, Track, TrackId};

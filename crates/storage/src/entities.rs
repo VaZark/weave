@@ -349,12 +349,12 @@ impl Storage {
     }
 
     /// Tag counts over the tracks matching `cond`: the `genre:` tags, or all the others
-    /// (numbers like bpm and year left out), most common first.
+    /// (the genre tags left out), most common first.
     fn tag_counts(&self, cond: &str, key: &str, genres: bool) -> Result<Vec<Count>> {
         let which = if genres {
             "g.key = 'genre'"
         } else {
-            "(g.key IS NULL OR g.key NOT IN ('genre', 'bpm', 'year'))"
+            "(g.key IS NULL OR g.key <> 'genre')"
         };
         let mut stmt = self
             .conn

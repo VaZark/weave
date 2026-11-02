@@ -1,7 +1,7 @@
 //! Tag hierarchy, keyed tags, ranges, provenance.
 
 use super::*;
-use weave_core::{ChildPolicy, TagClause, TagOp, TagRange};
+use weave_core::{ChildPolicy, TagClause, TagOp};
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -79,10 +79,7 @@ fn has_includes_descendants_has_exact_does_not_and_none_excludes_them() {
     assert_eq!(find(&st, f(&[], &["genre:bachata"])), ["Z"]);
     // assignments stayed flat: traditional does not also carry bachata
     let i = id(&st, "T");
-    assert_eq!(
-        st.tags(&i).unwrap(),
-        ["bpm:90", "genre:bachata-traditional"]
-    );
+    assert_eq!(st.tags(&i).unwrap(), ["genre:bachata-traditional"]);
 }
 
 #[test]
@@ -130,10 +127,7 @@ fn reparenting_changes_queries_not_assignments() {
     st.set_tag_parent("genre:zouk", Some("genre:bachata"))
         .unwrap();
     assert_eq!(find(&st, q()), ["B", "T", "Z"]);
-    assert_eq!(
-        st.tags(&id(&st, "S")).unwrap(),
-        ["bpm:110", "genre:bachata-sensual"]
-    );
+    assert_eq!(st.tags(&id(&st, "S")).unwrap(), ["genre:bachata-sensual"]);
 }
 
 #[test]
@@ -171,11 +165,8 @@ fn deleting_a_parent_detaches_or_deletes_children() {
         1
     );
     assert_eq!(st.tag("genre:bachata-sensual").unwrap().parent, None);
-    assert_eq!(st.tags(&id(&st, "B")).unwrap(), ["bpm:130"]);
-    assert_eq!(
-        st.tags(&id(&st, "S")).unwrap(),
-        ["bpm:110", "genre:bachata-sensual"]
-    );
+    assert_eq!(st.tags(&id(&st, "B")).unwrap(), Vec::<String>::new());
+    assert_eq!(st.tags(&id(&st, "S")).unwrap(), ["genre:bachata-sensual"]);
 
     let mut st = fixture();
     assert_eq!(
@@ -183,52 +174,12 @@ fn deleting_a_parent_detaches_or_deletes_children() {
         3
     );
     assert!(st.tag("genre:bachata-traditional").is_err());
-    assert_eq!(st.tags(&id(&st, "T")).unwrap(), ["bpm:90"]);
-    assert_eq!(st.tags(&id(&st, "Z")).unwrap(), ["bpm:150", "genre:zouk"]);
+    assert_eq!(st.tags(&id(&st, "T")).unwrap(), Vec::<String>::new());
+    assert_eq!(st.tags(&id(&st, "Z")).unwrap(), ["genre:zouk"]);
 }
 
 #[test]
-fn numeric_ranges_compare_numbers_not_text() {
-    let mut st = fixture();
-    for (track, bpm) in [
-        ("T", "bpm:90"),
-        ("S", "bpm:110"),
-        ("B", "bpm:130"),
-        ("Z", "bpm:1000"),
-    ] {
-        let i = id(&st, track);
-        st.add_tags(&i, &s(&[bpm])).unwrap();
-    }
-    let r = |min, max| FilterSpec {
-        tag_range: vec![TagRange {
-            key: "bpm".into(),
-            min,
-            max,
-        }],
-        ..Default::default()
-    };
-    // text order would put "1000" before "90"
-    assert_eq!(find(&st, r(Some(90.0), Some(120.0))), ["S", "T"]);
-    assert_eq!(find(&st, r(Some(500.0), None)), ["Z"]);
-    assert!(
-        r(Some(5.0), Some(1.0)).validate().is_err()
-            && r(None, None).validate().is_err()
-            && FilterSpec {
-                tag_range: vec![TagRange {
-                    key: "no good".into(),
-                    min: Some(1.0),
-                    max: None
-                }],
-                ..Default::default()
-            }
-            .validate()
-            .is_err()
-    );
-    assert!(st.add_tags(&id(&st, "T"), &s(&["bpm:fast"])).is_err());
-}
-
-#[test]
-fn import_turns_metadata_into_ordinary_tags() {
+fn import_turns_the_genre_into_an_ordinary_tag() {
     let mut st = Storage::open_in_memory().unwrap();
     let t = ScannedTrack {
         path: "/a".into(),
@@ -243,11 +194,9 @@ fn import_turns_metadata_into_ordinary_tags() {
     };
     st.import_tracks(std::slice::from_ref(&t)).unwrap();
     let i = id(&st, "A");
-    // genre, year and bpm only: artist (like title and album) identifies the track
-    assert_eq!(
-        st.tags(&i).unwrap(),
-        ["bpm:90", "genre:Bachata", "year:1999"]
-    );
+    // only the genre: year and BPM are columns, and artist (like title and album) identifies
+    // the track
+    assert_eq!(st.tags(&i).unwrap(), ["genre:Bachata"]);
     let by_genre = FilterSpec {
         tag_all: s(&["genre:bachata"]),
         ..Default::default()
@@ -257,8 +206,5 @@ fn import_turns_metadata_into_ordinary_tags() {
     assert_eq!(st.add_tags(&i, &s(&["GENRE:bachata"])).unwrap(), 0);
     st.add_tags(&i, &s(&["practice"])).unwrap();
     assert_eq!(st.import_tracks(&[t]).unwrap().added, 0);
-    assert_eq!(
-        st.tags(&i).unwrap(),
-        ["bpm:90", "genre:Bachata", "practice", "year:1999"]
-    );
+    assert_eq!(st.tags(&i).unwrap(), ["genre:Bachata", "practice"]);
 }

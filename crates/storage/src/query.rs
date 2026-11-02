@@ -117,7 +117,7 @@ fn tag_condition(
     }
 }
 
-/// The tag conditions of a filter (flat lists, clauses, numeric ranges) as ` AND …` terms over
+/// The tag conditions of a filter (flat lists and clauses) as ` AND …` terms over
 /// the given kind of owner. Expects a normalized, validated filter.
 pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
     let mut sql = String::new();
@@ -156,21 +156,6 @@ pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
     for c in &f.tag_clauses {
         tag_condition(o, c.op, &c.names(), c.exact, &mut sql, &mut args);
     }
-    for r in &f.tag_range {
-        let TagOwner { table, col, outer } = o;
-        sql += &format!(
-            " AND EXISTS (SELECT 1 FROM {table} tt JOIN tags g ON g.id = tt.tag_id
-                   WHERE tt.{col} = {outer} AND g.key = ?"
-        );
-        args.push(Value::Text(r.key.clone()));
-        for (op, v) in [(">=", r.min), ("<=", r.max)] {
-            if let Some(v) = v {
-                sql += &format!(" AND g.value_num {op} ?");
-                args.push(Value::Real(v));
-            }
-        }
-        sql += ")";
-    }
     (sql, args)
 }
 
@@ -179,8 +164,12 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
     let mut sql = String::from(" WHERE 1=1");
     let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
     sql += &tag_sql;
-    // NULL compares as NULL, so an unrated track never matches a bound.
+    // NULL compares as NULL, so an unknown BPM, year or rating never matches a bound.
     for (col, op, v) in [
+        ("m.bpm", ">=", f.bpm_min.map(Value::Real)),
+        ("m.bpm", "<=", f.bpm_max.map(Value::Real)),
+        ("m.year", ">=", f.year_min.map(|y| Value::Integer(y.into()))),
+        ("m.year", "<=", f.year_max.map(|y| Value::Integer(y.into()))),
         (
             "a.rating",
             ">=",

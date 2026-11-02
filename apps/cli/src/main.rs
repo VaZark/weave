@@ -23,7 +23,7 @@ use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use weave::core::{
     ChildPolicy, EndOfQueue, EntityKind, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort,
-    SortField, TagClause, TagOp, TagRange, parse_duration, parse_span,
+    SortField, TagClause, TagOp, parse_duration, parse_span,
 };
 use weave::{Library, Player, SessionView};
 
@@ -546,17 +546,23 @@ struct TagFilterArgs {
     /// Exclude tracks with any of these tags: `live`, `period=80s,70s`.
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_exclude: Vec<TagCond>,
-    /// Numeric range on a keyed tag, ends optional: `bpm=90..120`, `bpm=100..`, `year=..1999`.
-    #[arg(long, value_name = "KEY=MIN..MAX", value_parser = parse_tag_range)]
-    tag_range: Vec<TagRange>,
 }
 
 #[derive(Args, Default)]
 struct FilterArgs {
     #[command(flatten)]
     tags: TagFilterArgs,
-    /// Case-insensitive part of the title. Genre, year and BPM are tags:
-    /// `--tag-any genre=bachata`, `--tag-range year=1990..1999`.
+    /// Minimum and maximum BPM of the track (inclusive; unknown never matches).
+    #[arg(long)]
+    bpm_min: Option<f64>,
+    #[arg(long)]
+    bpm_max: Option<f64>,
+    /// Earliest and latest year of the track (inclusive).
+    #[arg(long)]
+    year_min: Option<i32>,
+    #[arg(long)]
+    year_max: Option<i32>,
+    /// Case-insensitive part of the title. The genre is a tag: `--tag-any genre=bachata`.
     #[arg(long)]
     title: Option<String>,
     /// Case-insensitive part of the artist.
@@ -609,26 +615,6 @@ fn parse_tag_cond(text: &str) -> Result<TagCond, String> {
     })
 }
 
-fn parse_tag_range(text: &str) -> Result<TagRange, String> {
-    let bad = || "expected KEY=MIN..MAX, like `bpm=90..120`, `bpm=100..` or `year=..1999`";
-    let (key, range) = text.split_once('=').ok_or_else(bad)?;
-    let (min, max) = range.split_once("..").ok_or_else(bad)?;
-    let bound = |s: &str| -> Result<Option<f64>, String> {
-        match s.trim() {
-            "" => Ok(None),
-            n => n
-                .parse()
-                .map(Some)
-                .map_err(|_| format!("\"{n}\" is not a number")),
-        }
-    };
-    Ok(TagRange {
-        key: key.trim().to_string(),
-        min: bound(min)?,
-        max: bound(max)?,
-    })
-}
-
 /// Bare conditions fill the flat tag lists; keyed ones become clauses.
 fn split_conds(op: TagOp, conds: Vec<TagCond>) -> (Vec<String>, Vec<TagClause>) {
     let mut flat = Vec::new();
@@ -660,7 +646,6 @@ impl TagFilterArgs {
             tag_any,
             tag_exclude,
             tag_clauses,
-            tag_range: self.tag_range,
             ..Default::default()
         }
     }
@@ -670,6 +655,10 @@ impl From<FilterArgs> for FilterSpec {
     fn from(a: FilterArgs) -> Self {
         let result = a.result.spec();
         FilterSpec {
+            bpm_min: a.bpm_min,
+            bpm_max: a.bpm_max,
+            year_min: a.year_min,
+            year_max: a.year_max,
             title: a.title,
             artist: a.artist,
             album: a.album,
@@ -1367,8 +1356,8 @@ mod arg_tests {
             "random",
             "--tag-all",
             "bachata,90s",
-            "--tag-range",
-            "bpm=90..",
+            "--bpm-min",
+            "90",
             "--limit",
             "20",
         ])
@@ -1379,7 +1368,7 @@ mod arg_tests {
         };
         let spec = FilterSpec::from(filter);
         assert_eq!(
-            (spec.tag_all, spec.tag_range[0].min, spec.limit),
+            (spec.tag_all, spec.bpm_min, spec.limit),
             (vec!["bachata".into(), "90s".into()], Some(90.0), Some(20))
         );
         assert!(
@@ -1482,8 +1471,10 @@ mod arg_tests {
             "genre,style==salsa",
             "--tag-exclude",
             "period=80s",
-            "--tag-range",
-            "bpm=90..120",
+            "--bpm-min",
+            "90",
+            "--year-max",
+            "1999",
         ])
         .unwrap()
         .command
@@ -1497,18 +1488,17 @@ mod arg_tests {
         assert_eq!((c.op, c.exact, c.keys.len()), (TagOp::All, true, 2));
         assert_eq!(f.tag_clauses[1].values, ["bachata", "sals"]);
         assert_eq!(f.tag_clauses[2].op, TagOp::Exclude);
-        assert_eq!(
-            (f.tag_range[0].min, f.tag_range[0].max),
-            (Some(90.0), Some(120.0))
-        );
+        assert_eq!((f.bpm_min, f.year_max), (Some(90.0), Some(1999)));
         assert_eq!(
             output::describe(&f),
             "--tag-all practice,90s --tag-all genre,style==salsa --tag-any genre=bachata,sals \
-             --tag-exclude period=80s --tag-range bpm=90..120"
+             --tag-exclude period=80s --bpm-min 90 --year-max 1999"
         );
         assert!(parse(&["search", "--tag-any", "genre="]).is_err());
-        assert!(parse(&["search", "--tag-range", "bpm=fast"]).is_err());
-        assert!(parse(&["search", "--tag-range", "bpm"]).is_err());
+        assert!(
+            parse(&["search", "--tag-range", "tempo=90..120"]).is_err(),
+            "tags are text; numbers are the BPM and year columns"
+        );
         let Cmd::Search { filter, .. } =
             parse(&["search", "--tag-exclude", "live"]).unwrap().command
         else {
