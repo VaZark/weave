@@ -10,7 +10,7 @@ pub const FROM: &str = " FROM track_metadata m \
 /// Column order is relied on by `Storage::fetch`.
 pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, \
      m.composer, m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
-     t.slug, COALESCE(a.favorite, 0), a.rating";
+     t.slug, a.rating";
 
 /// The default order matches the `meta_sort` index, so paging needs no sort step.
 const DEFAULT_ORDER: &str = "m.artist_norm, m.album_norm, m.title_norm, m.track_id";
@@ -35,27 +35,61 @@ pub fn order_by(sort: Option<Sort>) -> String {
     format!(" ORDER BY {expr} IS NULL, {expr} {dir}, {DEFAULT_ORDER}")
 }
 
-/// Present on the track: the tag itself or any descendant (one `?`: the normalized name).
-const HAS: &str =
-    "EXISTS (SELECT 1 FROM track_tags tt WHERE tt.track_id = m.track_id AND tt.tag_id IN (
-         WITH RECURSIVE d(id) AS (
-             SELECT id FROM tags WHERE normalized_name = ?
-             UNION
-             SELECT c.id FROM tags c JOIN d ON c.parent_id = d.id)
-         SELECT id FROM d))";
+/// Where tag assignments live for one kind of thing, and how the query reaches its key.
+#[derive(Clone, Copy)]
+pub struct TagOwner {
+    pub table: &'static str,
+    pub col: &'static str,
+    /// The owner's key as the surrounding query spells it.
+    pub outer: &'static str,
+}
 
-/// Present as an explicit assignment of exactly this tag (one `?`).
-const HAS_EXACT: &str = "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-         WHERE tt.track_id = m.track_id AND g.normalized_name = ?)";
+pub const TRACK_TAGS: TagOwner = TagOwner {
+    table: "track_tags",
+    col: "track_id",
+    outer: "m.track_id",
+};
+pub const ARTIST_TAGS: TagOwner = TagOwner {
+    table: "artist_tags",
+    col: "artist_id",
+    outer: "ar.id",
+};
+pub const ALBUM_TAGS: TagOwner = TagOwner {
+    table: "album_tags",
+    col: "album_id",
+    outer: "al.id",
+};
+
+/// Present on the owner: the tag itself or any descendant (one `?`: the normalized name), or
+/// with `exact` an explicit assignment of exactly that tag.
+fn has(o: TagOwner, exact: bool) -> String {
+    let TagOwner { table, col, outer } = o;
+    if exact {
+        format!(
+            "EXISTS (SELECT 1 FROM {table} tt JOIN tags g ON g.id = tt.tag_id
+             WHERE tt.{col} = {outer} AND g.normalized_name = ?)"
+        )
+    } else {
+        format!(
+            "EXISTS (SELECT 1 FROM {table} tt WHERE tt.{col} = {outer} AND tt.tag_id IN (
+                 WITH RECURSIVE d(id) AS (
+                     SELECT id FROM tags WHERE normalized_name = ?
+                     UNION
+                     SELECT c.id FROM tags c JOIN d ON c.parent_id = d.id)
+                 SELECT id FROM d))"
+        )
+    }
+}
 
 /// `(a OR b …)` over alternatives, binding one name per alternative.
-fn any_of(names: &[String], exact: bool, args: &mut Vec<Value>) -> String {
-    let has = if exact { HAS_EXACT } else { HAS };
+fn any_of(o: TagOwner, names: &[String], exact: bool, args: &mut Vec<Value>) -> String {
+    let one = has(o, exact);
     args.extend(names.iter().map(|n| Value::Text(n.clone())));
-    format!("({})", vec![has; names.len()].join(" OR "))
+    format!("({})", vec![one; names.len()].join(" OR "))
 }
 
 fn tag_condition(
+    o: TagOwner,
     op: TagOp,
     groups: &[Vec<String>],
     exact: bool,
@@ -66,26 +100,27 @@ fn tag_condition(
         // Every group must hold, each satisfied by any of its alternatives.
         TagOp::All => {
             for g in groups {
-                let c = any_of(g, exact, args);
+                let c = any_of(o, g, exact, args);
                 *sql += &format!(" AND {c}");
             }
         }
         TagOp::Any => {
             let flat: Vec<String> = groups.iter().flatten().cloned().collect();
-            let c = any_of(&flat, exact, args);
+            let c = any_of(o, &flat, exact, args);
             *sql += &format!(" AND {c}");
         }
         TagOp::Exclude => {
             let flat: Vec<String> = groups.iter().flatten().cloned().collect();
-            let c = any_of(&flat, exact, args);
+            let c = any_of(o, &flat, exact, args);
             *sql += &format!(" AND NOT {c}");
         }
     }
 }
 
-/// ` WHERE …` for `FROM`. Expects a normalized, validated filter.
-pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
-    let mut sql = String::from(" WHERE 1=1");
+/// The tag conditions of a filter (flat lists, clauses, numeric ranges) as ` AND …` terms over
+/// the given kind of owner. Expects a normalized, validated filter.
+pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
+    let mut sql = String::new();
     let mut args: Vec<Value> = Vec::new();
 
     // Flat lists: a leading `=` on an entry asks for an exact match.
@@ -101,7 +136,7 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
         match op {
             TagOp::All => {
                 for (exact, name) in refs {
-                    tag_condition(op, &[vec![name]], exact, &mut sql, &mut args);
+                    tag_condition(o, op, &[vec![name]], exact, &mut sql, &mut args);
                 }
             }
             _ => {
@@ -110,7 +145,7 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
                     .iter()
                     .map(|(exact, name)| {
                         args.push(Value::Text(name.clone()));
-                        (if *exact { HAS_EXACT } else { HAS }).to_string()
+                        has(o, *exact)
                     })
                     .collect();
                 let not = if op == TagOp::Exclude { "NOT " } else { "" };
@@ -119,11 +154,14 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
         }
     }
     for c in &f.tag_clauses {
-        tag_condition(c.op, &c.names(), c.exact, &mut sql, &mut args);
+        tag_condition(o, c.op, &c.names(), c.exact, &mut sql, &mut args);
     }
     for r in &f.tag_range {
-        sql += " AND EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-                   WHERE tt.track_id = m.track_id AND g.key = ?";
+        let TagOwner { table, col, outer } = o;
+        sql += &format!(
+            " AND EXISTS (SELECT 1 FROM {table} tt JOIN tags g ON g.id = tt.tag_id
+                   WHERE tt.{col} = {outer} AND g.key = ?"
+        );
         args.push(Value::Text(r.key.clone()));
         for (op, v) in [(">=", r.min), ("<=", r.max)] {
             if let Some(v) = v {
@@ -133,6 +171,14 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
         }
         sql += ")";
     }
+    (sql, args)
+}
+
+/// ` WHERE …` for `FROM`. Expects a normalized, validated filter.
+pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
+    let mut sql = String::from(" WHERE 1=1");
+    let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
+    sql += &tag_sql;
     // NULL compares as NULL, so an unrated track never matches a bound.
     for (col, op, v) in [
         (
@@ -150,11 +196,6 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
             sql += &format!(" AND {col} {op} ?");
             args.push(v);
         }
-    }
-    match f.favorite {
-        Some(true) => sql += " AND COALESCE(a.favorite, 0) = 1",
-        Some(false) => sql += " AND COALESCE(a.favorite, 0) = 0",
-        None => {}
     }
     for (col, val) in [
         ("title_norm", &f.title),

@@ -77,7 +77,7 @@ Debug builds include a developer command that fills the library with fake tracks
 files are read, and release builds do not contain it.
 
 ```bash
-weave-player dev seed                # 60 tracks with tags, favorites, ratings and 6 playlists
+weave-player dev seed                # 60 tracks with a tag tree, ratings and 7 playlists
 weave-player dev seed --count 100    # up to 100
 ```
 
@@ -85,11 +85,18 @@ It is idempotent: running it again adds nothing that already exists. Seeded trac
 
 ```bash
 weave-player list --show-ids    # --show-ids adds the slug ID column
-weave-player search --tag-all bachata,90s --tag-range bpm=90..
+weave-player search --tag-all genre:latin --tag-range bpm=90..   # a parent tag matches its children
+weave-player search --tag-all genre:bachata-sensual              # exact: that tag only
+weave-player tag list                                          # the seeded tree: genre:latin > bachata > ...
+weave-player artist list --tag-any genre=latin                 # artists carry tags too
+weave-player artist aventura                                   # a profile: albums, genres, ratings ...
+weave-player artist duplicates                                  # Daft Punk and Daft-Punk look alike; merge or separate them
+weave-player album list --artist aventura
+weave-player track <track-id>                                  # everything about one track
 weave-player playlist list
 weave-player playlist show "Bachata 90s"
 weave-player play playlist road-trip --shuffle   # fill the queue (seeded tracks have no files, so nothing plays)
-weave-player play random --tag-all bachata   # a random order of what matches
+weave-player play random --tag-any genre=bachata   # a random order of what matches
 weave-player queue show
 weave-player now
 ```

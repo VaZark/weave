@@ -36,7 +36,6 @@ pub struct Track {
     pub metadata: Metadata,
     /// Tags in display spelling: those from imported metadata (`genre`, `year`, `bpm`) and the user's own.
     pub tags: Vec<String>,
-    pub favorite: bool,
     /// 1 to 5 stars; `None` means unrated.
     pub rating: Option<u8>,
 }

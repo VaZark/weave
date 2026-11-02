@@ -18,6 +18,9 @@ predicate.
   `genre:bachata`. Reparenting changes what a query reaches, never what is assigned.
 - Multiple roots are allowed. Self-parenting and cycles are rejected in the same transaction as the change.
   Deleting a tag requires choosing `Detach` (children become roots) or `Delete` (descendants go too).
+- Tags go on tracks, artists, albums and playlists: one vocabulary and one tree, with an assignment table per kind
+  (`track_tags`, `artist_tags`, `album_tags`, `playlist_tags`). A filter only looks at the kind it is run against; a
+  track does not inherit its artist's or album's tags.
 - Schema: `tags(name, normalized_name, key, value, value_num, parent_id)` and `track_tags(track_id, tag_id)`, indexed
   on `parent_id`, the normalized name, `(key, value_num)` and `(tag_id, track_id)`. Descendants come from a recursive
   CTE; no closure table until benchmarks justify one.
@@ -27,7 +30,7 @@ predicate.
 **What is a tag**
 
 - Tags hold descriptive metadata and user-defined tags, nothing else. Identifying data (title, artist, album), the
-  source path, playback state and annotations (favorite, rating) are never tags (`agents.md`, invariant 10).
+  source path, playback state and annotations (rating) are never tags (`agents.md`, invariant 10).
 - Import maps `genre`, `year` and `bpm` to tags. Once imported they are ordinary tags: the library owns them, there is
   no origin or provenance column, and nothing re-syncs known tracks.
 

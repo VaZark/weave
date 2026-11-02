@@ -134,7 +134,6 @@ mod tests {
                 ..Default::default()
             },
             tags: tags.iter().map(|t| t.to_string()).collect(),
-            favorite: false,
             rating: None,
         }
     }

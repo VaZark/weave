@@ -502,56 +502,36 @@ fn id(s: &Storage, title: &str) -> String {
 }
 
 #[test]
-fn favorites_and_ratings_are_stored_filtered_and_shown() {
+fn ratings_are_stored_filtered_and_shown() {
     let mut s = annotated();
-    let (a, b, c) = (id(&s, "a"), id(&s, "b"), id(&s, "c"));
-    assert_eq!(s.set_favorite(&[a.clone(), b.clone()], true).unwrap(), 2);
-    assert_eq!(
-        s.set_favorite(std::slice::from_ref(&a), true).unwrap(),
-        0,
-        "already a favorite"
-    );
+    let (a, c) = (id(&s, "a"), id(&s, "c"));
     s.set_rating(&a, Some(5)).unwrap();
     s.set_rating(&c, Some(2)).unwrap();
 
-    let t = s.track(&a).unwrap();
-    assert_eq!((t.favorite, t.rating), (true, Some(5)));
-    let t = s.track(&id(&s, "d")).unwrap();
-    assert_eq!((t.favorite, t.rating), (false, None));
+    assert_eq!(s.track(&a).unwrap().rating, Some(5));
+    assert_eq!(s.track(&id(&s, "d")).unwrap().rating, None);
 
-    let f = |favorite, min, max| FilterSpec {
-        favorite,
+    let f = |min, max| FilterSpec {
         rating_min: min,
         rating_max: max,
         ..Default::default()
     };
-    assert_eq!(names(&all(&s, &f(Some(true), None, None))), ["A", "B"]);
-    assert_eq!(names(&all(&s, &f(Some(false), None, None))), ["C", "D"]);
-    assert_eq!(names(&all(&s, &f(None, Some(3), None))), ["A"]);
+    assert_eq!(names(&all(&s, &f(Some(3), None))), ["A"]);
     assert_eq!(
-        names(&all(&s, &f(None, Some(1), Some(2)))),
+        names(&all(&s, &f(Some(1), Some(2)))),
         ["C"],
         "unrated never matches a bound"
     );
-    assert_eq!(names(&all(&s, &f(Some(true), Some(4), None))), ["A"]);
+    assert_eq!(names(&all(&s, &f(Some(4), None))), ["A"]);
 
-    assert_eq!(s.set_favorite(std::slice::from_ref(&a), false).unwrap(), 1);
     s.set_rating(&a, None).unwrap();
-    let t = s.track(&a).unwrap();
-    assert_eq!((t.favorite, t.rating), (false, None));
+    assert_eq!(s.track(&a).unwrap().rating, None);
     assert!(s.set_rating(&a, Some(6)).is_err());
     assert!(s.set_rating(&a, Some(0)).is_err());
-}
-
-#[test]
-fn unknown_id_changes_no_favorites() {
-    let mut s = annotated();
-    let a = id(&s, "a");
     assert!(matches!(
-        s.set_favorite(&[a.clone(), "nope".into()], true),
+        s.set_rating("nope", Some(3)),
         Err(Error::NotFound(_))
     ));
-    assert!(!s.track(&a).unwrap().favorite);
 }
 
 #[test]
@@ -756,7 +736,6 @@ fn dynamic_playlist_persists_sort_and_limit() {
             descending: true,
         }),
         limit: Some(2),
-        favorite: Some(false),
         rating_min: Some(1),
         ..Default::default()
     };

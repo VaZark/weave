@@ -1,7 +1,7 @@
 //! Weave: a local-first music library, queue and playback engine to embed in players.
 //!
 //! One dependency gives a player (a GUI, a TUI, a service) everything the `weave-player` CLI has:
-//! the library of tracks with tags, playlists, favorites, ratings, filters and sorting; a persisted
+//! the library of tracks with tags, playlists, ratings, filters and sorting; a persisted
 //! now-playing queue with shuffle, repeat, recommendations and a sleep timer; lyrics; and an
 //! embedded [`Player`] that plays the session in your process, with optional OS media
 //! controls (media keys and now-playing widgets, through souvlaki). The CLI is only a frontend over this crate.

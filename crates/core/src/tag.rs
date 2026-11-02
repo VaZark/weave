@@ -119,8 +119,11 @@ pub struct Tag {
     pub value: String,
     /// Display name of the parent tag; `None` for a root.
     pub parent: Option<String>,
-    /// Tracks assigned this tag explicitly (descendants not counted).
+    /// Things assigned this tag explicitly (descendants not counted).
     pub tracks: usize,
+    pub artists: usize,
+    pub albums: usize,
+    pub playlists: usize,
 }
 
 /// What a deleted tag's children become.

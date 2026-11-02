@@ -4,6 +4,7 @@
 mod text_enum;
 
 mod duration;
+mod entity;
 mod error;
 mod filter;
 mod instance;
@@ -17,6 +18,10 @@ mod tag;
 mod track;
 
 pub use duration::{parse_duration, parse_span};
+pub use entity::{
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, EntityKind, EntityRef, MergeStats,
+    SimilarArtists, Stats, TrackDetail, entity_norm, loose_key,
+};
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, Sort, SortField, TagClause, TagOp, TagRange};
 pub use instance::{Instance, default_instance_name, parse_instance_name};
@@ -28,7 +33,7 @@ pub use queue::{
     SleepTimer,
 };
 pub use rng::Rng;
-pub use slug::{playlist_slug, slugify, track_slug};
+pub use slug::{album_slug, artist_slug, playlist_slug, slugify, track_slug};
 pub use tag::{
     BPM, ChildPolicy, EXACT_PREFIX, GENRE, Tag, TagName, YEAR, is_numeric_key, metadata_tags,
     normalize_tag, parse_tag_ref,

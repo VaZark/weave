@@ -9,12 +9,46 @@ use weave_core::{Error, Result};
 const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          id       TEXT PRIMARY KEY,       -- opaque internal key, never shown to users
          slug     TEXT NOT NULL UNIQUE,   -- public ID, see weave_core::track_slug
-         added_at INTEGER NOT NULL        -- unix seconds
+         added_at INTEGER NOT NULL,       -- unix seconds
+         artist_id TEXT REFERENCES artists(id) ON DELETE SET NULL,
+         album_id  TEXT REFERENCES albums(id) ON DELETE SET NULL
      );
+     CREATE INDEX tracks_artist ON tracks(artist_id);
+     CREATE INDEX tracks_album  ON tracks(album_id);
+     -- Artists and albums are entities of their own: profiles, a slug ID, tags. The metadata
+     -- columns keep the text; these link tracks that spell a name the same way.
+     CREATE TABLE artists (
+         id        TEXT PRIMARY KEY,       -- opaque internal key
+         slug      TEXT NOT NULL UNIQUE,   -- public ID
+         name      TEXT NOT NULL,
+         name_norm TEXT NOT NULL UNIQUE    -- weave_core::entity_norm
+     );
+     -- Spellings merged into an artist by the user, so a re-import lands on the survivor.
+     CREATE TABLE artist_aliases (
+         alias_norm TEXT PRIMARY KEY,
+         alias      TEXT NOT NULL,
+         artist_id  TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE
+     );
+     CREATE INDEX artist_aliases_artist ON artist_aliases(artist_id);
+     -- Pairs the user said are different people, so they are never suggested as duplicates.
+     CREATE TABLE artist_separate (
+         a_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+         b_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+         PRIMARY KEY (a_id, b_id),
+         CHECK (a_id < b_id)
+     );
+     CREATE TABLE albums (
+         id         TEXT PRIMARY KEY,
+         slug       TEXT NOT NULL UNIQUE,
+         title      TEXT NOT NULL,
+         title_norm TEXT NOT NULL,
+         artist_id  TEXT REFERENCES artists(id) ON DELETE SET NULL   -- the artist profile it is linked to
+     );
+     CREATE INDEX albums_artist   ON albums(artist_id);
+     CREATE INDEX albums_identity ON albums(title_norm, artist_id);
      -- User annotations live apart from source-derived metadata so syncs never touch them.
      CREATE TABLE track_annotations (
          track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
-         favorite INTEGER NOT NULL DEFAULT 0,
          rating   INTEGER CHECK (rating BETWEEN 1 AND 5)
      );
      CREATE INDEX annotations_rating ON track_annotations(rating);
@@ -72,6 +106,19 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          PRIMARY KEY (track_id, tag_id)
      );
      CREATE INDEX track_tags_tag ON track_tags(tag_id, track_id);
+     -- The same tags on artists, albums and playlists.
+     CREATE TABLE artist_tags (
+         artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+         tag_id    INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+         PRIMARY KEY (artist_id, tag_id)
+     );
+     CREATE INDEX artist_tags_tag ON artist_tags(tag_id, artist_id);
+     CREATE TABLE album_tags (
+         album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+         tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+         PRIMARY KEY (album_id, tag_id)
+     );
+     CREATE INDEX album_tags_tag ON album_tags(tag_id, album_id);
      CREATE TABLE playlists (
          id              TEXT PRIMARY KEY,   -- slug, the public ID
          name            TEXT NOT NULL,
@@ -87,6 +134,12 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          PRIMARY KEY (playlist_id, track_id)
      );
      CREATE INDEX playlist_tracks_order ON playlist_tracks(playlist_id, play_order);
+     CREATE TABLE playlist_tags (
+         playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+         tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+         PRIMARY KEY (playlist_id, tag_id)
+     );
+     CREATE INDEX playlist_tags_tag ON playlist_tags(tag_id, playlist_id);
      -- Playback session: a single queue and its state (see weave_core::Queue).
      CREATE TABLE queue_items (
          position  INTEGER PRIMARY KEY,                 -- list order, 0-based

@@ -8,11 +8,13 @@ macro_rules! outln {
     }};
 }
 
+mod dedup;
 #[cfg(debug_assertions)]
 mod dev;
 mod host;
 mod lyrics;
 mod output;
+mod profile;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,8 +22,8 @@ use std::process::ExitCode;
 use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use weave::core::{
-    ChildPolicy, EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField,
-    TagClause, TagOp, TagRange, parse_duration, parse_span,
+    ChildPolicy, EndOfQueue, EntityKind, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort,
+    SortField, TagClause, TagOp, TagRange, parse_duration, parse_span,
 };
 use weave::{Library, Player, SessionView};
 
@@ -59,6 +61,79 @@ struct Cli {
     command: Cmd,
 }
 
+/// `artist <id>` shows a profile; the subcommands manage artists.
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct ArtistArgs {
+    /// The artist's ID (see `artist list`).
+    id: Option<String>,
+    #[command(subcommand)]
+    cmd: Option<ArtistCmd>,
+}
+
+#[derive(Subcommand)]
+enum ArtistCmd {
+    /// Show an artist profile (for an artist whose ID is also a subcommand name).
+    Show { id: String },
+    /// List artists, optionally by the tags on the artists themselves.
+    List {
+        #[command(flatten)]
+        tags: TagFilterArgs,
+    },
+    /// Add or remove tags on an artist.
+    Tag(TagEdit),
+    /// Artists with similar names that might be one person; `--ask` goes through them.
+    Duplicates {
+        #[arg(long)]
+        ask: bool,
+    },
+    /// Fold one artist into another: tracks, albums and tags move, the old name stays an alias.
+    Merge { from: String, into: String },
+    /// Record that two artists are different people, so they are not suggested as duplicates.
+    Separate { a: String, b: String },
+}
+
+/// `album <id>` shows a profile; the subcommands manage albums.
+#[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
+struct AlbumArgs {
+    /// The album's ID (see `album list`).
+    id: Option<String>,
+    #[command(subcommand)]
+    cmd: Option<AlbumCmd>,
+}
+
+#[derive(Subcommand)]
+enum AlbumCmd {
+    /// Show an album profile (for an album whose ID is also a subcommand name).
+    Show { id: String },
+    /// List albums, optionally one artist's or by the tags on the albums themselves.
+    List {
+        /// Only this artist's albums.
+        #[arg(long)]
+        artist: Option<String>,
+        #[command(flatten)]
+        tags: TagFilterArgs,
+    },
+    /// Add or remove tags on an album.
+    Tag(TagEdit),
+    /// Link an album to an artist profile.
+    Link { album: String, artist: String },
+    /// Remove an album's link to an artist profile.
+    Unlink { album: String },
+}
+
+/// Tags to add to and remove from one thing.
+#[derive(Args)]
+struct TagEdit {
+    /// The ID of the artist, album or playlist.
+    id: String,
+    #[arg(long, value_delimiter = ',', required_unless_present = "remove")]
+    add: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    remove: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum TagCmd {
     /// Create a tag, like `genre:bachata` or `practice`, optionally under a parent.
@@ -91,8 +166,14 @@ enum TagCmd {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Index audio files without modifying them.
-    Import { path: PathBuf },
+    /// Index audio files without modifying them. When artists with similar names turn up (is
+    /// `Daft-Punk` the same as `Daft Punk`?) it asks, never merging on its own.
+    Import {
+        path: PathBuf,
+        /// Do not ask about similar artist names; review them later with `artist duplicates`.
+        #[arg(long)]
+        dedup_off: bool,
+    },
     /// List tracks.
     List {
         #[command(flatten)]
@@ -100,7 +181,7 @@ enum Cmd {
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Search by tags, BPM, metadata, favorites and ratings.
+    /// Search by tags, metadata and ratings.
     Search {
         #[command(flatten)]
         filter: FilterArgs,
@@ -121,19 +202,15 @@ enum Cmd {
     },
     /// Show a track's tags.
     Tags { track_id: String },
+    /// Everything about a track: metadata, tags, rating, file, artist, album, playlists, queue.
+    Track { track_id: String },
+    /// An artist profile (`artist <artist-id>`), or manage artists: list, tag, merge duplicates.
+    Artist(ArtistArgs),
+    /// An album profile (`album <album-id>`), or manage albums: list, tag, link to an artist.
+    Album(AlbumArgs),
     /// Manage the tag vocabulary and hierarchy.
     #[command(subcommand)]
     Tag(TagCmd),
-    /// Mark tracks as favorites.
-    Favorite {
-        #[arg(required = true)]
-        track_ids: Vec<String>,
-    },
-    /// Remove tracks from the favorites.
-    Unfavorite {
-        #[arg(required = true)]
-        track_ids: Vec<String>,
-    },
     /// Rate a track from 1 to 5 stars; 0 clears the rating.
     Rate {
         track_id: String,
@@ -274,6 +351,8 @@ enum PlaylistCmd {
         #[command(flatten)]
         filter: FilterArgs,
     },
+    /// Add or remove tags on a playlist.
+    Tag(TagEdit),
     /// Move a track of a manual playlist to another place in its play order (1-based positions).
     Move {
         name: String,
@@ -420,8 +499,9 @@ impl ResultArgs {
     }
 }
 
+/// The tag conditions, shared by every command that filters (tracks, artists, albums).
 #[derive(Args, Default)]
-struct FilterArgs {
+struct TagFilterArgs {
     /// Require every tag: `bachata,90s`, or by key `genre=bachata,sensual`. Repeatable.
     /// Matches child tags too; `genre==bachata` (or `=genre:bachata`) matches that tag only.
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
@@ -435,6 +515,12 @@ struct FilterArgs {
     /// Numeric range on a keyed tag, ends optional: `bpm=90..120`, `bpm=100..`, `year=..1999`.
     #[arg(long, value_name = "KEY=MIN..MAX", value_parser = parse_tag_range)]
     tag_range: Vec<TagRange>,
+}
+
+#[derive(Args, Default)]
+struct FilterArgs {
+    #[command(flatten)]
+    tags: TagFilterArgs,
     /// Case-insensitive part of the title. Genre, year and BPM are tags:
     /// `--tag-any genre=bachata`, `--tag-range year=1990..1999`.
     #[arg(long)]
@@ -445,12 +531,6 @@ struct FilterArgs {
     /// Case-insensitive part of the album.
     #[arg(long)]
     album: Option<String>,
-    /// Only favorites.
-    #[arg(long, conflicts_with = "not_favorite")]
-    favorite: bool,
-    /// Only tracks that are not favorites.
-    #[arg(long)]
-    not_favorite: bool,
     /// Minimum rating (1-5); unrated tracks never match.
     #[arg(long)]
     rating_min: Option<u8>,
@@ -534,11 +614,11 @@ fn split_conds(op: TagOp, conds: Vec<TagCond>) -> (Vec<String>, Vec<TagClause>) 
     (flat, clauses)
 }
 
-impl From<FilterArgs> for FilterSpec {
-    fn from(a: FilterArgs) -> Self {
-        let (tag_all, mut tag_clauses) = split_conds(TagOp::All, a.tag_all);
-        let (tag_any, any) = split_conds(TagOp::Any, a.tag_any);
-        let (tag_exclude, none) = split_conds(TagOp::Exclude, a.tag_exclude);
+impl TagFilterArgs {
+    fn spec(self) -> FilterSpec {
+        let (tag_all, mut tag_clauses) = split_conds(TagOp::All, self.tag_all);
+        let (tag_any, any) = split_conds(TagOp::Any, self.tag_any);
+        let (tag_exclude, none) = split_conds(TagOp::Exclude, self.tag_exclude);
         tag_clauses.extend(any);
         tag_clauses.extend(none);
         FilterSpec {
@@ -546,18 +626,24 @@ impl From<FilterArgs> for FilterSpec {
             tag_any,
             tag_exclude,
             tag_clauses,
-            tag_range: a.tag_range,
+            tag_range: self.tag_range,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<FilterArgs> for FilterSpec {
+    fn from(a: FilterArgs) -> Self {
+        let result = a.result.spec();
+        FilterSpec {
             title: a.title,
             artist: a.artist,
             album: a.album,
-            favorite: match (a.favorite, a.not_favorite) {
-                (true, _) => Some(true),
-                (_, true) => Some(false),
-                _ => None,
-            },
             rating_min: a.rating_min,
             rating_max: a.rating_max,
-            ..a.result.spec()
+            sort: result.sort,
+            limit: result.limit,
+            ..a.tags.spec()
         }
         .normalized()
     }
@@ -573,6 +659,82 @@ impl From<Error> for Failure {
     fn from(e: Error) -> Self {
         Failure::Engine(e)
     }
+}
+
+/// The IDs of every artist right now.
+fn artist_ids(lib: &Library) -> Result<std::collections::HashSet<String>, Failure> {
+    Ok(lib
+        .artists(&FilterSpec::default())?
+        .into_iter()
+        .map(|a| a.id)
+        .collect())
+}
+
+/// Add and remove tags on an artist, album or playlist.
+fn edit_tags(
+    lib: &mut Library,
+    kind: EntityKind,
+    edit: TagEdit,
+    json: bool,
+) -> Result<(), Failure> {
+    let added = if edit.add.is_empty() {
+        0
+    } else {
+        lib.add_tags_to(kind, &edit.id, &edit.add)?
+    };
+    let removed = if edit.remove.is_empty() {
+        0
+    } else {
+        lib.remove_tags_from(kind, &edit.id, &edit.remove)?
+    };
+    out(
+        json,
+        &serde_json::json!({ "added": added, "removed": removed }),
+        || {
+            outln!(
+                "{kind} {}: added {added} tag(s), removed {removed}",
+                edit.id
+            )
+        },
+    )
+}
+
+/// Ask about artists with similar names: those an import just brought (`known` = who was
+/// there before) or all of them. Without a terminal it only says how many there are.
+fn review_similar(
+    lib: &mut Library,
+    known: Option<&std::collections::HashSet<String>>,
+    json: bool,
+) -> Result<(), Failure> {
+    use std::io::IsTerminal;
+    let pairs = dedup::pending(lib, known)?;
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let interactive = !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if !interactive {
+        if !json {
+            eprintln!(
+                "{} pair(s) of artists have similar names; review them with `weave-player artist duplicates --ask`",
+                pairs.len()
+            );
+        }
+        return Ok(());
+    }
+    outln!();
+    let o = dedup::review(
+        lib,
+        pairs,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout(),
+    )?;
+    outln!(
+        "{} merged, {} kept separate, {} left for later",
+        o.merged,
+        o.kept_separate,
+        o.skipped
+    );
+    Ok(())
 }
 
 fn default_db() -> PathBuf {
@@ -656,13 +818,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
     };
 
     match cli.command {
-        Cmd::Import { path } => {
+        Cmd::Import { path, dedup_off } => {
+            let known = artist_ids(&lib)?;
             let s = lib.import(&path)?;
             out(
                 json,
                 &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
                 || outln!("imported {} new, {} already indexed", s.added, s.skipped),
             )?;
+            if !dedup_off {
+                review_similar(&mut lib, Some(&known), json)?;
+            }
         }
         Cmd::List { result, page } => print_page(
             json,
@@ -699,6 +865,86 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let tags = lib.tags(&track_id)?;
             out(json, &tags, || tags.iter().for_each(|t| outln!("{t}")))?;
         }
+        Cmd::Track { track_id } => profile::print_track(json, &lib.track_detail(&track_id)?)?,
+        Cmd::Artist(ArtistArgs { id: Some(id), .. })
+        | Cmd::Artist(ArtistArgs {
+            cmd: Some(ArtistCmd::Show { id }),
+            ..
+        }) => profile::print_artist(json, &lib.artist(&id)?)?,
+        Cmd::Artist(ArtistArgs {
+            cmd: None,
+            id: None,
+        }) => {
+            return Err(Error::InvalidInput(
+                "give an artist ID, or a subcommand (list, tag, duplicates, merge, separate)"
+                    .into(),
+            )
+            .into());
+        }
+        Cmd::Artist(ArtistArgs { cmd: Some(cmd), .. }) => match cmd {
+            ArtistCmd::Show { .. } => unreachable!("handled above"),
+            ArtistCmd::List { tags } => {
+                profile::print_artists(json, show_ids, &lib.artists(&tags.spec())?)?
+            }
+            ArtistCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Artist, edit, json)?,
+            ArtistCmd::Duplicates { ask } => {
+                if ask {
+                    review_similar(&mut lib, None, json)?;
+                } else {
+                    profile::print_similar(json, &lib.similar_artists()?)?;
+                }
+            }
+            ArtistCmd::Merge { from, into } => {
+                let m = lib.merge_artists(&from, &into)?;
+                out(json, &m, || {
+                    outln!(
+                        "merged {from} into {into}: {} track(s), {} album(s) moved",
+                        m.tracks,
+                        m.albums
+                    )
+                })?;
+            }
+            ArtistCmd::Separate { a, b } => {
+                lib.separate_artists(&a, &b)?;
+                out(json, &serde_json::json!({ "separate": [a, b] }), || {
+                    outln!("{a} and {b} are different people; they will not be suggested again")
+                })?;
+            }
+        },
+        Cmd::Album(AlbumArgs { id: Some(id), .. })
+        | Cmd::Album(AlbumArgs {
+            cmd: Some(AlbumCmd::Show { id }),
+            ..
+        }) => profile::print_album(json, &lib.album(&id)?)?,
+        Cmd::Album(AlbumArgs {
+            cmd: None,
+            id: None,
+        }) => {
+            return Err(Error::InvalidInput(
+                "give an album ID, or a subcommand (list, tag, link, unlink)".into(),
+            )
+            .into());
+        }
+        Cmd::Album(AlbumArgs { cmd: Some(cmd), .. }) => match cmd {
+            AlbumCmd::Show { .. } => unreachable!("handled above"),
+            AlbumCmd::List { artist, tags } => {
+                profile::print_albums(json, &lib.albums(&tags.spec(), artist.as_deref())?)?
+            }
+            AlbumCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Album, edit, json)?,
+            AlbumCmd::Link { album, artist } => {
+                let a = lib.link_album(&album, Some(&artist))?;
+                out(json, &a, || outln!("{} is now linked to {artist}", a.title))?;
+            }
+            AlbumCmd::Unlink { album } => {
+                let a = lib.link_album(&album, None)?;
+                out(json, &a, || {
+                    outln!("{} is no longer linked to an artist", a.title)
+                })?;
+            }
+        },
+        Cmd::Playlist(PlaylistCmd::Tag(edit)) => {
+            edit_tags(&mut lib, EntityKind::Playlist, edit, json)?
+        }
         Cmd::Tag(TagCmd::Create { name, parent }) => {
             let tag = lib.create_tag(&name, parent.as_deref())?;
             out(json, &tag, || outln!("created tag {}", tag.name))?;
@@ -713,10 +959,18 @@ fn run(cli: Cli) -> Result<(), Failure> {
                             t.name.clone(),
                             t.parent.clone().unwrap_or_else(|| "-".into()),
                             t.tracks.to_string(),
+                            t.artists.to_string(),
+                            t.albums.to_string(),
+                            t.playlists.to_string(),
                         ]
                     })
                     .collect();
-                print_columns(&["TAG", "PARENT", "TRACKS"], rows, &[], None);
+                print_columns(
+                    &["TAG", "PARENT", "TRACKS", "ARTISTS", "ALBUMS", "PLAYLISTS"],
+                    rows,
+                    &[],
+                    None,
+                );
             })?;
         }
         Cmd::Tag(TagCmd::Parent {
@@ -749,18 +1003,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let n = lib.delete_tag(&name, policy)?;
             out(json, &serde_json::json!({ "deleted": n }), || {
                 outln!("deleted {n} tag(s)")
-            })?;
-        }
-        Cmd::Favorite { track_ids } => {
-            let n = lib.set_favorite(&track_ids, true)?;
-            out(json, &serde_json::json!({ "changed": n }), || {
-                outln!("{n} track(s) added to favorites")
-            })?;
-        }
-        Cmd::Unfavorite { track_ids } => {
-            let n = lib.set_favorite(&track_ids, false)?;
-            out(json, &serde_json::json!({ "changed": n }), || {
-                outln!("{n} track(s) removed from favorites")
             })?;
         }
         Cmd::Rate { track_id, stars } => {
@@ -1088,7 +1330,7 @@ mod arg_tests {
             ),
             "filters are optional"
         );
-        assert!(parse(&["play", "random", "--favorite", "--rating-min", "4"]).is_ok());
+        assert!(parse(&["play", "random", "--rating-min", "4"]).is_ok());
     }
 
     #[test]

@@ -112,8 +112,6 @@ pub struct FilterSpec {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
-    /// `Some(true)`: only favorites; `Some(false)`: only non-favorites.
-    pub favorite: Option<bool>,
     /// Inclusive, 1 to 5. Unrated tracks never match a rating bound.
     pub rating_min: Option<u8>,
     pub rating_max: Option<u8>,
@@ -255,7 +253,6 @@ impl FilterSpec {
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
-        self.favorite = update.favorite.or(self.favorite);
         self.rating_min = update.rating_min.or(self.rating_min);
         self.rating_max = update.rating_max.or(self.rating_max);
         self.sort = update.sort.or(self.sort);

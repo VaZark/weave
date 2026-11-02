@@ -68,6 +68,22 @@ pub fn track_slug(artist: Option<&str>, album: Option<&str>, title: &str) -> Str
     parts.join("-")
 }
 
+/// Slug for an artist name; `unknown` if it has no usable characters.
+pub fn artist_slug(name: &str) -> String {
+    let s = segment(name);
+    if s.is_empty() { "unknown".into() } else { s }
+}
+
+/// `artist-album`; `unknown` for a missing artist and `untitled` for an unusable title.
+pub fn album_slug(artist: Option<&str>, title: &str) -> String {
+    let title = segment(title);
+    format!(
+        "{}-{}",
+        artist_slug(artist.unwrap_or("")),
+        if title.is_empty() { "untitled" } else { &title }
+    )
+}
+
 /// Slug for a playlist name; `playlist` if the name has no usable characters.
 /// Uniqueness is the caller's job.
 pub fn playlist_slug(name: &str) -> String {

@@ -1,12 +1,16 @@
-//! The tag vocabulary: creation, the optional parent and track assignments.
+//! The tag vocabulary: creation, the optional parent and assignments to tracks, artists, albums
+//! and playlists.
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use weave_core::{ChildPolicy, Error, Result, Tag, TagName, normalize_tag};
+use weave_core::{ChildPolicy, EntityKind, Error, Result, Tag, TagName, normalize_tag};
 
 use crate::{Storage, db_err};
 
 const TAG_SELECT: &str = "SELECT g.name, g.key, g.value, p.name,
-        (SELECT COUNT(*) FROM track_tags tt WHERE tt.tag_id = g.id)
+        (SELECT COUNT(*) FROM track_tags tt WHERE tt.tag_id = g.id),
+        (SELECT COUNT(*) FROM artist_tags tt WHERE tt.tag_id = g.id),
+        (SELECT COUNT(*) FROM album_tags tt WHERE tt.tag_id = g.id),
+        (SELECT COUNT(*) FROM playlist_tags tt WHERE tt.tag_id = g.id)
      FROM tags g LEFT JOIN tags p ON p.id = g.parent_id";
 
 fn tag_row(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
@@ -16,6 +20,9 @@ fn tag_row(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
         value: r.get(2)?,
         parent: r.get(3)?,
         tracks: r.get::<_, i64>(4)? as usize,
+        artists: r.get::<_, i64>(5)? as usize,
+        albums: r.get::<_, i64>(6)? as usize,
+        playlists: r.get::<_, i64>(7)? as usize,
     })
 }
 
@@ -36,12 +43,28 @@ pub(crate) fn ensure_tag(tx: &Transaction, name: &TagName) -> Result<i64> {
     .map_err(db_err)
 }
 
-/// Assign a tag to a track. Returns whether the assignment is new.
-pub(crate) fn assign(tx: &Transaction, track: &str, name: &TagName) -> Result<bool> {
+/// The assignment table of a kind of thing and its key column.
+fn assignments(kind: EntityKind) -> (&'static str, &'static str) {
+    match kind {
+        EntityKind::Track => ("track_tags", "track_id"),
+        EntityKind::Artist => ("artist_tags", "artist_id"),
+        EntityKind::Album => ("album_tags", "album_id"),
+        EntityKind::Playlist => ("playlist_tags", "playlist_id"),
+    }
+}
+
+/// Assign a tag to something (by internal key). Returns whether the assignment is new.
+pub(crate) fn assign(
+    tx: &Transaction,
+    kind: EntityKind,
+    owner: &str,
+    name: &TagName,
+) -> Result<bool> {
+    let (table, col) = assignments(kind);
     let tag_id = ensure_tag(tx, name)?;
     tx.execute(
-        "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
-        params![track, tag_id],
+        &format!("INSERT OR IGNORE INTO {table} ({col}, tag_id) VALUES (?1, ?2)"),
+        params![owner, tag_id],
     )
     .map(|n| n > 0)
     .map_err(db_err)
@@ -59,33 +82,65 @@ fn tag_id(tx: &Transaction, name: &str) -> Result<i64> {
 }
 
 impl Storage {
-    /// Add tags (deduplicated, case-insensitive). Returns how many were newly applied.
+    /// Add tags to a track (deduplicated, case-insensitive). Returns how many were newly applied.
     pub fn add_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
+        self.add_tags_to(EntityKind::Track, track_id, names)
+    }
+
+    /// Remove tag assignments from a track. Returns how many were removed.
+    pub fn remove_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
+        self.remove_tags_from(EntityKind::Track, track_id, names)
+    }
+
+    /// A track's tags, in display spelling.
+    pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
+        self.tags_of(EntityKind::Track, track_id)
+    }
+
+    /// The internal key of a track, artist, album or playlist given its public ID.
+    pub(crate) fn resolve_entity(&self, kind: EntityKind, key: &str) -> Result<String> {
+        match kind {
+            EntityKind::Track => self.resolve_id(key),
+            EntityKind::Artist => self.resolve_artist(key),
+            EntityKind::Album => self.resolve_album(key),
+            EntityKind::Playlist => self.playlist(key).map(|p| p.id),
+        }
+    }
+
+    /// Add tags to a track, artist, album or playlist. Returns how many were newly applied.
+    pub fn add_tags_to(&mut self, kind: EntityKind, id: &str, names: &[String]) -> Result<usize> {
         let names = names
             .iter()
             .map(|n| TagName::parse(n))
             .collect::<Result<Vec<_>>>()?;
-        let track_id = self.resolve_id(track_id)?;
+        let owner = self.resolve_entity(kind, id)?;
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut added = 0;
         for name in &names {
-            added += usize::from(assign(&tx, &track_id, name)?);
+            added += usize::from(assign(&tx, kind, &owner, name)?);
         }
         tx.commit().map_err(db_err)?;
         Ok(added)
     }
 
-    /// Remove tag assignments. Returns how many were removed.
-    pub fn remove_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
-        let track_id = self.resolve_id(track_id)?;
+    pub fn remove_tags_from(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        names: &[String],
+    ) -> Result<usize> {
+        let (table, col) = assignments(kind);
+        let owner = self.resolve_entity(kind, id)?;
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut removed = 0;
         for name in names {
             removed += tx
                 .execute(
-                    "DELETE FROM track_tags WHERE track_id = ?1 AND tag_id IN
-                       (SELECT id FROM tags WHERE normalized_name = ?2)",
-                    params![track_id, normalize_tag(name)],
+                    &format!(
+                        "DELETE FROM {table} WHERE {col} = ?1 AND tag_id IN
+                           (SELECT id FROM tags WHERE normalized_name = ?2)"
+                    ),
+                    params![owner, normalize_tag(name)],
                 )
                 .map_err(db_err)?;
         }
@@ -93,17 +148,18 @@ impl Storage {
         Ok(removed)
     }
 
-    /// A track's tags, in display spelling.
-    pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
-        let track_id = self.resolve_id(track_id)?;
+    /// The tags on a track, artist, album or playlist, in display spelling.
+    pub fn tags_of(&self, kind: EntityKind, id: &str) -> Result<Vec<String>> {
+        let (table, col) = assignments(kind);
+        let owner = self.resolve_entity(kind, id)?;
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT g.name FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-                 WHERE tt.track_id = ?1 ORDER BY g.normalized_name",
-            )
+            .prepare(&format!(
+                "SELECT g.name FROM {table} tt JOIN tags g ON g.id = tt.tag_id
+                 WHERE tt.{col} = ?1 ORDER BY g.normalized_name"
+            ))
             .map_err(db_err)?;
-        stmt.query_map([track_id], |r| r.get(0))
+        stmt.query_map([owner], |r| r.get(0))
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)

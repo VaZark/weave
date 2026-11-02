@@ -17,8 +17,9 @@ Build an open-source, local-first music management engine used by a CLI and, as 
 7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
 8. **Remote boundaries:** A remote client never touches the database. Everything goes through the owning instance's engine API and its validation. Remote access is opt-in, off by default and limited to the local network. A client is trusted only after the owner registers it on the instance; trust is per client (`view` or `control`), authenticated on every request and revocable at once. Instance settings (name, capabilities) and client management are local-only.
 9. **Local or thin client, nothing else:** No cloud accounts, hosted services, third-party streaming integrations or plugin runtimes. Network use is only between the user's own instances.
-10. **Tags are for descriptive metadata and user-defined tags only:** Identifying data (title, artist, album, and source or path identities) is never a tag; it stays in structured columns and is filtered by dedicated text predicates. Playback state and user-protected annotations (favorite, rating) are not tags either. Do not map a new field to a tag unless it describes the track rather than identifies it.
-11. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
+10. **Tags are for descriptive metadata and user-defined tags only:** Identifying data (title, artist, album, and source or path identities) is never a tag; it stays in structured columns and is filtered by dedicated text predicates. Playback state and user-protected annotations (rating) are not tags either. Do not map a new field to a tag unless it describes the track rather than identifies it. Tags can go on tracks, artists, albums and playlists alike.
+11. **Never merge people automatically:** Artists are grouped only by identical spelling (case and spacing aside). Similar names are suggested and asked about, never merged unless the user says so, because different people share names. A merge keeps the old spelling as an alias.
+12. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
 
 ## Recommended implementation sequence
 

@@ -7,8 +7,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_core::{
-    ChildPolicy, Error, FilterSpec, Instance, Page, Playlist, PlaylistKind, Result, Rng,
-    ScannedTrack, SearchResult, Tag, Track,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, EntityKind, EntityRef,
+    Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind, Result, Rng,
+    ScannedTrack, SearchResult, SimilarArtists, Tag, Track, TrackDetail,
 };
 use weave_local::LocalFiles;
 use weave_storage::Storage;
@@ -115,12 +116,102 @@ impl Library {
         self.storage.delete_tag(name, children)
     }
 
-    // --- favorites and ratings -------------------------------------------
-
-    /// Returns how many tracks changed. An unknown ID changes nothing.
-    pub fn set_favorite(&mut self, track_ids: &[String], favorite: bool) -> Result<usize> {
-        self.storage.set_favorite(track_ids, favorite)
+    /// Add tags to a track, artist, album or playlist.
+    pub fn add_tags_to(&mut self, kind: EntityKind, id: &str, tags: &[String]) -> Result<usize> {
+        self.storage.add_tags_to(kind, id, tags)
     }
+
+    pub fn remove_tags_from(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        tags: &[String],
+    ) -> Result<usize> {
+        self.storage.remove_tags_from(kind, id, tags)
+    }
+
+    /// The tags on a track, artist, album or playlist.
+    pub fn tags_of(&self, kind: EntityKind, id: &str) -> Result<Vec<String>> {
+        self.storage.tags_of(kind, id)
+    }
+
+    // --- tracks, artists and albums in depth -------------------------------
+
+    /// Everything about one track: metadata, tags, rating, file, the artist and album it is
+    /// linked to, the playlists it is in and where it sits in the queue.
+    pub fn track_detail(&self, id: &str) -> Result<TrackDetail> {
+        let track = self.storage.track(id)?;
+        let (added_at, artist, album) = self.storage.track_links(&track.id.0)?;
+        let mut playlists = Vec::new();
+        for p in self.storage.playlists()? {
+            let (_, found) = self.playlist_tracks(&p.id, Page::ALL)?;
+            if found.tracks.iter().any(|t| t.id == track.id) {
+                playlists.push(EntityRef {
+                    id: p.id,
+                    name: p.name,
+                });
+            }
+        }
+        let queue_positions = self
+            .storage
+            .load_queue()?
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t == track.id)
+            .map(|(i, _)| i + 1)
+            .collect();
+        Ok(TrackDetail {
+            path: self.storage.source_path(&track.id.0)?,
+            added_at,
+            artist,
+            album,
+            playlists,
+            queue_positions,
+            track,
+        })
+    }
+
+    /// Artists by name; the tag conditions of `filter` apply to the tags on artists.
+    pub fn artists(&self, filter: &FilterSpec) -> Result<Vec<ArtistEntry>> {
+        self.storage.artists(filter)
+    }
+
+    pub fn artist(&self, id: &str) -> Result<ArtistProfile> {
+        self.storage.artist(id)
+    }
+
+    /// Albums, optionally one artist's; the tag conditions of `filter` apply to the tags on albums.
+    pub fn albums(&self, filter: &FilterSpec, artist: Option<&str>) -> Result<Vec<AlbumEntry>> {
+        self.storage.albums(filter, artist)
+    }
+
+    pub fn album(&self, id: &str) -> Result<AlbumProfile> {
+        self.storage.album(id)
+    }
+
+    /// Link an album to an artist profile, or unlink it with `None`.
+    pub fn link_album(&mut self, album: &str, artist: Option<&str>) -> Result<AlbumProfile> {
+        self.storage.link_album(album, artist)
+    }
+
+    /// Artists whose names look alike. Only suggestions: artists spelled differently are never
+    /// merged unless [`Library::merge_artists`] is called.
+    pub fn similar_artists(&self) -> Result<Vec<SimilarArtists>> {
+        self.storage.similar_artists()
+    }
+
+    /// Fold one artist into another; the old name stays as an alias.
+    pub fn merge_artists(&mut self, from: &str, into: &str) -> Result<MergeStats> {
+        self.storage.merge_artists(from, into)
+    }
+
+    /// Record that two artists are different people, so they are not suggested again.
+    pub fn separate_artists(&mut self, a: &str, b: &str) -> Result<()> {
+        self.storage.separate_artists(a, b)
+    }
+
+    // --- ratings -----------------------------------------------------------
 
     /// 1 to 5 stars; `None` clears the rating.
     pub fn set_rating(&mut self, track_id: &str, rating: Option<u8>) -> Result<()> {
@@ -418,5 +509,43 @@ mod tests {
             Err(Error::InvalidInput(_))
         ));
         assert_eq!(titles(&lib), ["c", "a", "b"], "failed moves change nothing");
+    }
+
+    #[test]
+    fn a_track_in_detail_shows_its_links_playlists_and_queue_positions() {
+        let mut lib = Library::open_in_memory().unwrap();
+        lib.import_scanned(&[ScannedTrack {
+            path: "/music/a.mp3".into(),
+            metadata: weave_core::Metadata {
+                title: "a".into(),
+                artist: Some("Aventura".into()),
+                album: Some("Gold".into()),
+                ..Default::default()
+            },
+        }])
+        .unwrap();
+        lib.create_manual_playlist("Road", None).unwrap();
+        lib.playlist_add("road", &["aventura-gold-a".into()])
+            .unwrap();
+        lib.queue_add(
+            &["aventura-gold-a".into(), "aventura-gold-a".into()],
+            None,
+            false,
+        )
+        .unwrap();
+        let d = lib.track_detail("aventura-gold-a").unwrap();
+        assert_eq!(d.path.as_deref(), Some("/music/a.mp3"));
+        assert_eq!(d.artist.unwrap().id, "aventura");
+        assert_eq!(d.album.unwrap().id, "aventura-gold");
+        assert_eq!(
+            d.playlists
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["road"]
+        );
+        assert_eq!(d.queue_positions, [1, 2]);
+        assert!(d.added_at > 0);
+        assert!(matches!(lib.track_detail("nope"), Err(Error::NotFound(_))));
     }
 }

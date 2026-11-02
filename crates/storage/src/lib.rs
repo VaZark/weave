@@ -2,6 +2,7 @@
 //! persisted playback session.
 
 mod annotations;
+mod entities;
 mod migrations;
 mod playlists;
 mod query;
@@ -14,8 +15,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
 use weave_core::{
-    Error, FilterSpec, Instance, Metadata, Page, Result, ScannedTrack, SearchResult, Track,
-    TrackId, default_instance_name, metadata_tags, parse_instance_name, slugify, track_slug,
+    EntityKind, Error, FilterSpec, Instance, Metadata, Page, Result, ScannedTrack, SearchResult,
+    Track, TrackId, default_instance_name, metadata_tags, parse_instance_name, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -95,8 +96,15 @@ impl Storage {
             )
             .map_err(db_err)?;
             insert_metadata(&tx, &id, &t.metadata)?;
+            entities::link_track(
+                &tx,
+                &id,
+                m.artist.as_deref(),
+                m.album.as_deref(),
+                m.album_artist.as_deref(),
+            )?;
             for name in metadata_tags(&t.metadata) {
-                tags::assign(&tx, &id, &name)?;
+                tags::assign(&tx, EntityKind::Track, &id, &name)?;
             }
             tx.execute(
                 "INSERT INTO sources (track_id, path) VALUES (?1, ?2)",
@@ -239,8 +247,7 @@ impl Storage {
                             bpm: r.get(11)?,
                         },
                         tags: Vec::new(),
-                        favorite: r.get::<_, i64>(13)? != 0,
-                        rating: r.get(14)?,
+                        rating: r.get(13)?,
                     },
                 ))
             })
@@ -397,5 +404,7 @@ fn window(total: usize, page: Page) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_entities;
 #[cfg(test)]
 mod tests_tags;

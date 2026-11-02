@@ -2,7 +2,8 @@
 
 use weave::Library;
 use weave::core::{
-    FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagRange, track_slug,
+    EntityKind, FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagClause, TagOp,
+    TagRange, track_slug,
 };
 
 pub const MAX_COUNT: usize = 100;
@@ -81,11 +82,18 @@ pub fn tracks(count: usize) -> Vec<ScannedTrack> {
             let a = &ARTISTS[i % ARTISTS.len()];
             let span = |lo: u32, hi: u32| lo + (i as u32 * 37) % (hi - lo + 1);
             let title = format!("{} {}", ADJECTIVES[i % 10], NOUNS[i / 10 % 10]);
+            // Some of Daft Punk's tracks spell the name with a hyphen: a near-duplicate artist
+            // that is never merged by itself, to try `artist duplicates`.
+            let spelled = if a.name == "Daft Punk" && i % 3 == 1 {
+                "Daft-Punk"
+            } else {
+                a.name
+            };
             ScannedTrack {
                 path: format!("/weave-seed/{i:03}.mp3"), // no file is behind it
                 metadata: Metadata {
                     title,
-                    artist: (i % 13 != 12).then(|| a.name.to_string()),
+                    artist: (i % 13 != 12).then(|| spelled.to_string()),
                     album: (i % 5 != 4)
                         .then(|| ALBUMS[i / ARTISTS.len() % ALBUMS.len()].to_string()),
                     album_artist: (i % 5 != 4).then(|| a.name.to_string()),
@@ -102,26 +110,95 @@ pub fn tracks(count: usize) -> Vec<ScannedTrack> {
         .collect()
 }
 
+/// The seeded tag tree: `(tag, parent)`, parents first. Import already created the plain
+/// `genre:` tags, so those are only given a parent; the rest are created here.
+const TREE: &[(&str, Option<&str>)] = &[
+    ("genre:latin", None),
+    ("genre:bachata", Some("genre:latin")),
+    ("genre:bachata-traditional", Some("genre:bachata")),
+    ("genre:bachata-sensual", Some("genre:bachata")),
+    ("genre:zouk", Some("genre:latin")),
+    ("genre:son", Some("genre:latin")),
+    ("period:20th-century", None),
+    ("period:40s", Some("period:20th-century")),
+    ("period:50s", Some("period:20th-century")),
+    ("period:60s", Some("period:20th-century")),
+    ("period:70s", Some("period:20th-century")),
+    ("period:80s", Some("period:20th-century")),
+    ("period:90s", Some("period:20th-century")),
+    ("period:21st-century", None),
+    ("period:00s", Some("period:21st-century")),
+    ("period:10s", Some("period:21st-century")),
+    ("period:20s", Some("period:21st-century")),
+];
+
+/// Create the tree, or complete it: a tag that already has a parent is left alone, so a
+/// re-run never undoes a reparenting done by hand.
+fn ensure_tree(lib: &mut Library) -> Result<()> {
+    for (name, parent) in TREE {
+        match lib.tag(name) {
+            Ok(tag) if tag.parent.is_none() && parent.is_some() => {
+                lib.set_tag_parent(name, *parent)?;
+            }
+            Ok(_) => {}
+            Err(weave::core::Error::NotFound(_)) => {
+                lib.create_tag(name, *parent)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Tags assigned on top of what import derives (`genre:`, `year:`, `bpm:`). Each track gets leaf
+/// tags only: a sensual bachata track is not also given `genre:latin`, the tree reaches it.
 fn tags_for(t: &ScannedTrack, i: usize) -> Vec<String> {
     let m = &t.metadata;
     let mut tags: Vec<String> = Vec::new();
-    if let Some(g) = &m.genre {
-        tags.push(g.to_lowercase());
+    if m.genre.as_deref() == Some("Bachata") {
+        let sub = if i.is_multiple_of(2) {
+            "traditional"
+        } else {
+            "sensual"
+        };
+        tags.push(format!("genre:bachata-{sub}"));
     }
     if let Some(y) = m.year {
-        tags.push(format!("{:02}s", y % 100 / 10 * 10));
+        tags.push(format!("period:{:02}s", y % 100 / 10 * 10));
     }
-    tags.push(["romantic", "party", "melodic"][i % 3].into());
+    tags.push(["mood:romantic", "mood:party", "mood:melodic"][i % 3].into());
     if i.is_multiple_of(9) {
         tags.push("live".into());
     }
     if i.is_multiple_of(14) {
         tags.push("remix".into());
     }
-    if i.is_multiple_of(6) {
-        tags.push("Sensual".into());
+    if i % 10 == 3 {
+        tags.push("practice".into());
     }
     tags
+}
+
+/// Tags on artists and albums (leaf-free: the tree reaches them), and on a playlist.
+fn tag_entities(lib: &mut Library) -> Result<usize> {
+    let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut added = 0;
+    for (artist, tags) in [
+        ("Romeo Santos", &["genre:bachata", "legend"][..]),
+        ("Aventura", &["genre:bachata", "legend", "bronx"]),
+        ("Kaysha", &["genre:zouk"]),
+        ("Buena Vista Social Club", &["genre:son", "cuba"]),
+        ("Nina Simone", &["genre:jazz", "legend"]),
+        ("Édith Piaf", &["genre:chanson", "legend"]),
+    ] {
+        added += lib.add_tags_to(EntityKind::Artist, artist, &strs(tags))?;
+    }
+    for album in lib.albums(&FilterSpec::default(), None)? {
+        if album.title == "Live at the Roxy" {
+            added += lib.add_tags_to(EntityKind::Album, &album.id, &strs(&["live"]))?;
+        }
+    }
+    Ok(added)
 }
 
 pub struct Seeded {
@@ -135,6 +212,7 @@ pub struct Seeded {
 pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     let fake = tracks(count);
     let stats = lib.import_scanned(&fake)?;
+    ensure_tree(lib)?;
 
     let slug_of = |t: &ScannedTrack| {
         let m = &t.metadata;
@@ -145,18 +223,14 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     for (i, t) in fake.iter().enumerate() {
         let slug = slug_of(t);
         tagged += lib.add_tags(&slug, &tags_for(t, i))?;
-        // Favorites and ratings are only seeded onto tracks that have neither yet, so
-        // re-running never overwrites something changed by hand.
-        let current = lib.track(&slug)?;
-        if current.rating.is_none() && !current.favorite {
-            if i.is_multiple_of(5) {
-                lib.set_favorite(std::slice::from_ref(&slug), true)?;
-            }
-            if !i.is_multiple_of(3) {
-                lib.set_rating(&slug, Some(1 + (i * 7 % 5) as u8))?;
-            }
+        // Ratings are only seeded onto tracks that have none yet, so re-running never
+        // overwrites something changed by hand.
+        if !i.is_multiple_of(3) && lib.track(&slug)?.rating.is_none() {
+            lib.set_rating(&slug, Some(1 + (i * 7 % 5) as u8))?;
         }
     }
+
+    tagged += tag_entities(lib)?;
 
     let created = |r: weave::core::Result<weave::core::Playlist>| match r {
         Ok(_) => Ok(1),
@@ -169,7 +243,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Bachata 90s",
             "Slow dance nights",
             FilterSpec {
-                tag_all: strs(&["bachata", "90s"]),
+                tag_all: strs(&["genre:bachata", "period:90s"]),
                 tag_exclude: strs(&["live", "remix"]),
                 tag_range: vec![TagRange::new("bpm", Some(90.0), None)],
                 ..Default::default()
@@ -179,12 +253,37 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Party starters",
             "Fast and fun",
             FilterSpec {
-                tag_any: strs(&["party", "electronic"]),
+                tag_clauses: vec![TagClause {
+                    op: TagOp::Any,
+                    keys: strs(&["mood", "genre"]),
+                    values: strs(&["party", "electronic"]),
+                    exact: false,
+                }],
                 tag_range: vec![TagRange::new("bpm", Some(115.0), Some(140.0))],
                 sort: Some(Sort {
                     field: SortField::Bpm,
                     descending: true,
                 }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Latin nights",
+            "Every Latin subgenre, through the tag tree",
+            FilterSpec {
+                tag_any: strs(&["genre:latin"]),
+                sort: Some(Sort {
+                    field: SortField::Bpm,
+                    descending: false,
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Sensual only",
+            "Just the sensual subgenre, no parents",
+            FilterSpec {
+                tag_all: strs(&["=genre:bachata-sensual"]),
                 ..Default::default()
             },
         ),
@@ -209,18 +308,6 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
                 ..Default::default()
             },
         ),
-        (
-            "Favorites",
-            "Everything marked with a heart",
-            FilterSpec {
-                favorite: Some(true),
-                sort: Some(Sort {
-                    field: SortField::Title,
-                    descending: false,
-                }),
-                ..Default::default()
-            },
-        ),
     ];
     let mut playlists = 0;
     for (name, description, filter) in dynamic {
@@ -229,6 +316,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 
     // A manual playlist with the first few seeded tracks, in a hand-picked (reverse) order.
     let made = created(lib.create_manual_playlist("Road trip", Some("Hand-picked, in order")))?;
+    lib.add_tags_to(EntityKind::Playlist, "road-trip", &["trip".to_string()])?;
     if made == 1 {
         let picks: Vec<String> = fake.iter().take(8).rev().map(slug_of).collect();
         lib.playlist_add("road-trip", &picks)?;
@@ -252,7 +340,7 @@ mod tests {
     fn seed_is_idempotent_and_populates_everything() {
         let mut lib = Library::open_in_memory().unwrap();
         let first = seed(&mut lib, 60).unwrap();
-        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 6));
+        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 7));
         assert!(first.tagged > 60);
 
         let second = seed(&mut lib, 60).unwrap();
@@ -274,7 +362,67 @@ mod tests {
             .search(&FilterSpec::default(), Page::ALL)
             .unwrap()
             .tracks;
-        assert!(tracks.iter().any(|t| t.favorite) && tracks.iter().any(|t| t.rating.is_some()));
+        assert!(tracks.iter().any(|t| t.rating.is_some()));
+        // the tree: leaves are assigned, the parents reach them
+        let tag_all = |t: &str| FilterSpec {
+            tag_all: vec![t.into()],
+            ..Default::default()
+        };
+        let total = |f: &FilterSpec| lib.search(f, Page::ALL).unwrap().total;
+        let bachata = total(&tag_all("genre:bachata"));
+        assert!(bachata > 0 && total(&tag_all("genre:latin")) >= bachata);
+        assert_eq!(
+            total(&tag_all("=genre:latin")),
+            0,
+            "nothing is assigned the root"
+        );
+        assert!(
+            total(&tag_all("=genre:bachata-sensual")) < bachata,
+            "a subgenre is narrower than its parent"
+        );
+        let parents: Vec<_> = lib
+            .list_tags()
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.parent.map(|p| (t.name, p)))
+            .collect();
+        assert!(parents.contains(&("genre:Bachata".into(), "genre:latin".into())));
+        assert!(parents.contains(&("period:90s".into(), "period:20th-century".into())));
+        // a near-duplicate is suggested but never merged by itself; artists and albums carry tags
+        let names: Vec<_> = lib
+            .artists(&FilterSpec::default())
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert!(
+            names.contains(&"Daft Punk".to_string()) && names.contains(&"Daft-Punk".to_string())
+        );
+        let similar = lib.similar_artists().unwrap();
+        assert!(
+            similar
+                .iter()
+                .any(|p| p.a.name.starts_with("Daft") && p.b.name.starts_with("Daft"))
+        );
+        let latin = FilterSpec {
+            tag_all: vec!["genre:latin".into()],
+            ..Default::default()
+        };
+        assert!(
+            lib.artists(&latin).unwrap().len() >= 3,
+            "artists are reached through the tree"
+        );
+        assert!(
+            !lib.albums(
+                &FilterSpec {
+                    tag_all: vec!["live".into()],
+                    ..Default::default()
+                },
+                None
+            )
+            .unwrap()
+            .is_empty()
+        );
         for p in lib.playlists().unwrap() {
             let (_, r) = lib.playlist_tracks(&p.name, Page::ALL).unwrap();
             assert!(r.total > 0, "playlist {} is empty", p.name);
