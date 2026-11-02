@@ -61,6 +61,26 @@ struct Cli {
     command: Cmd,
 }
 
+#[derive(Subcommand)]
+enum DedupCmd {
+    /// List things that look alike (all kinds, or only artist, album or track).
+    List { kind: Option<EntityKind> },
+    /// Go through them one by one: merge, keep separate, or skip.
+    Ask { kind: Option<EntityKind> },
+    /// Fold one into another (the one to keep): artists, albums or tracks.
+    Merge {
+        kind: EntityKind,
+        from: String,
+        into: String,
+    },
+    /// Say two are different, so they are not suggested again.
+    Separate {
+        kind: EntityKind,
+        a: String,
+        b: String,
+    },
+}
+
 /// `artist <id>` shows a profile; the subcommands manage artists.
 #[derive(Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -82,15 +102,25 @@ enum ArtistCmd {
     },
     /// Add or remove tags on an artist.
     Tag(TagEdit),
-    /// Artists with similar names that might be one person; `--ask` goes through them.
-    Duplicates {
+    /// Split an artist in two for people who share a name: a new artist takes the given tracks
+    /// and albums.
+    Split {
+        artist: String,
+        /// Tracks that move to the new artist.
+        #[arg(long, value_delimiter = ',')]
+        track: Vec<String>,
+        /// Albums (with their tracks) that move to the new artist.
+        #[arg(long, value_delimiter = ',')]
+        album: Vec<String>,
+        /// The new artist's name; the same as the old one by default.
         #[arg(long)]
-        ask: bool,
+        name: Option<String>,
+        /// The new artist's ID; made from the name by default.
+        #[arg(long)]
+        slug: Option<String>,
     },
-    /// Fold one artist into another: tracks, albums and tags move, the old name stays an alias.
-    Merge { from: String, into: String },
-    /// Record that two artists are different people, so they are not suggested as duplicates.
-    Separate { a: String, b: String },
+    /// Change an artist's ID (the new one is normalized like any slug).
+    Slug { artist: String, slug: String },
 }
 
 /// `album <id>` shows a profile; the subcommands manage albums.
@@ -166,14 +196,18 @@ enum TagCmd {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Index audio files without modifying them. When artists with similar names turn up (is
-    /// `Daft-Punk` the same as `Daft Punk`?) it asks, never merging on its own.
+    /// Index audio files without modifying them. Every artist it finds is new, never attached to
+    /// one already in the library; afterwards it asks about new artists, albums and tracks that
+    /// look like existing ones, and merges only what you say.
     Import {
         path: PathBuf,
-        /// Do not ask about similar artist names; review them later with `artist duplicates`.
+        /// Do not ask about duplicates; review them later with `dedup`.
         #[arg(long)]
-        dedup_off: bool,
+        disable_dedup_check: bool,
     },
+    /// Find and settle artists, albums and tracks that look alike.
+    #[command(subcommand)]
+    Dedup(DedupCmd),
     /// List tracks.
     List {
         #[command(flatten)]
@@ -661,15 +695,6 @@ impl From<Error> for Failure {
     }
 }
 
-/// The IDs of every artist right now.
-fn artist_ids(lib: &Library) -> Result<std::collections::HashSet<String>, Failure> {
-    Ok(lib
-        .artists(&FilterSpec::default())?
-        .into_iter()
-        .map(|a| a.id)
-        .collect())
-}
-
 /// Add and remove tags on an artist, album or playlist.
 fn edit_tags(
     lib: &mut Library,
@@ -699,32 +724,34 @@ fn edit_tags(
     )
 }
 
-/// Ask about artists with similar names: those an import just brought (`known` = who was
-/// there before) or all of them. Without a terminal it only says how many there are.
+/// Ask about artists, albums and tracks that look alike: those an import just brought (since
+/// `mark`) or all of them. Without a terminal it only says how many there are.
 fn review_similar(
     lib: &mut Library,
-    known: Option<&std::collections::HashSet<String>>,
+    kinds: &[EntityKind],
+    mark: Option<&weave::core::DedupMark>,
     json: bool,
 ) -> Result<(), Failure> {
     use std::io::IsTerminal;
-    let pairs = dedup::pending(lib, known)?;
-    if pairs.is_empty() {
+    let mut waiting = 0;
+    for kind in kinds {
+        waiting += lib.duplicates(*kind, mark)?.len();
+    }
+    if waiting == 0 {
         return Ok(());
     }
     let interactive = !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if !interactive {
         if !json {
-            eprintln!(
-                "{} pair(s) of artists have similar names; review them with `weave-player artist duplicates --ask`",
-                pairs.len()
-            );
+            eprintln!("{waiting} possible duplicate(s); settle them with `weave-player dedup ask`");
         }
         return Ok(());
     }
     outln!();
-    let o = dedup::review(
+    let o = dedup::review_all(
         lib,
-        pairs,
+        kinds,
+        mark,
         &mut std::io::stdin().lock(),
         &mut std::io::stdout(),
     )?;
@@ -818,16 +845,19 @@ fn run(cli: Cli) -> Result<(), Failure> {
     };
 
     match cli.command {
-        Cmd::Import { path, dedup_off } => {
-            let known = artist_ids(&lib)?;
+        Cmd::Import {
+            path,
+            disable_dedup_check,
+        } => {
+            let mark = lib.dedup_mark()?;
             let s = lib.import(&path)?;
             out(
                 json,
                 &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
                 || outln!("imported {} new, {} already indexed", s.added, s.skipped),
             )?;
-            if !dedup_off {
-                review_similar(&mut lib, Some(&known), json)?;
+            if !disable_dedup_check {
+                review_similar(&mut lib, &dedup::KINDS, Some(&mark), json)?;
             }
         }
         Cmd::List { result, page } => print_page(
@@ -865,6 +895,36 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let tags = lib.tags(&track_id)?;
             out(json, &tags, || tags.iter().for_each(|t| outln!("{t}")))?;
         }
+        Cmd::Dedup(cmd) => match cmd {
+            DedupCmd::List { kind } => {
+                let kinds = kind.map_or(dedup::KINDS.to_vec(), |k| vec![k]);
+                let mut pairs = Vec::new();
+                for k in kinds {
+                    pairs.extend(lib.duplicates(k, None)?);
+                }
+                profile::print_similar(json, &pairs)?;
+            }
+            DedupCmd::Ask { kind } => {
+                let kinds = kind.map_or(dedup::KINDS.to_vec(), |k| vec![k]);
+                review_similar(&mut lib, &kinds, None, json)?;
+            }
+            DedupCmd::Merge { kind, from, into } => {
+                let m = lib.merge(kind, &from, &into)?;
+                out(json, &m, || {
+                    outln!(
+                        "merged {kind} {from} into {into}: {} track(s), {} album(s) moved",
+                        m.tracks,
+                        m.albums
+                    )
+                })?;
+            }
+            DedupCmd::Separate { kind, a, b } => {
+                lib.separate(kind, &a, &b)?;
+                out(json, &serde_json::json!({ "different": [a, b] }), || {
+                    outln!("{a} and {b} are different; they will not be suggested again")
+                })?;
+            }
+        },
         Cmd::Track { track_id } => profile::print_track(json, &lib.track_detail(&track_id)?)?,
         Cmd::Artist(ArtistArgs { id: Some(id), .. })
         | Cmd::Artist(ArtistArgs {
@@ -887,28 +947,27 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 profile::print_artists(json, show_ids, &lib.artists(&tags.spec())?)?
             }
             ArtistCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Artist, edit, json)?,
-            ArtistCmd::Duplicates { ask } => {
-                if ask {
-                    review_similar(&mut lib, None, json)?;
-                } else {
-                    profile::print_similar(json, &lib.similar_artists()?)?;
-                }
-            }
-            ArtistCmd::Merge { from, into } => {
-                let m = lib.merge_artists(&from, &into)?;
-                out(json, &m, || {
+            ArtistCmd::Split {
+                artist,
+                track,
+                album,
+                name,
+                slug,
+            } => {
+                let new =
+                    lib.split_artist(&artist, &track, &album, name.as_deref(), slug.as_deref())?;
+                out(json, &new, || {
                     outln!(
-                        "merged {from} into {into}: {} track(s), {} album(s) moved",
-                        m.tracks,
-                        m.albums
+                        "split {artist}: {} ({}) now has {} track(s); the two are marked as different people",
+                        new.name,
+                        new.id,
+                        new.stats.tracks
                     )
                 })?;
             }
-            ArtistCmd::Separate { a, b } => {
-                lib.separate_artists(&a, &b)?;
-                out(json, &serde_json::json!({ "separate": [a, b] }), || {
-                    outln!("{a} and {b} are different people; they will not be suggested again")
-                })?;
+            ArtistCmd::Slug { artist, slug } => {
+                let a = lib.set_artist_slug(&artist, &slug)?;
+                out(json, &a, || outln!("{} is now {}", a.name, a.id))?;
             }
         },
         Cmd::Album(AlbumArgs { id: Some(id), .. })

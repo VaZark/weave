@@ -17,24 +17,30 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
      CREATE INDEX tracks_album  ON tracks(album_id);
      -- Artists and albums are entities of their own: profiles, a slug ID, tags. The metadata
      -- columns keep the text; these link tracks that spell a name the same way.
+     -- Names are not unique: different people share them. Import makes a new artist rather than
+     -- guess, and the user merges (or separates) afterwards.
      CREATE TABLE artists (
          id        TEXT PRIMARY KEY,       -- opaque internal key
-         slug      TEXT NOT NULL UNIQUE,   -- public ID
+         slug      TEXT NOT NULL UNIQUE,   -- public ID; the user may change it
          name      TEXT NOT NULL,
-         name_norm TEXT NOT NULL UNIQUE    -- weave_core::entity_norm
+         name_norm TEXT NOT NULL           -- weave_core::entity_norm
      );
-     -- Spellings merged into an artist by the user, so a re-import lands on the survivor.
-     CREATE TABLE artist_aliases (
-         alias_norm TEXT PRIMARY KEY,
-         alias      TEXT NOT NULL,
-         artist_id  TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE
+     CREATE INDEX artists_name ON artists(name_norm);
+     -- Featured artists of a track (`Song feat. Guest`); the primary artist is tracks.artist_id.
+     CREATE TABLE track_featured (
+         track_id  TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+         artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+         position  INTEGER NOT NULL,
+         PRIMARY KEY (track_id, artist_id)
      );
-     CREATE INDEX artist_aliases_artist ON artist_aliases(artist_id);
-     -- Pairs the user said are different people, so they are never suggested as duplicates.
-     CREATE TABLE artist_separate (
-         a_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
-         b_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
-         PRIMARY KEY (a_id, b_id),
+     CREATE INDEX track_featured_artist ON track_featured(artist_id);
+     -- Pairs of artists, albums or tracks the user said are different, so they are never
+     -- suggested as duplicates again. Internal keys; rows for deleted things are cleaned up.
+     CREATE TABLE not_duplicates (
+         kind TEXT NOT NULL,
+         a_id TEXT NOT NULL,
+         b_id TEXT NOT NULL,
+         PRIMARY KEY (kind, a_id, b_id),
          CHECK (a_id < b_id)
      );
      CREATE TABLE albums (
@@ -74,11 +80,13 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
      CREATE INDEX meta_bpm   ON track_metadata(bpm);
      CREATE INDEX meta_year  ON track_metadata(year);
      CREATE INDEX meta_genre ON track_metadata(genre_norm);
-     -- The file behind a track; kept apart from the track so identity never depends on a path.
+     -- The files behind a track, kept apart from the track so identity never depends on a path.
+     -- Normally one; merging duplicate tracks keeps the other files here. The oldest row plays.
      CREATE TABLE sources (
-         track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
-         path     TEXT NOT NULL UNIQUE
+         track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+         path     TEXT PRIMARY KEY
      );
+     CREATE INDEX sources_track ON sources(track_id);
      -- This instance: the one row names it on the network and says what it may do.
      CREATE TABLE instance (
          id       INTEGER PRIMARY KEY CHECK (id = 1),

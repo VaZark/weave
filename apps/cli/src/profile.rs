@@ -1,7 +1,7 @@
 //! Printing for the in-depth views: one track, one artist, one album, and their lists.
 
 use weave::core::{
-    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, SimilarArtists, Stats, Track,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, SimilarPair, Stats, Track,
     TrackDetail,
 };
 
@@ -110,6 +110,14 @@ pub fn print_track(json: bool, d: &TrackDetail) -> Result<(), Failure> {
         kv(&[
             ("ID", t.id.0.clone()),
             ("Artist", named(&d.artist)),
+            ("Featuring", {
+                let f: Vec<String> = d
+                    .featured
+                    .iter()
+                    .map(|a| format!("{} ({})", a.name, a.id))
+                    .collect();
+                list(&f)
+            }),
             ("Album", named(&d.album)),
             ("Album artist", m.album_artist.clone().unwrap_or_else(dash)),
             ("Composer", m.composer.clone().unwrap_or_else(dash)),
@@ -132,7 +140,8 @@ pub fn print_track(json: bool, d: &TrackDetail) -> Result<(), Failure> {
                     format!("at {}", queue.join(", "))
                 },
             ),
-            ("File", d.path.clone().unwrap_or_else(dash)),
+            ("File", d.paths.first().cloned().unwrap_or_else(dash)),
+            ("Other files", list(d.paths.get(1..).unwrap_or_default())),
             ("Added", date(d.added_at)),
         ]);
     })
@@ -141,10 +150,12 @@ pub fn print_track(json: bool, d: &TrackDetail) -> Result<(), Failure> {
 pub fn print_artist(json: bool, p: &ArtistProfile) -> Result<(), Failure> {
     out(json, p, || {
         outln!("{} ({})", p.name, p.id);
-        let mut rows = vec![("Also known as", list(&p.aliases)), ("Tags", list(&p.tags))];
+        let featured: Vec<String> = p.featured_on.iter().map(|t| t.name.clone()).collect();
+        let mut rows = vec![("Tags", list(&p.tags))];
         rows.extend(stats_rows(&p.stats));
         rows.push(("Genres", counts(&p.genres)));
         rows.push(("Track tags", counts(&p.track_tags)));
+        rows.push(("Featured on", list(&featured)));
         kv(&rows);
         outln!();
         if p.albums.is_empty() {
@@ -221,13 +232,14 @@ pub fn print_artists(json: bool, show_ids: bool, artists: &[ArtistEntry]) -> Res
                     a.name.clone(),
                     a.albums.to_string(),
                     a.tracks.to_string(),
+                    a.featured.to_string(),
                     list(&a.tags),
                 ]
             })
             .collect();
         let ids: Vec<String> = artists.iter().map(|a| a.id.clone()).collect();
         print_columns(
-            &["ARTIST", "ALBUMS", "TRACKS", "TAGS"],
+            &["ARTIST", "ALBUMS", "TRACKS", "FEATURED", "TAGS"],
             rows,
             &[],
             show_ids.then_some(&ids[..]),
@@ -239,23 +251,27 @@ pub fn print_albums(json: bool, albums: &[AlbumEntry]) -> Result<(), Failure> {
     out(json, &albums, || print_album_table(albums, false))
 }
 
-pub fn print_similar(json: bool, pairs: &[SimilarArtists]) -> Result<(), Failure> {
+pub fn print_similar(json: bool, pairs: &[SimilarPair]) -> Result<(), Failure> {
     out(json, &pairs, || {
         if pairs.is_empty() {
-            outln!("No artists with similar names.");
+            outln!("Nothing looks like a duplicate.");
             return;
         }
         let rows = pairs
             .iter()
             .map(|p| {
-                let side = |a: &ArtistEntry| format!("{} ({}, {} tracks)", a.name, a.id, a.tracks);
-                vec![side(&p.a), side(&p.b)]
+                let side = |c: &weave::core::DuplicateCandidate| {
+                    format!("{} [{}] {}", c.name, c.id, c.detail)
+                };
+                vec![p.kind.to_string(), side(&p.a), side(&p.b), p.reason.clone()]
             })
             .collect();
-        print_columns(&["ARTIST", "LOOKS LIKE"], rows, &[0, 1], None);
+        print_columns(&["KIND", "KEEP", "LOOKS LIKE", "WHY"], rows, &[1, 2], None);
         outln!();
-        outln!("Same person: weave-player artist merge <from> <into>");
-        outln!("Different people: weave-player artist separate <a> <b>");
+        outln!(
+            "Same: weave-player dedup merge <kind> <from> <into>   (or `dedup ask` to go through them)"
+        );
+        outln!("Different: weave-player dedup separate <kind> <a> <b>");
     })
 }
 

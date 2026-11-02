@@ -3,7 +3,7 @@
 use weave::Library;
 use weave::core::{
     EntityKind, FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagClause, TagOp,
-    TagRange, track_slug,
+    TagRange, parse_credits, track_slug,
 };
 
 pub const MAX_COUNT: usize = 100;
@@ -74,40 +74,56 @@ const NOUNS: [&str; 10] = [
     "Heart", "Rain", "Dance", "River", "Summer", "Shadow", "Love", "City", "Dream", "Fire",
 ];
 
-/// Deterministic fake tracks: unique per (artist, album, title), with a sprinkle
-/// of missing fields so empty-value paths get exercised.
+/// The metadata of fake track `i`.
+fn metadata(i: usize) -> Metadata {
+    let a = &ARTISTS[i % ARTISTS.len()];
+    let span = |lo: u32, hi: u32| lo + (i as u32 * 37) % (hi - lo + 1);
+    let title = format!("{} {}", ADJECTIVES[i % 10], NOUNS[i / 10 % 10]);
+    // Some of Daft Punk's tracks spell the name with a hyphen: a look-alike artist that is
+    // never merged by itself, to try `dedup`.
+    let spelled = if a.name == "Daft Punk" && i % 3 == 1 {
+        "Daft-Punk"
+    } else {
+        a.name
+    };
+    // Some tracks feature another artist: a credit of its own, linked to that artist.
+    let credited = if i % 17 == 5 {
+        format!("{spelled} feat. {}", ARTISTS[(i + 3) % ARTISTS.len()].name)
+    } else {
+        spelled.to_string()
+    };
+    Metadata {
+        title,
+        artist: (i % 13 != 12).then_some(credited),
+        album: (i % 5 != 4).then(|| ALBUMS[i / ARTISTS.len() % ALBUMS.len()].to_string()),
+        album_artist: (i % 5 != 4).then(|| a.name.to_string()),
+        genre: (i % 11 != 10).then(|| a.genre.to_string()),
+        composer: i.is_multiple_of(4).then(|| "A. Composer".to_string()),
+        year: Some(span(a.years.0 as u32, a.years.1 as u32) as i32),
+        track_number: Some((i / 24 + 1) as u32),
+        disc_number: Some(1),
+        duration_ms: Some(span(150, 330) as u64 * 1000),
+        bpm: (i % 7 != 6).then(|| span(a.bpm.0, a.bpm.1) as f64),
+    }
+}
+
+/// Deterministic fake tracks: unique per (artist, album, title), with a sprinkle of missing
+/// fields so empty-value paths get exercised. Every 30th is a second copy (another file) of a
+/// track from 20 earlier, to try the duplicate check on tracks.
 pub fn tracks(count: usize) -> Vec<ScannedTrack> {
     (0..count.min(MAX_COUNT))
-        .map(|i| {
-            let a = &ARTISTS[i % ARTISTS.len()];
-            let span = |lo: u32, hi: u32| lo + (i as u32 * 37) % (hi - lo + 1);
-            let title = format!("{} {}", ADJECTIVES[i % 10], NOUNS[i / 10 % 10]);
-            // Some of Daft Punk's tracks spell the name with a hyphen: a near-duplicate artist
-            // that is never merged by itself, to try `artist duplicates`.
-            let spelled = if a.name == "Daft Punk" && i % 3 == 1 {
-                "Daft-Punk"
-            } else {
-                a.name
-            };
-            ScannedTrack {
-                path: format!("/weave-seed/{i:03}.mp3"), // no file is behind it
-                metadata: Metadata {
-                    title,
-                    artist: (i % 13 != 12).then(|| spelled.to_string()),
-                    album: (i % 5 != 4)
-                        .then(|| ALBUMS[i / ARTISTS.len() % ALBUMS.len()].to_string()),
-                    album_artist: (i % 5 != 4).then(|| a.name.to_string()),
-                    genre: (i % 11 != 10).then(|| a.genre.to_string()),
-                    composer: i.is_multiple_of(4).then(|| "A. Composer".to_string()),
-                    year: Some(span(a.years.0 as u32, a.years.1 as u32) as i32),
-                    track_number: Some((i / 24 + 1) as u32),
-                    disc_number: Some(1),
-                    duration_ms: Some(span(150, 330) as u64 * 1000),
-                    bpm: (i % 7 != 6).then(|| span(a.bpm.0, a.bpm.1) as f64),
-                },
-            }
+        .map(|i| ScannedTrack {
+            path: format!("/weave-seed/{i:03}.mp3"), // no file is behind it
+            metadata: metadata(if i % 30 == 29 && i >= 20 { i - 20 } else { i }),
         })
         .collect()
+}
+
+/// The slug a seeded track gets: the featured credit is not part of its artist.
+fn slug_of(t: &ScannedTrack) -> String {
+    let m = &t.metadata;
+    let primary = parse_credits(m.artist.as_deref(), &m.title).primary;
+    track_slug(primary.as_deref(), m.album.as_deref(), &m.title)
 }
 
 /// The seeded tag tree: `(tag, parent)`, parents first. Import already created the plain
@@ -213,11 +229,6 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     let fake = tracks(count);
     let stats = lib.import_scanned(&fake)?;
     ensure_tree(lib)?;
-
-    let slug_of = |t: &ScannedTrack| {
-        let m = &t.metadata;
-        track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title)
-    };
 
     let mut tagged = 0;
     for (i, t) in fake.iter().enumerate() {
@@ -398,12 +409,24 @@ mod tests {
         assert!(
             names.contains(&"Daft Punk".to_string()) && names.contains(&"Daft-Punk".to_string())
         );
-        let similar = lib.similar_artists().unwrap();
+        let similar = lib.duplicates(EntityKind::Artist, None).unwrap();
         assert!(
             similar
                 .iter()
                 .any(|p| p.a.name.starts_with("Daft") && p.b.name.starts_with("Daft"))
         );
+        assert!(
+            !lib.duplicates(EntityKind::Track, None).unwrap().is_empty(),
+            "the seeded second copies are suggested as duplicate tracks"
+        );
+        // a featured credit is an entry of its own, linked to the artist
+        let featured: usize = lib
+            .artists(&FilterSpec::default())
+            .unwrap()
+            .iter()
+            .map(|a| a.featured)
+            .sum();
+        assert!(featured > 0);
         let latin = FilterSpec {
             tag_all: vec!["genre:latin".into()],
             ..Default::default()
@@ -431,15 +454,10 @@ mod tests {
 
     #[test]
     fn generated_slugs_are_unique() {
-        let mut slugs: Vec<_> = tracks(MAX_COUNT)
-            .iter()
-            .map(|t| {
-                let m = &t.metadata;
-                track_slug(m.artist.as_deref(), m.album.as_deref(), &m.title)
-            })
-            .collect();
+        let mut slugs: Vec<_> = tracks(MAX_COUNT).iter().map(slug_of).collect();
         slugs.sort();
         slugs.dedup();
-        assert_eq!(slugs.len(), MAX_COUNT);
+        // the three second copies share a slug base with their originals
+        assert_eq!(slugs.len(), MAX_COUNT - 3);
     }
 }

@@ -2,13 +2,12 @@
 //! duplicate suggestions. Names are grouped only when spelled the same (case and spacing
 //! aside); anything merely similar stays separate until the user says otherwise.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rusqlite::{OptionalExtension, Transaction, params, types::Value};
 use weave_core::{
-    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, EntityKind, EntityRef, Error,
-    FilterSpec, MergeStats, Result, SimilarArtists, Stats, album_slug, artist_slug, entity_norm,
-    loose_key, slugify,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, Credits, EntityKind, EntityRef,
+    Error, FilterSpec, MergeStats, Result, Stats, album_slug, artist_slug, entity_norm, slugify,
 };
 
 use crate::{Storage, db_err, query, unique_slug};
@@ -22,21 +21,16 @@ fn new_key() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// The artist spelled this way, created when missing. Aliases the user created by merging
-/// count as the same spelling.
-pub(crate) fn ensure_artist(tx: &Transaction, name: &str) -> Result<String> {
+/// Artists made during one import, by spelling, so that tracks of one run share an artist.
+pub(crate) type RunArtists = HashMap<String, String>;
+
+/// The artist for this name in the current import run. An artist already in the library is
+/// never reused: a new one is made (the same name can be a different person) and the user
+/// merges afterwards, so nothing is ever collapsed by guess.
+pub(crate) fn run_artist(tx: &Transaction, run: &mut RunArtists, name: &str) -> Result<String> {
     let norm = entity_norm(name);
-    let found: Option<String> = tx
-        .query_row(
-            "SELECT id FROM artists WHERE name_norm = ?1
-             UNION SELECT artist_id FROM artist_aliases WHERE alias_norm = ?1",
-            [&norm],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(db_err)?;
-    if let Some(id) = found {
-        return Ok(id);
+    if let Some(id) = run.get(&norm) {
+        return Ok(id.clone());
     }
     let id = new_key();
     let slug = unique_slug(tx, "artists", "slug", &artist_slug(name))?;
@@ -45,6 +39,7 @@ pub(crate) fn ensure_artist(tx: &Transaction, name: &str) -> Result<String> {
         params![id, slug, clean(name), norm],
     )
     .map_err(db_err)?;
+    run.insert(norm, id.clone());
     Ok(id)
 }
 
@@ -77,27 +72,37 @@ pub(crate) fn ensure_album(
     Ok(id)
 }
 
-/// Link a freshly inserted track to its artist and album.
+/// Link a freshly inserted track to its artist, its featured artists and its album.
 pub(crate) fn link_track(
     tx: &Transaction,
+    run: &mut RunArtists,
     track: &str,
-    artist: Option<&str>,
+    credits: &Credits,
     album: Option<&str>,
     album_artist: Option<&str>,
 ) -> Result<()> {
     let blank = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
-    let (artist, album, album_artist) = (blank(artist), blank(album), blank(album_artist));
-    let artist_id = artist
+    let (album, album_artist) = (blank(album), blank(album_artist));
+    let artist_id = credits
+        .primary
         .as_deref()
-        .map(|n| ensure_artist(tx, n))
+        .map(|n| run_artist(tx, run, n))
         .transpose()?;
+    for (position, name) in credits.featured.iter().enumerate() {
+        let id = run_artist(tx, run, name)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO track_featured (track_id, artist_id, position) VALUES (?1, ?2, ?3)",
+            params![track, id, position as i64],
+        )
+        .map_err(db_err)?;
+    }
     let album_id = match &album {
         Some(title) => {
             // An album belongs to its album artist, else to the track's artist.
-            let owner = album_artist.as_ref().or(artist.as_ref());
+            let owner = album_artist.as_ref().or(credits.primary.as_ref());
             let owner_id = match owner {
-                Some(n) if Some(n) == artist.as_ref() => artist_id.clone(),
-                Some(n) => Some(ensure_artist(tx, n)?),
+                Some(n) if Some(n) == credits.primary.as_ref() => artist_id.clone(),
+                Some(n) => Some(run_artist(tx, run, n)?),
                 None => None,
             };
             Some(ensure_album(
@@ -123,31 +128,38 @@ const STATS_SQL: &str =
         MIN(t.added_at), MAX(t.added_at)";
 
 impl Storage {
-    /// Internal key of an artist given its slug, else its name, else a name merged into it.
-    /// A slug wins over a name that happens to slugify the same way.
+    /// Internal key of an artist given its slug, else its name. A slug wins over a name that
+    /// happens to slugify the same way; a name shared by several artists needs the slug.
     pub(crate) fn resolve_artist(&self, key: &str) -> Result<String> {
         let key = key.trim();
-        for (sql, arg) in [
-            ("SELECT id FROM artists WHERE slug = ?1", slugify(key)),
-            (
-                "SELECT id FROM artists WHERE name_norm = ?1",
-                entity_norm(key),
-            ),
-            (
-                "SELECT artist_id FROM artist_aliases WHERE alias_norm = ?1",
-                entity_norm(key),
-            ),
-        ] {
-            let found: Option<String> = self
-                .conn
-                .query_row(sql, [arg], |r| r.get(0))
-                .optional()
-                .map_err(db_err)?;
-            if let Some(id) = found {
-                return Ok(id);
-            }
+        let by_slug: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM artists WHERE slug = ?1",
+                [slugify(key)],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        if let Some(id) = by_slug {
+            return Ok(id);
         }
-        Err(Error::NotFound(format!("artist \"{key}\"")))
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM artists WHERE name_norm = ?1 LIMIT 2")
+            .map_err(db_err)?;
+        let ids: Vec<String> = stmt
+            .query_map([entity_norm(key)], |r| r.get(0))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(db_err)?;
+        match ids.len() {
+            0 => Err(Error::NotFound(format!("artist \"{key}\""))),
+            1 => Ok(ids.into_iter().next().unwrap()),
+            _ => Err(Error::InvalidInput(format!(
+                "several artists are called \"{key}\"; use the artist's ID (see `artist list`)"
+            ))),
+        }
     }
 
     /// Internal key of an album given its slug or, if only one album has it, its title.
@@ -222,7 +234,8 @@ impl Storage {
         let sql = format!(
             "SELECT ar.id, ar.slug, ar.name,
                     (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = ar.id),
-                    (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id)
+                    (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id),
+                    (SELECT COUNT(*) FROM track_featured f WHERE f.artist_id = ar.id)
              FROM artists ar WHERE 1=1{tag_sql} ORDER BY ar.name_norm, ar.slug"
         );
         let mut stmt = self.conn.prepare(&sql).map_err(db_err)?;
@@ -235,6 +248,7 @@ impl Storage {
                         name: r.get(2)?,
                         tracks: r.get::<_, i64>(3)? as usize,
                         albums: r.get::<_, i64>(4)? as usize,
+                        featured: r.get::<_, i64>(5)? as usize,
                         tags: Vec::new(),
                     },
                 ))
@@ -372,10 +386,19 @@ impl Storage {
             .map_err(db_err)?;
         let mut stmt = self
             .conn
-            .prepare("SELECT alias FROM artist_aliases WHERE artist_id = ?1 ORDER BY alias_norm")
+            .prepare(
+                "SELECT t.slug, m.title FROM track_featured f
+                 JOIN tracks t ON t.id = f.track_id JOIN track_metadata m ON m.track_id = t.id
+                 WHERE f.artist_id = ?1 ORDER BY m.title_norm, t.slug",
+            )
             .map_err(db_err)?;
-        let aliases = stmt
-            .query_map([&id], |r| r.get(0))
+        let featured_on = stmt
+            .query_map([&id], |r| {
+                Ok(EntityRef {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            })
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)?;
@@ -397,7 +420,7 @@ impl Storage {
             track_tags: self.tag_counts(cond, &id, false)?,
             id: slug,
             name,
-            aliases,
+            featured_on,
         })
     }
 
@@ -444,80 +467,8 @@ impl Storage {
         })
     }
 
-    /// Artists whose names look alike (same letters and digits ignoring punctuation, spacing
-    /// and a leading "the"), minus the pairs the user marked as different people. Suggestions
-    /// only: nothing is merged until the user says so.
-    pub fn similar_artists(&self) -> Result<Vec<SimilarArtists>> {
-        let separate = self.separate_pairs()?;
-        let mut groups: HashMap<String, Vec<ArtistEntry>> = HashMap::new();
-        for a in self.artists(&FilterSpec::default())? {
-            let key = loose_key(&a.name);
-            if !key.is_empty() {
-                groups.entry(key).or_default().push(a);
-            }
-        }
-        let mut out = Vec::new();
-        for mut group in groups.into_values().filter(|g| g.len() > 1) {
-            // The artist with the most tracks first: the natural one to merge the others into.
-            group.sort_by(|x, y| y.tracks.cmp(&x.tracks).then(x.name.cmp(&y.name)));
-            for (i, a) in group.iter().enumerate() {
-                for b in &group[i + 1..] {
-                    let pair = if a.id < b.id {
-                        (a.id.clone(), b.id.clone())
-                    } else {
-                        (b.id.clone(), a.id.clone())
-                    };
-                    if !separate.contains(&pair) {
-                        out.push(SimilarArtists {
-                            a: a.clone(),
-                            b: b.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        out.sort_by(|x, y| (&x.a.name, &x.b.name).cmp(&(&y.a.name, &y.b.name)));
-        Ok(out)
-    }
-
-    /// Pairs of artist slugs marked as different people, smaller slug first.
-    fn separate_pairs(&self) -> Result<HashSet<(String, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT a.slug, b.slug FROM artist_separate s
-                 JOIN artists a ON a.id = s.a_id JOIN artists b ON b.id = s.b_id",
-            )
-            .map_err(db_err)?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            .map_err(db_err)?;
-        let mut out = HashSet::new();
-        for row in rows {
-            let (a, b) = row.map_err(db_err)?;
-            out.insert(if a < b { (a, b) } else { (b, a) });
-        }
-        Ok(out)
-    }
-
-    /// Record that two artists are different people, so they are not suggested as duplicates.
-    pub fn separate_artists(&mut self, a: &str, b: &str) -> Result<()> {
-        let (a, b) = (self.resolve_artist(a)?, self.resolve_artist(b)?);
-        if a == b {
-            return Err(Error::InvalidInput("that is one artist, not two".into()));
-        }
-        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-        self.conn
-            .execute(
-                "INSERT OR IGNORE INTO artist_separate (a_id, b_id) VALUES (?1, ?2)",
-                params![lo, hi],
-            )
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    /// Fold `from` into `into`: its tracks, albums and tags move over, its name stays as an
-    /// alias so a re-import lands on `into`, and track metadata now spells the surviving name.
+    /// Fold `from` into `into`: its tracks, featured credits, albums and tags move over, and track
+    /// metadata now spells the surviving name.
     pub fn merge_artists(&mut self, from: &str, into: &str) -> Result<MergeStats> {
         let (from_id, into_id) = (self.resolve_artist(from)?, self.resolve_artist(into)?);
         if from_id == into_id {
@@ -534,7 +485,7 @@ impl Storage {
             .map_err(db_err)
         };
         let tx = self.conn.transaction().map_err(db_err)?;
-        let (from_name, from_norm) = name_of(&tx, &from_id)?;
+        let (_, from_norm) = name_of(&tx, &from_id)?;
         let (into_name, _) = name_of(&tx, &into_id)?;
 
         // Albums: one the survivor already has (same title) absorbs the other's tracks.
@@ -610,15 +561,21 @@ impl Storage {
             params![into_id, from_id],
         )
         .map_err(db_err)?;
+        // Featured credits move too; a track can't feature its own primary artist.
         tx.execute(
-            "UPDATE artist_aliases SET artist_id = ?1 WHERE artist_id = ?2",
+            "UPDATE OR IGNORE track_featured SET artist_id = ?1 WHERE artist_id = ?2",
             params![into_id, from_id],
         )
         .map_err(db_err)?;
         tx.execute(
-            "INSERT OR REPLACE INTO artist_aliases (alias_norm, alias, artist_id)
-             VALUES (?1, ?2, ?3)",
-            params![from_norm, from_name, into_id],
+            "DELETE FROM track_featured WHERE artist_id = ?1",
+            [&from_id],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "DELETE FROM track_featured WHERE artist_id =
+               (SELECT t.artist_id FROM tracks t WHERE t.id = track_featured.track_id)",
+            [],
         )
         .map_err(db_err)?;
         tx.execute("DELETE FROM artists WHERE id = ?1", [&from_id])
@@ -657,6 +614,182 @@ impl Storage {
             )
             .map_err(db_err)?;
         self.album(album)
+    }
+
+    /// Change an artist's public ID. The new slug is normalized like any slug and must be free.
+    /// Album and track IDs were assigned from the old name and do not change.
+    pub fn set_artist_slug(&mut self, artist: &str, slug: &str) -> Result<ArtistProfile> {
+        let id = self.resolve_artist(artist)?;
+        let slug = slugify(slug);
+        if slug.is_empty() {
+            return Err(Error::InvalidInput(
+                "an ID needs at least one letter or digit".into(),
+            ));
+        }
+        let taken: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM artists WHERE slug = ?1 AND id <> ?2",
+                params![slug, id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(db_err)?
+            .unwrap_or(false);
+        if taken {
+            return Err(Error::AlreadyExists(format!("artist ID \"{slug}\"")));
+        }
+        self.conn
+            .execute(
+                "UPDATE artists SET slug = ?1 WHERE id = ?2",
+                params![slug, id],
+            )
+            .map_err(db_err)?;
+        self.artist(&slug)
+    }
+
+    /// Split an artist in two: a new artist (the same name unless `name` says otherwise, with
+    /// the given slug or a fresh one) takes the listed tracks and albums. For people who share
+    /// a name. The two are recorded as different people. Returns the new artist.
+    pub fn split_artist(
+        &mut self,
+        artist: &str,
+        tracks: &[String],
+        albums: &[String],
+        name: Option<&str>,
+        slug: Option<&str>,
+    ) -> Result<ArtistProfile> {
+        if tracks.is_empty() && albums.is_empty() {
+            return Err(Error::InvalidInput(
+                "say what moves to the new artist: tracks and/or albums".into(),
+            ));
+        }
+        let from_id = self.resolve_artist(artist)?;
+        let from_name: String = self
+            .conn
+            .query_row("SELECT name FROM artists WHERE id = ?1", [&from_id], |r| {
+                r.get(0)
+            })
+            .map_err(db_err)?;
+        let name = name.map_or_else(|| from_name.clone(), clean);
+        if name.is_empty() {
+            return Err(Error::InvalidInput("an artist needs a name".into()));
+        }
+        let track_ids = tracks
+            .iter()
+            .map(|t| {
+                let id = self.resolve_id(t)?;
+                let owner: Option<String> = self
+                    .conn
+                    .query_row("SELECT artist_id FROM tracks WHERE id = ?1", [&id], |r| {
+                        r.get(0)
+                    })
+                    .map_err(db_err)?;
+                if owner.as_deref() == Some(from_id.as_str()) {
+                    Ok(id)
+                } else {
+                    Err(Error::InvalidInput(format!(
+                        "track \"{t}\" is not by {artist}"
+                    )))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let album_ids = albums
+            .iter()
+            .map(|a| {
+                let id = self.resolve_album(a)?;
+                let owner: Option<String> = self
+                    .conn
+                    .query_row("SELECT artist_id FROM albums WHERE id = ?1", [&id], |r| {
+                        r.get(0)
+                    })
+                    .map_err(db_err)?;
+                if owner.as_deref() == Some(from_id.as_str()) {
+                    Ok(id)
+                } else {
+                    Err(Error::InvalidInput(format!(
+                        "album \"{a}\" is not {artist}'s"
+                    )))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let new_id = new_key();
+        let new_slug = match slug {
+            Some(s) => {
+                let s = slugify(s);
+                if s.is_empty() {
+                    return Err(Error::InvalidInput(
+                        "an ID needs at least one letter or digit".into(),
+                    ));
+                }
+                let taken: bool = tx
+                    .query_row("SELECT 1 FROM artists WHERE slug = ?1", [&s], |_| Ok(true))
+                    .optional()
+                    .map_err(db_err)?
+                    .unwrap_or(false);
+                if taken {
+                    return Err(Error::AlreadyExists(format!("artist ID \"{s}\"")));
+                }
+                s
+            }
+            None => unique_slug(&tx, "artists", "slug", &artist_slug(&name))?,
+        };
+        tx.execute(
+            "INSERT INTO artists (id, slug, name, name_norm) VALUES (?1, ?2, ?3, ?4)",
+            params![new_id, new_slug, name, entity_norm(&name)],
+        )
+        .map_err(db_err)?;
+        for album in &album_ids {
+            tx.execute(
+                "UPDATE albums SET artist_id = ?1 WHERE id = ?2",
+                params![new_id, album],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "UPDATE tracks SET artist_id = ?1 WHERE album_id = ?2 AND artist_id = ?3",
+                params![new_id, album, from_id],
+            )
+            .map_err(db_err)?;
+        }
+        for track in &track_ids {
+            tx.execute(
+                "UPDATE tracks SET artist_id = ?1 WHERE id = ?2",
+                params![new_id, track],
+            )
+            .map_err(db_err)?;
+        }
+        tx.execute(
+            "UPDATE track_metadata SET artist = ?1, artist_norm = ?2
+             WHERE track_id IN (SELECT id FROM tracks WHERE artist_id = ?3)",
+            params![name, name.to_lowercase(), new_id],
+        )
+        .map_err(db_err)?;
+        crate::dedup::mark_different(&tx, EntityKind::Artist, &from_id, &new_id)?;
+        tx.commit().map_err(db_err)?;
+        self.artist(&new_slug)
+    }
+
+    /// Featured artists of a track, in credit order.
+    pub fn track_featured(&self, track_id: &str) -> Result<Vec<EntityRef>> {
+        let id = self.resolve_id(track_id)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT ar.slug, ar.name FROM track_featured f JOIN artists ar ON ar.id = f.artist_id
+                 WHERE f.track_id = ?1 ORDER BY f.position",
+            )
+            .map_err(db_err)?;
+        stmt.query_map([id], |r| {
+            Ok(EntityRef {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })
+        .map_err(db_err)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(db_err)
     }
 
     /// When a track was first indexed and the artist and album it is linked to.

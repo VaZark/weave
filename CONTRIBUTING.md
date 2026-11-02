@@ -90,7 +90,7 @@ weave-player search --tag-all genre:bachata-sensual              # exact: that t
 weave-player tag list                                          # the seeded tree: genre:latin > bachata > ...
 weave-player artist list --tag-any genre=latin                 # artists carry tags too
 weave-player artist aventura                                   # a profile: albums, genres, ratings ...
-weave-player artist duplicates                                  # Daft Punk and Daft-Punk look alike; merge or separate them
+weave-player dedup list                                        # Daft Punk / Daft-Punk, and two copies of a track: merge or separate
 weave-player album list --artist aventura
 weave-player track <track-id>                                  # everything about one track
 weave-player playlist list

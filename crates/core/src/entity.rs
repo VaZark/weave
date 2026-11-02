@@ -57,12 +57,14 @@ pub struct Count {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackDetail {
     pub track: Track,
-    /// The audio file.
-    pub path: Option<String>,
+    /// The audio files, the one that plays first. More than one after duplicate tracks are merged.
+    pub paths: Vec<String>,
     /// Unix seconds when it was first indexed.
     pub added_at: i64,
     pub artist: Option<EntityRef>,
     pub album: Option<EntityRef>,
+    /// Featured artists, in credit order.
+    pub featured: Vec<EntityRef>,
     pub playlists: Vec<EntityRef>,
     /// 1-based positions in the now-playing queue (a track can be queued more than once).
     pub queue_positions: Vec<usize>,
@@ -75,6 +77,8 @@ pub struct ArtistEntry {
     pub name: String,
     pub tracks: usize,
     pub albums: usize,
+    /// Tracks this artist is featured on.
+    pub featured: usize,
     pub tags: Vec<String>,
 }
 
@@ -111,14 +115,14 @@ pub struct Stats {
 pub struct ArtistProfile {
     pub id: String,
     pub name: String,
-    /// Other spellings that were merged into this artist; a re-import maps them back here.
-    pub aliases: Vec<String>,
     /// Tags put on the artist itself.
     pub tags: Vec<String>,
     pub stats: Stats,
     pub albums: Vec<AlbumEntry>,
     /// Tracks that belong to no album.
     pub loose_tracks: usize,
+    /// Tracks the artist is featured on (`id` is the track's, `name` its title).
+    pub featured_on: Vec<EntityRef>,
     /// The `genre:` tags across the artist's tracks, most common first.
     pub genres: Vec<Count>,
     /// The other tags across the artist's tracks (numbers like bpm and year left out).
@@ -139,14 +143,36 @@ pub struct AlbumProfile {
     pub tracks: Vec<Track>,
 }
 
-/// Two artists whose names look alike and might be one person (or not: the user decides).
+/// One side of a possible duplicate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SimilarArtists {
-    pub a: ArtistEntry,
-    pub b: ArtistEntry,
+pub struct DuplicateCandidate {
+    /// The slug used to address it.
+    pub id: String,
+    pub name: String,
+    /// What helps tell them apart: track counts, the artist, the length, the file.
+    pub detail: String,
 }
 
-/// What a merge moved.
+/// Two artists, albums or tracks that look alike and might be one (or not: the user decides).
+/// The side worth keeping comes first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimilarPair {
+    pub kind: EntityKind,
+    pub a: DuplicateCandidate,
+    pub b: DuplicateCandidate,
+    /// Why they look alike.
+    pub reason: String,
+}
+
+/// A point in the library's history, taken before an import, to tell what the import added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DedupMark {
+    pub artists: i64,
+    pub albums: i64,
+    pub tracks: i64,
+}
+
+/// What a merge or split moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeStats {
     pub tracks: usize,

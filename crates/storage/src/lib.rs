@@ -2,6 +2,7 @@
 //! persisted playback session.
 
 mod annotations;
+mod dedup;
 mod entities;
 mod migrations;
 mod playlists;
@@ -16,7 +17,8 @@ use std::collections::HashMap;
 
 use weave_core::{
     EntityKind, Error, FilterSpec, Instance, Metadata, Page, Result, ScannedTrack, SearchResult,
-    Track, TrackId, default_instance_name, metadata_tags, parse_instance_name, slugify, track_slug,
+    Track, TrackId, default_instance_name, metadata_tags, parse_credits, parse_instance_name,
+    slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -70,6 +72,7 @@ impl Storage {
     pub fn import_tracks(&mut self, tracks: &[ScannedTrack]) -> Result<ImportStats> {
         let tx = self.conn.transaction().map_err(db_err)?;
         let mut stats = ImportStats::default();
+        let mut run = entities::RunArtists::new();
         for t in tracks {
             let exists: bool = tx
                 .query_row("SELECT 1 FROM sources WHERE path = ?1", [&t.path], |_| {
@@ -83,7 +86,13 @@ impl Storage {
                 continue;
             }
             let id = uuid::Uuid::new_v4().simple().to_string();
-            let m = &t.metadata;
+            // Featured credits become entries of their own; the track keeps its primary artist.
+            let credits = parse_credits(t.metadata.artist.as_deref(), &t.metadata.title);
+            let meta = Metadata {
+                artist: credits.primary.clone(),
+                ..t.metadata.clone()
+            };
+            let m = &meta;
             let slug = unique_slug(
                 &tx,
                 "tracks",
@@ -95,15 +104,16 @@ impl Storage {
                 [&id, &slug],
             )
             .map_err(db_err)?;
-            insert_metadata(&tx, &id, &t.metadata)?;
+            insert_metadata(&tx, &id, m)?;
             entities::link_track(
                 &tx,
+                &mut run,
                 &id,
-                m.artist.as_deref(),
+                &credits,
                 m.album.as_deref(),
                 m.album_artist.as_deref(),
             )?;
-            for name in metadata_tags(&t.metadata) {
+            for name in metadata_tags(m) {
                 tags::assign(&tx, EntityKind::Track, &id, &name)?;
             }
             tx.execute(
@@ -286,16 +296,21 @@ impl Storage {
             .collect())
     }
 
-    /// The file behind a track.
+    /// The file a track plays: its oldest one.
     pub fn source_path(&self, track_id: &str) -> Result<Option<String>> {
+        Ok(self.source_paths(track_id)?.into_iter().next())
+    }
+
+    /// Every file behind a track, oldest first. More than one after duplicate tracks are merged.
+    pub fn source_paths(&self, track_id: &str) -> Result<Vec<String>> {
         let track_id = self.resolve_id(track_id)?;
-        self.conn
-            .query_row(
-                "SELECT path FROM sources WHERE track_id = ?1",
-                [track_id],
-                |r| r.get(0),
-            )
-            .optional()
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM sources WHERE track_id = ?1 ORDER BY rowid")
+            .map_err(db_err)?;
+        stmt.query_map([track_id], |r| r.get(0))
+            .map_err(db_err)?
+            .collect::<std::result::Result<_, _>>()
             .map_err(db_err)
     }
 

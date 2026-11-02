@@ -3,6 +3,7 @@
 #[macro_use]
 mod text_enum;
 
+mod credits;
 mod duration;
 mod entity;
 mod error;
@@ -17,10 +18,11 @@ mod slug;
 mod tag;
 mod track;
 
+pub use credits::{Credits, parse_credits};
 pub use duration::{parse_duration, parse_span};
 pub use entity::{
-    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, EntityKind, EntityRef, MergeStats,
-    SimilarArtists, Stats, TrackDetail, entity_norm, loose_key,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, DedupMark, DuplicateCandidate,
+    EntityKind, EntityRef, MergeStats, SimilarPair, Stats, TrackDetail, entity_norm, loose_key,
 };
 pub use error::{Error, Result};
 pub use filter::{FilterSpec, Sort, SortField, TagClause, TagOp, TagRange};

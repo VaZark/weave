@@ -7,9 +7,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_core::{
-    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, EntityKind, EntityRef,
-    Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind, Result, Rng,
-    ScannedTrack, SearchResult, SimilarArtists, Tag, Track, TrackDetail,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, EntityKind,
+    EntityRef, Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind, Result, Rng,
+    ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
 };
 use weave_local::LocalFiles;
 use weave_storage::Storage;
@@ -142,6 +142,7 @@ impl Library {
     pub fn track_detail(&self, id: &str) -> Result<TrackDetail> {
         let track = self.storage.track(id)?;
         let (added_at, artist, album) = self.storage.track_links(&track.id.0)?;
+        let featured = self.storage.track_featured(&track.id.0)?;
         let mut playlists = Vec::new();
         for p in self.storage.playlists()? {
             let (_, found) = self.playlist_tracks(&p.id, Page::ALL)?;
@@ -162,10 +163,11 @@ impl Library {
             .map(|(i, _)| i + 1)
             .collect();
         Ok(TrackDetail {
-            path: self.storage.source_path(&track.id.0)?,
+            paths: self.storage.source_paths(&track.id.0)?,
             added_at,
             artist,
             album,
+            featured,
             playlists,
             queue_positions,
             track,
@@ -195,20 +197,51 @@ impl Library {
         self.storage.link_album(album, artist)
     }
 
-    /// Artists whose names look alike. Only suggestions: artists spelled differently are never
-    /// merged unless [`Library::merge_artists`] is called.
-    pub fn similar_artists(&self) -> Result<Vec<SimilarArtists>> {
-        self.storage.similar_artists()
+    /// Change an artist's public ID.
+    pub fn set_artist_slug(&mut self, artist: &str, slug: &str) -> Result<ArtistProfile> {
+        self.storage.set_artist_slug(artist, slug)
     }
 
-    /// Fold one artist into another; the old name stays as an alias.
-    pub fn merge_artists(&mut self, from: &str, into: &str) -> Result<MergeStats> {
-        self.storage.merge_artists(from, into)
+    /// Split an artist: a new artist (same name unless `name` says otherwise) takes the listed
+    /// tracks and albums. For people who share a name.
+    pub fn split_artist(
+        &mut self,
+        artist: &str,
+        tracks: &[String],
+        albums: &[String],
+        name: Option<&str>,
+        slug: Option<&str>,
+    ) -> Result<ArtistProfile> {
+        self.storage
+            .split_artist(artist, tracks, albums, name, slug)
     }
 
-    /// Record that two artists are different people, so they are not suggested again.
-    pub fn separate_artists(&mut self, a: &str, b: &str) -> Result<()> {
-        self.storage.separate_artists(a, b)
+    // --- duplicates --------------------------------------------------------
+
+    /// A point to compare against later, taken before an import.
+    pub fn dedup_mark(&self) -> Result<DedupMark> {
+        self.storage.dedup_mark()
+    }
+
+    /// Artists, albums or tracks that look alike. Only suggestions: nothing is ever merged
+    /// unless [`Library::merge`] is called. With `since`, only pairs involving something added
+    /// after that mark (what an import brought in).
+    pub fn duplicates(
+        &self,
+        kind: EntityKind,
+        since: Option<&DedupMark>,
+    ) -> Result<Vec<SimilarPair>> {
+        self.storage.duplicates(kind, since)
+    }
+
+    /// Fold one artist, album or track into another (the one to keep).
+    pub fn merge(&mut self, kind: EntityKind, from: &str, into: &str) -> Result<MergeStats> {
+        self.storage.merge_duplicates(kind, from, into)
+    }
+
+    /// Record that two artists, albums or tracks are different, so they are not suggested again.
+    pub fn separate(&mut self, kind: EntityKind, a: &str, b: &str) -> Result<()> {
+        self.storage.separate_duplicates(kind, a, b)
     }
 
     // --- ratings -----------------------------------------------------------
@@ -534,7 +567,7 @@ mod tests {
         )
         .unwrap();
         let d = lib.track_detail("aventura-gold-a").unwrap();
-        assert_eq!(d.path.as_deref(), Some("/music/a.mp3"));
+        assert_eq!(d.paths, ["/music/a.mp3"]);
         assert_eq!(d.artist.unwrap().id, "aventura");
         assert_eq!(d.album.unwrap().id, "aventura-gold");
         assert_eq!(

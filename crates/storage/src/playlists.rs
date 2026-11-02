@@ -55,7 +55,7 @@ fn write_order(tx: &rusqlite::Transaction, playlist_id: &str, ids: &[String]) ->
 }
 
 /// Close the gaps left by removals, keeping the relative order.
-fn renumber(tx: &rusqlite::Transaction, playlist_id: &str) -> Result<()> {
+pub(crate) fn renumber(tx: &rusqlite::Transaction, playlist_id: &str) -> Result<()> {
     let ids = ordered_track_ids(tx, playlist_id)?;
     write_order(tx, playlist_id, &ids)
 }
