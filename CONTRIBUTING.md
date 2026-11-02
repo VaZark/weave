@@ -109,6 +109,10 @@ apps/cli/          the `weave-player` binary, a frontend over `weave` only (src/
 
 Frontends call the library and never touch the database directly, and filtering, playback or playlist rules live in the library, never only in a frontend.
 
+## Releases
+
+The version lives in one place: `version` under `[workspace.package]` in the root `Cargo.toml`. Every crate inherits it, and `weave-player --version` prints it. To release, bump it (and commit the updated `Cargo.lock`), merge to `main`, then run the **Release** workflow from the Actions tab. It tests, builds a Linux x86_64 binary with SQLite compiled in, tags `v<version>` and publishes a GitHub release with a `.tar.gz` and its checksum. It never runs on its own, and it refuses to run if the tag already exists. Tick _prerelease_ to mark the release as a pre-release.
+
 ## Making a change
 
 - Add or update tests next to the code. Storage tests use an in-memory database (`Storage::open_in_memory`).
