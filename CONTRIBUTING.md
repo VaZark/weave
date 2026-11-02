@@ -63,7 +63,7 @@ The default library lives at `$XDG_DATA_HOME/weave/library.db` (`~/.local/share/
 Debug builds include a developer command that fills the library with fake tracks, tags and playlists. No audio files are read, and release builds do not contain it.
 
 ```bash
-weave-player dev seed                # 60 tracks with a tag tree, ratings and 9 playlists
+weave-player dev seed                # 60 tracks with a tag tree, ratings and 11 playlists
 weave-player dev seed --count 100    # up to 100
 ```
 

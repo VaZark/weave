@@ -83,6 +83,11 @@ pub struct FilterSpec {
     pub tag_all: Vec<String>,
     pub tag_any: Vec<String>,
     pub tag_exclude: Vec<String>,
+    /// Playlists to draw from, by ID or name. Empty means the whole library. A track must be in at
+    /// least one of them (OR); the rest of the filter then applies on top (AND). A manual playlist
+    /// limits the candidates to its tracks, a dynamic one contributes what it matches now, with
+    /// its own sources, sort and limit.
+    pub sources: Vec<String>,
     /// Keyed tag conditions, ANDed with each other and with everything else.
     pub tag_clauses: Vec<TagClause>,
     /// Bounds on the track's own BPM and year (inclusive; an unknown value never matches).
@@ -120,6 +125,16 @@ impl FilterSpec {
                 true
             });
         }
+        let mut seen = Vec::new();
+        self.sources.retain_mut(|p| {
+            *p = p.trim().to_string();
+            let key = normalize_tag(p);
+            if key.is_empty() || seen.contains(&key) {
+                return false;
+            }
+            seen.push(key);
+            true
+        });
         for c in &mut self.tag_clauses {
             for list in [&mut c.keys, &mut c.values] {
                 let mut seen = Vec::new();
@@ -215,6 +230,9 @@ impl FilterSpec {
         }
         if !update.tag_exclude.is_empty() {
             self.tag_exclude = update.tag_exclude;
+        }
+        if !update.sources.is_empty() {
+            self.sources = update.sources;
         }
         if !update.tag_clauses.is_empty() {
             self.tag_clauses = update.tag_clauses;
@@ -354,6 +372,26 @@ mod tests {
         }
         .normalized();
         assert_eq!(f.tag_all, vec!["Bachata", "ÉTÉ"]);
+    }
+
+    #[test]
+    fn sources_are_trimmed_deduplicated_and_replaced_by_a_merge() {
+        let f = FilterSpec {
+            sources: vec![
+                " Road Trip ".into(),
+                "road trip".into(),
+                "".into(),
+                "Mix".into(),
+            ],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(f.sources, ["Road Trip", "Mix"]);
+        let m = f.merged(FilterSpec {
+            sources: vec!["Other".into()],
+            ..Default::default()
+        });
+        assert_eq!(m.sources, ["Other"]);
     }
 
     #[test]

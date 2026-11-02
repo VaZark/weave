@@ -132,7 +132,10 @@ impl Storage {
     pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
         let filter = filter.clone().normalized();
         filter.validate()?;
-        let (where_sql, mut args) = query::where_clause(&filter);
+        let (conditions, mut args) = query::conditions(&filter);
+        let (from_sources, source_args) = self.source_terms(&filter, 0)?;
+        args.extend(source_args);
+        let where_sql = format!(" WHERE 1=1{conditions}{from_sources}");
 
         let counted: i64 = self
             .conn
@@ -421,5 +424,7 @@ fn window(total: usize, page: Page) -> (usize, usize) {
 mod tests;
 #[cfg(test)]
 mod tests_entities;
+#[cfg(test)]
+mod tests_sources;
 #[cfg(test)]
 mod tests_tags;

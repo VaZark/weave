@@ -1,6 +1,6 @@
 //! Dynamic playlists (saved filters) and manual playlists (ordered track lists).
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, params, types::Value};
 use weave_core::{
     Error, FilterSpec, Page, Playlist, PlaylistKind, Result, SearchResult, normalize_tag,
     playlist_slug, slugify,
@@ -60,6 +60,18 @@ pub(crate) fn renumber(tx: &rusqlite::Transaction, playlist_id: &str) -> Result<
     write_order(tx, playlist_id, &ids)
 }
 
+/// Playlists may draw on playlists that draw on playlists, this many levels deep.
+const MAX_SOURCE_DEPTH: usize = 8;
+
+/// A source with a limit is bound as a list of tracks; this many at most.
+const MAX_LIMITED_SOURCE: usize = 500;
+
+fn too_deep() -> Error {
+    Error::InvalidInput(format!(
+        "playlists draw on each other more than {MAX_SOURCE_DEPTH} levels deep"
+    ))
+}
+
 const COLUMNS: &str = "id, name, filter_spec, description, kind";
 
 impl Storage {
@@ -69,8 +81,10 @@ impl Storage {
         description: Option<&str>,
         filter: &FilterSpec,
     ) -> Result<Playlist> {
-        let filter = filter.clone().normalized();
+        let mut filter = filter.clone().normalized();
         filter.validate()?;
+        // A new playlist has no ID yet, so nothing can draw on it: no loop is possible.
+        filter.sources = self.canonical_sources(&filter, None)?;
         self.insert_playlist(name, description, PlaylistKind::Dynamic, filter)
     }
 
@@ -165,20 +179,124 @@ impl Storage {
         rows.map(|r| r.map_err(db_err)?).collect()
     }
 
+    /// Save a playlist's description and filter. Returns the filter as saved, with its sources
+    /// replaced by the playlists' IDs. Sources must exist and must not lead back to `id`.
     pub fn update_playlist(
         &mut self,
         id: &str,
         description: Option<&str>,
         filter: &FilterSpec,
-    ) -> Result<()> {
+    ) -> Result<FilterSpec> {
+        let mut filter = filter.clone().normalized();
         filter.validate()?;
+        filter.sources = self.canonical_sources(&filter, Some(id))?;
         self.conn
             .execute(
                 "UPDATE playlists SET description = ?1, filter_spec = ?2 WHERE id = ?3",
-                params![description, spec_json(filter)?, id],
+                params![description, spec_json(&filter)?, id],
             )
             .map_err(db_err)?;
-        Ok(())
+        Ok(filter)
+    }
+
+    /// The sources of a filter as playlist IDs. Each must exist, and none may be `owner` or lead
+    /// back to it through its own sources.
+    fn canonical_sources(&self, filter: &FilterSpec, owner: Option<&str>) -> Result<Vec<String>> {
+        let mut ids: Vec<String> = Vec::new();
+        for name in &filter.sources {
+            let p = self.playlist(name)?;
+            if owner == Some(p.id.as_str()) {
+                return Err(Error::InvalidInput(
+                    "a playlist cannot draw on itself".into(),
+                ));
+            }
+            if let Some(owner) = owner
+                && self.draws_on(&p.id, owner, 0)?
+            {
+                return Err(Error::InvalidInput(format!(
+                    "\"{}\" already draws on this playlist, so this would make a loop",
+                    p.name
+                )));
+            }
+            if !ids.contains(&p.id) {
+                ids.push(p.id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Does the dynamic playlist `from` draw on `target`, directly or through its sources?
+    fn draws_on(&self, from: &str, target: &str, depth: usize) -> Result<bool> {
+        if depth > MAX_SOURCE_DEPTH {
+            return Err(too_deep());
+        }
+        let p = self.playlist(from)?;
+        for s in &p.filter.sources {
+            if s == target || self.draws_on(s, target, depth + 1)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// ` AND (…)` limiting a search to the filter's source playlists (any one of them), with the
+    /// values to bind. Empty when there are no sources.
+    ///
+    /// A manual playlist limits to its tracks. A dynamic one without a limit is inlined as its own
+    /// conditions, sources included. One with a limit contributes exactly the tracks it yields.
+    pub(crate) fn source_terms(
+        &self,
+        filter: &FilterSpec,
+        depth: usize,
+    ) -> Result<(String, Vec<Value>)> {
+        if filter.sources.is_empty() {
+            return Ok((String::new(), Vec::new()));
+        }
+        if depth > MAX_SOURCE_DEPTH {
+            return Err(too_deep());
+        }
+        let mut terms: Vec<String> = Vec::new();
+        let mut args: Vec<Value> = Vec::new();
+        for name in &filter.sources {
+            let p = self.playlist(name)?;
+            match (p.kind, p.filter.limit) {
+                (PlaylistKind::Manual, _) => {
+                    terms.push(
+                        "m.track_id IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?)"
+                            .into(),
+                    );
+                    args.push(Value::Text(p.id));
+                }
+                (PlaylistKind::Dynamic, None) => {
+                    let (conditions, own) = query::conditions(&p.filter);
+                    let (nested, more) = self.source_terms(&p.filter, depth + 1)?;
+                    terms.push(format!("(1=1{conditions}{nested})"));
+                    args.extend(own);
+                    args.extend(more);
+                }
+                (PlaylistKind::Dynamic, Some(_)) => {
+                    let slugs: Vec<String> = self
+                        .search(&p.filter, Page::ALL)?
+                        .tracks
+                        .into_iter()
+                        .map(|t| t.id.0)
+                        .collect();
+                    if slugs.len() > MAX_LIMITED_SOURCE {
+                        return Err(Error::InvalidInput(format!(
+                            "playlist \"{}\" has a limit above {MAX_LIMITED_SOURCE}, too many to draw on",
+                            p.name
+                        )));
+                    }
+                    if slugs.is_empty() {
+                        terms.push("0".into());
+                    } else {
+                        terms.push(format!("t.slug IN ({})", vec!["?"; slugs.len()].join(",")));
+                        args.extend(slugs.into_iter().map(Value::Text));
+                    }
+                }
+            }
+        }
+        Ok((format!(" AND ({})", terms.join(" OR ")), args))
     }
 
     /// Resolve a name or slug to a manual playlist's ID.

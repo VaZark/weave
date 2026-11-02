@@ -405,6 +405,9 @@ enum PlaylistCmd {
         /// New description; pass "" to clear it.
         #[arg(long)]
         description: Option<String>,
+        /// Stop drawing on other playlists: use the whole library again.
+        #[arg(long, conflicts_with = "sources")]
+        clear_sources: bool,
         #[command(flatten)]
         filter: FilterArgs,
     },
@@ -550,6 +553,9 @@ struct TagFilterArgs {
 
 #[derive(Args, Default)]
 struct FilterArgs {
+    /// Draw only on these playlists (repeatable): a track in any of them, then the filters below on top. A manual playlist limits to its tracks, a dynamic one to what it matches now.
+    #[arg(long = "from", value_name = "PLAYLIST")]
+    sources: Vec<String>,
     #[command(flatten)]
     tags: TagFilterArgs,
     /// Minimum and maximum BPM of the track (inclusive; unknown never matches).
@@ -655,6 +661,7 @@ impl From<FilterArgs> for FilterSpec {
     fn from(a: FilterArgs) -> Self {
         let result = a.result.spec();
         FilterSpec {
+            sources: a.sources,
             bpm_min: a.bpm_min,
             bpm_max: a.bpm_max,
             year_min: a.year_min,
@@ -1086,8 +1093,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Playlist(PlaylistCmd::Update {
             name,
             description,
+            clear_sources,
             filter,
         }) => {
+            if clear_sources {
+                lib.clear_playlist_sources(&name)?;
+            }
             let p = lib.update_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, show_ids, &p)?;
         }
@@ -1526,6 +1537,50 @@ mod arg_tests {
             Err(_) | Ok(Cmd::Instance(InstanceCmd::Show))
         ));
         assert!(parse(&["instance", "playback", "maybe"]).is_err());
+    }
+
+    #[test]
+    fn playlists_can_draw_on_other_playlists() {
+        let Cmd::Search { filter, .. } = parse(&[
+            "search",
+            "--from",
+            "road-trip",
+            "--from",
+            "Slow nights",
+            "--tag-all",
+            "lang:spanish",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not a search")
+        };
+        let f = FilterSpec::from(filter);
+        assert_eq!(f.sources, ["road-trip", "Slow nights"]);
+        assert_eq!(
+            output::describe(&f),
+            "--from road-trip --from Slow nights --tag-all lang:spanish"
+        );
+        let Cmd::Playlist(PlaylistCmd::Update { clear_sources, .. }) =
+            parse(&["playlist", "update", "mix", "--clear-sources"])
+                .unwrap()
+                .command
+        else {
+            panic!("not an update")
+        };
+        assert!(clear_sources);
+        assert!(
+            parse(&[
+                "playlist",
+                "update",
+                "mix",
+                "--clear-sources",
+                "--from",
+                "x"
+            ])
+            .is_err(),
+            "clear or replace, not both"
+        );
     }
 
     #[test]

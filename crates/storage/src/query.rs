@@ -159,9 +159,10 @@ pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
     (sql, args)
 }
 
-/// ` WHERE …` for `FROM`. Expects a normalized, validated filter.
-pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
-    let mut sql = String::from(" WHERE 1=1");
+/// The filter's own conditions as ` AND …` terms for `FROM` (the caller supplies ` WHERE 1=1`).
+/// Expects a normalized, validated filter; its playlist sources are added by the storage layer.
+pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
+    let mut sql = String::new();
     let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
     sql += &tag_sql;
     // NULL compares as NULL, so an unknown BPM, year or rating never matches a bound.

@@ -328,9 +328,24 @@ impl Library {
         if let Some(d) = description {
             p.description = Some(d.trim().to_string()).filter(|d| !d.is_empty());
         }
-        self.storage
+        p.filter = self
+            .storage
             .update_playlist(&p.id, p.description.as_deref(), &merged)?;
-        p.filter = merged;
+        Ok(p)
+    }
+
+    /// Make a dynamic playlist draw on the whole library again.
+    pub fn clear_playlist_sources(&mut self, name: &str) -> Result<Playlist> {
+        let mut p = self.storage.playlist(name)?;
+        if p.kind == PlaylistKind::Manual {
+            return Err(Error::InvalidInput(format!(
+                "playlist \"{}\" is manual and has no sources",
+                p.name
+            )));
+        }
+        p.filter.sources.clear();
+        self.storage
+            .update_playlist(&p.id, p.description.as_deref(), &p.filter)?;
         Ok(p)
     }
 

@@ -374,6 +374,32 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
     }
     playlists += made;
 
+    // Playlists that draw on other playlists: a manual one limits to its tracks, a dynamic one
+    // contributes what it matches, several are ORed, and the filter applies on top.
+    let from_playlists = [
+        (
+            "Spanish road trip",
+            "The road trip, only what is sung in Spanish",
+            FilterSpec {
+                sources: strs(&["road-trip"]),
+                tag_all: strs(&["lang:spanish"]),
+                ..Default::default()
+            },
+        ),
+        (
+            "Slow nights or road trip",
+            "Either playlist, nothing above 120 BPM",
+            FilterSpec {
+                sources: strs(&["slow-spanish-nights", "road-trip"]),
+                bpm_max: Some(120.0),
+                ..Default::default()
+            },
+        ),
+    ];
+    for (name, description, filter) in from_playlists {
+        playlists += created(lib.create_playlist(name, Some(description), filter))?;
+    }
+
     Ok(Seeded {
         added: stats.added,
         skipped: stats.skipped,
@@ -391,7 +417,7 @@ mod tests {
     fn seed_is_idempotent_and_populates_everything() {
         let mut lib = Library::open_in_memory().unwrap();
         let first = seed(&mut lib, 60).unwrap();
-        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 9));
+        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 11));
         assert!(first.tagged > 60);
 
         let second = seed(&mut lib, 60).unwrap();

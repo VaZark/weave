@@ -260,6 +260,9 @@ fn ruleset(p: &Playlist) -> String {
 /// A filter as the CLI flags that would create it.
 pub fn describe(f: &FilterSpec) -> String {
     let mut parts = Vec::new();
+    for source in &f.sources {
+        parts.push(format!("--from {source}"));
+    }
     for (k, v) in [
         ("tag-all", &f.tag_all),
         ("tag-any", &f.tag_any),

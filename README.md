@@ -18,6 +18,9 @@ weave-player playlist create "Slow Spanish nights" --tag-all mood:romantic,lang:
 weave-player playlist create "Wedding, upbeat" --tag-all wedding --tag-exclude mood:sad --bpm-min 100
 weave-player playlist create "Dance floor" --tag-any mood=party,energetic --tag-exclude live --bpm-min 110
 
+# build on other playlists: a manual one limits the candidates, a dynamic one contributes what it matches now
+weave-player playlist create "Slow Spanish, upbeat end" --from "Slow Spanish nights" --from "Road trip" --bpm-min 95
+
 # tag as you listen, on tracks, artists, albums and playlists alike
 weave-player add --tag mood:romantic,lang:spanish
 weave-player play playlist slow-spanish-nights --shuffle
