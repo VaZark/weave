@@ -10,6 +10,7 @@ pub const MAX_COUNT: usize = 100;
 
 struct Artist {
     name: &'static str,
+    lang: &'static str,
     genre: &'static str,
     bpm: (u32, u32),
     years: (i32, i32),
@@ -18,48 +19,56 @@ struct Artist {
 const ARTISTS: [Artist; 8] = [
     Artist {
         name: "Romeo Santos",
+        lang: "spanish",
         genre: "Bachata",
         bpm: (95, 135),
         years: (2011, 2022),
     },
     Artist {
         name: "Aventura",
+        lang: "spanish",
         genre: "Bachata",
         bpm: (90, 130),
         years: (1999, 2009),
     },
     Artist {
         name: "Kaysha",
+        lang: "french",
         genre: "Zouk",
         bpm: (80, 110),
         years: (2006, 2014),
     },
     Artist {
         name: "Édith Piaf",
+        lang: "french",
         genre: "Chanson",
         bpm: (70, 120),
         years: (1947, 1962),
     },
     Artist {
         name: "Daft Punk",
+        lang: "english",
         genre: "Electronic",
         bpm: (110, 130),
         years: (1997, 2013),
     },
     Artist {
         name: "Nina Simone",
+        lang: "english",
         genre: "Jazz",
         bpm: (60, 110),
         years: (1958, 1974),
     },
     Artist {
         name: "Buena Vista Social Club",
+        lang: "spanish",
         genre: "Son",
         bpm: (85, 125),
         years: (1997, 2000),
     },
     Artist {
         name: "Rock & Roll Trio",
+        lang: "english",
         genre: "Rock",
         bpm: (120, 170),
         years: (1976, 1989),
@@ -129,6 +138,11 @@ fn slug_of(t: &ScannedTrack) -> String {
 /// The seeded tag tree: `(tag, parent)`, parents first. Import already created the plain
 /// `genre:` tags, so those are only given a parent; the rest are created here.
 const TREE: &[(&str, Option<&str>)] = &[
+    ("lang:romance", None),
+    ("lang:spanish", Some("lang:romance")),
+    ("lang:french", Some("lang:romance")),
+    ("lang:germanic", None),
+    ("lang:english", Some("lang:germanic")),
     ("genre:latin", None),
     ("genre:bachata", Some("genre:latin")),
     ("genre:bachata-traditional", Some("genre:bachata")),
@@ -166,11 +180,14 @@ fn ensure_tree(lib: &mut Library) -> Result<()> {
     Ok(())
 }
 
-/// Tags assigned on top of the genre tag that import derives. Each track gets leaf
+/// Tags assigned on top of the genre tag that import derives: the language sung, a subgenre, the
+/// era and the mood. Each track gets leaf
 /// tags only: a sensual bachata track is not also given `genre:latin`, the tree reaches it.
 fn tags_for(t: &ScannedTrack, i: usize) -> Vec<String> {
     let m = &t.metadata;
-    let mut tags: Vec<String> = Vec::new();
+    // a second copy of a track has the artist of the one it copies
+    let base = if i % 30 == 29 && i >= 20 { i - 20 } else { i };
+    let mut tags: Vec<String> = vec![format!("lang:{}", ARTISTS[base % ARTISTS.len()].lang)];
     if m.genre.as_deref() == Some("Bachata") {
         let sub = if i.is_multiple_of(2) {
             "traditional"
@@ -280,6 +297,28 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             },
         ),
         (
+            "Slow Spanish nights",
+            "Romantic, sung in Spanish, under 110 BPM",
+            FilterSpec {
+                tag_all: strs(&["lang:spanish", "mood:romantic"]),
+                bpm_max: Some(110.0),
+                sort: Some(Sort {
+                    field: SortField::Bpm,
+                    descending: false,
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Romance languages",
+            "Spanish and French, through the language tree",
+            FilterSpec {
+                tag_any: strs(&["lang:romance"]),
+                tag_exclude: strs(&["mood:melodic"]),
+                ..Default::default()
+            },
+        ),
+        (
             "Latin nights",
             "Every Latin subgenre, through the tag tree",
             FilterSpec {
@@ -352,7 +391,7 @@ mod tests {
     fn seed_is_idempotent_and_populates_everything() {
         let mut lib = Library::open_in_memory().unwrap();
         let first = seed(&mut lib, 60).unwrap();
-        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 7));
+        assert_eq!((first.added, first.skipped, first.playlists), (60, 0, 9));
         assert!(first.tagged > 60);
 
         let second = seed(&mut lib, 60).unwrap();
@@ -435,6 +474,19 @@ mod tests {
         assert!(
             lib.artists(&latin).unwrap().len() >= 3,
             "artists are reached through the tree"
+        );
+        let by_language = |t: &str| FilterSpec {
+            tag_all: vec![t.into()],
+            ..Default::default()
+        };
+        let total = |f: &FilterSpec| lib.search(f, Page::ALL).unwrap().total;
+        let (romance, spanish) = (
+            total(&by_language("lang:romance")),
+            total(&by_language("lang:spanish")),
+        );
+        assert!(
+            spanish > 0 && romance > spanish,
+            "the language tree reaches French through Romance"
         );
         assert!(
             !lib.albums(

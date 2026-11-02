@@ -536,14 +536,14 @@ impl ResultArgs {
 /// The tag conditions, shared by every command that filters (tracks, artists, albums).
 #[derive(Args, Default)]
 struct TagFilterArgs {
-    /// Require every tag: `bachata,90s`, or by key `genre=bachata,sensual`. Repeatable.
+    /// Require every tag: `mood:romantic,lang:spanish`, or by key `mood=romantic,calm`. Repeatable.
     /// Matches child tags too; `genre==bachata` (or `=genre:bachata`) matches that tag only.
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_all: Vec<TagCond>,
-    /// Require at least one tag: `bachata,zouk`, `genre=bachata,sals`, `genre,style=salsa`.
+    /// Require at least one tag: `lang:spanish,lang:french`, `genre=bachata,zouk`, `mood,vibe=party`.
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_any: Vec<TagCond>,
-    /// Exclude tracks with any of these tags: `live`, `period=80s,70s`.
+    /// Exclude tracks with any of these tags: `live`, `mood=sad,angry`.
     #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
     tag_exclude: Vec<TagCond>,
 }
@@ -581,7 +581,7 @@ struct FilterArgs {
     result: ResultArgs,
 }
 
-/// One `--tag-*` value. Bare (`bachata,90s`): plain tag names. Keyed (`genre=bachata,sals`):
+/// One `--tag-*` value. Bare (`mood:calm,live`): plain tag names. Keyed (`lang=spanish,french`):
 /// the tags `key:value`, for each of the comma-separated keys.
 #[derive(Clone, Debug)]
 struct TagCond {
@@ -606,7 +606,7 @@ fn parse_tag_cond(text: &str) -> Result<TagCond, String> {
         None => (Vec::new(), list(text), false),
     };
     if values.is_empty() {
-        return Err("expected tags, like `bachata,zouk` or `genre=bachata,sals`".into());
+        return Err("expected tags, like `mood:calm,live` or `lang=spanish,french`".into());
     }
     Ok(TagCond {
         keys,
