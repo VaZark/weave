@@ -1,6 +1,6 @@
 # Weave
 
-**Rust · SQLite · GPUI**
+**Rust · SQLite · iced**
 
 ## Why
 
@@ -15,7 +15,7 @@ Two things come with the track and need no tagging: the genre, which import read
 1. Play local music without accounts or network access. Everything runs on your own machines: no cloud accounts and no third-party streaming services (no Spotify, no Jellyfin).
 2. Organise on your own terms with tags you invent (`mood:romantic`, `lang:spanish`, `energy:high`, any key and any value, nested as deep as you like), together with the genre and the track's BPM, and show the shape of your own library: tracks, the artists and albums they belong to, and how those relate. Tags go on all of them.
 3. Create dynamic playlists from structured filters over those tags, such as romantic Spanish tracks under 100 BPM.
-4. Expose the same features through a CLI and as an embeddable library that other players (GUI frontends are separate projects) embed.
+4. Expose the same features through a CLI and as an embeddable library that other players (GUI frontends are separate projects, such as the iced one designed in [docs/ui](docs/ui/README.md)) embed.
 5. Control and watch one instance from another over your own network. A phone can be a thin client of the engine running on your desktop (see the queue, play, pause, skip, add tracks), even though the two libraries hold different music. There are two modes only: everything local, or a thin client of another instance.
 
 ## Features and CLI
@@ -342,6 +342,8 @@ weave/
 ├── apps/
 │   └── cli/            # weave-player: a frontend over the `weave` library only
 └── docs/
+    ├── adr/
+    ├── ui/             # design of the iced-libadwaita GUI frontend
     ├── goals.md
     ├── agents.md
     └── credits.md

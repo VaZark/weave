@@ -42,7 +42,7 @@ Build an open-source, local-first music management engine used by a CLI and, as 
 - Test the remote surface against in-process instances; tests must not need a second device or a real network.
 - Document new capability contracts and version compatibility; model `supported`, `authorized`, and `available` separately.
 - Keep the library and queue usable with no playback host running; avoid a hosted account or cloud database for the MVP.
-- Use clear terminology: `instance`, `thin client`, `source`, `tag`, `filter`, `smart playlist` (dynamic), `manual playlist`, `queue` and `session`.
+- Use clear terminology: `instance`, `thin client`, `source`, `tag`, `filter`, `smart playlist` (dynamic), `manual playlist`, `queue` and `session`. A `jam` (the GUI's dynamic mode) is a shuffled, filter-driven queue, not the persisted `session`.
 
 ## Definition of done
 

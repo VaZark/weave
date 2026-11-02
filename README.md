@@ -47,6 +47,7 @@ cargo run -p weave-player -- import ~/Music   # your own music; files are only r
 - [CONTRIBUTING.md](CONTRIBUTING.md) covers building, running and testing.
 - [agents.md](agents.md) lists the invariants every change must respect.
 - [docs/adr](docs/adr) records the decisions and why they were made.
+- [docs/ui](docs/ui/README.md) is the design of the GUI frontend (iced and iced-libadwaita).
 - [credits.md](credits.md) credits the projects Weave learned from.
 
 Weave is pre-0.1: the API and the library file format change without notice, so delete and re-import after an update.
