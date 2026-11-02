@@ -46,6 +46,14 @@ pub struct EntityRef {
     pub name: String,
 }
 
+/// A dynamic playlist that draws on another playlist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dependent {
+    pub playlist: EntityRef,
+    /// It has no other source, so without this one it would draw on the whole library.
+    pub only_source: bool,
+}
+
 /// A name and how many times it occurs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Count {

@@ -8,6 +8,7 @@ macro_rules! outln {
     }};
 }
 
+mod ask;
 mod dedup;
 #[cfg(debug_assertions)]
 mod dev;
@@ -411,6 +412,13 @@ enum PlaylistCmd {
         #[command(flatten)]
         filter: FilterArgs,
     },
+    /// Delete a playlist, after you type its name to confirm. Playlists that draw on it lose it as a source.
+    Delete {
+        name: String,
+        /// Skip the question (for scripts): delete it, and remove it from the playlists that draw on it.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Append tracks to a manual playlist.
     Add {
         name: String,
@@ -718,6 +726,32 @@ fn edit_tags(
             )
         },
     )
+}
+
+/// Ask the user to type the playlist's name before deleting it. Without a terminal there is
+/// nobody to ask, so it is refused with a pointer to `--yes`.
+fn confirm_delete(message: &str, name: &str, json: bool) -> Result<(), Failure> {
+    use std::io::IsTerminal;
+    let interactive = !json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if !interactive {
+        return Err(Error::InvalidInput(format!(
+            "{message} There is no terminal to ask on; pass --yes to delete it"
+        ))
+        .into());
+    }
+    let confirmed = ask::confirm_by_name(
+        message,
+        name,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout(),
+    )
+    .map_err(|e| Error::InvalidInput(e.to_string()))?;
+    if !confirmed {
+        return Err(
+            Error::InvalidInput("the name did not match; nothing was deleted".into()).into(),
+        );
+    }
+    Ok(())
 }
 
 /// Ask about artists, albums and tracks that look alike: those an import just brought (since
@@ -1101,6 +1135,31 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
             let p = lib.update_playlist(&name, description.as_deref(), filter.into())?;
             print_playlist(json, show_ids, &p)?;
+        }
+        Cmd::Playlist(PlaylistCmd::Delete { name, yes }) => {
+            let playlist = lib.playlist(&name)?;
+            let dependents = lib.playlist_dependents(&name)?;
+            if !yes {
+                let (_, found) = lib.playlist_tracks(&name, Page::numbered(1, 1))?;
+                let message = ask::delete_message(&playlist, found.total, &dependents);
+                confirm_delete(&message, &playlist.name, json)?;
+            }
+            let removed_from = lib.delete_playlist(&name, !dependents.is_empty())?;
+            out(
+                json,
+                &serde_json::json!({
+                    "deleted": playlist.id,
+                    "removed_from": removed_from.iter().map(|p| &p.id).collect::<Vec<_>>(),
+                }),
+                || {
+                    outln!("deleted playlist {}", playlist.name);
+                    if !removed_from.is_empty() {
+                        let names: Vec<&str> =
+                            removed_from.iter().map(|p| p.name.as_str()).collect();
+                        outln!("removed it from: {}", names.join(", "));
+                    }
+                },
+            )?;
         }
         Cmd::Playlist(PlaylistCmd::Show { name, page }) => {
             let (_, result) = lib.playlist_tracks(&name, page.page())?;
@@ -1581,6 +1640,23 @@ mod arg_tests {
             .is_err(),
             "clear or replace, not both"
         );
+    }
+
+    #[test]
+    fn deleting_a_playlist_takes_a_name_and_an_optional_yes() {
+        let Cmd::Playlist(PlaylistCmd::Delete { name, yes }) =
+            parse(&["playlist", "delete", "mix"]).unwrap().command
+        else {
+            panic!("not a delete")
+        };
+        assert_eq!((name.as_str(), yes), ("mix", false));
+        assert!(matches!(
+            parse(&["playlist", "delete", "mix", "--yes"])
+                .unwrap()
+                .command,
+            Cmd::Playlist(PlaylistCmd::Delete { yes: true, .. })
+        ));
+        assert!(parse(&["playlist", "delete"]).is_err());
     }
 
     #[test]

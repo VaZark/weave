@@ -2,8 +2,8 @@
 
 use rusqlite::{OptionalExtension, params, types::Value};
 use weave_core::{
-    Error, FilterSpec, Page, Playlist, PlaylistKind, Result, SearchResult, normalize_tag,
-    playlist_slug, slugify,
+    Dependent, EntityRef, Error, FilterSpec, Page, Playlist, PlaylistKind, Result, SearchResult,
+    normalize_tag, playlist_slug, slugify,
 };
 
 use crate::{Storage, db_err, query, unique_slug, window};
@@ -197,6 +197,62 @@ impl Storage {
             )
             .map_err(db_err)?;
         Ok(filter)
+    }
+
+    /// The dynamic playlists that draw on this playlist.
+    pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
+        let p = self.playlist(name)?;
+        Ok(self
+            .playlists()?
+            .into_iter()
+            .filter(|q| q.kind == PlaylistKind::Dynamic && q.filter.sources.contains(&p.id))
+            .map(|q| Dependent {
+                only_source: q.filter.sources.len() == 1,
+                playlist: EntityRef {
+                    id: q.id,
+                    name: q.name,
+                },
+            })
+            .collect())
+    }
+
+    /// Delete a playlist (its tracks and tags with it). If other playlists draw on it this is
+    /// refused unless `detach` says to remove it from their sources; returns those playlists.
+    pub fn delete_playlist(&mut self, name: &str, detach: bool) -> Result<Vec<EntityRef>> {
+        let p = self.playlist(name)?;
+        let dependents = self.playlist_dependents(name)?;
+        if !dependents.is_empty() && !detach {
+            let names: Vec<String> = dependents
+                .iter()
+                .map(|d| format!("\"{}\"", d.playlist.name))
+                .collect();
+            return Err(Error::InvalidInput(format!(
+                "{} draw(s) on \"{}\"; deleting it means removing it from their sources",
+                names.join(", "),
+                p.name
+            )));
+        }
+        // Read what is needed before the transaction borrows the connection.
+        let mut changes = Vec::new();
+        for d in dependents {
+            let mut filter = self.playlist(&d.playlist.id)?.filter;
+            filter.sources.retain(|s| s != &p.id);
+            changes.push((d.playlist, spec_json(&filter)?));
+        }
+        let mut detached = Vec::new();
+        let tx = self.conn.transaction().map_err(db_err)?;
+        for (playlist, json) in changes {
+            tx.execute(
+                "UPDATE playlists SET filter_spec = ?1 WHERE id = ?2",
+                params![json, playlist.id],
+            )
+            .map_err(db_err)?;
+            detached.push(playlist);
+        }
+        tx.execute("DELETE FROM playlists WHERE id = ?1", [&p.id])
+            .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(detached)
     }
 
     /// The sources of a filter as playlist IDs. Each must exist, and none may be `owner` or lead

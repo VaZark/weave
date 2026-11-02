@@ -13,6 +13,7 @@ A dynamic playlist is a query over the whole library. Often the real intent is n
 - **A manual source** limits the candidates to its tracks, so the filter runs over a small, hand-picked set.
 - **A dynamic source** contributes what it matches right now, evaluated live, including its own sources. A dynamic source with a limit contributes exactly the tracks its sort and limit keep (up to 500), because a "top 15" is not the same as everything that matches its rules.
 - **Saved playlists keep their sources as playlist IDs.** Sources must exist when saved, and a playlist cannot draw on itself, directly or through others; an update that would make a loop is rejected. Nesting is limited to eight levels.
+- Deleting a playlist that others draw on removes it from their sources, only after the user confirms.
 - `search` and `play random` take `--from` too. `playlist update --from` replaces the sources, and `--clear-sources` removes them.
 - Manual playlists stay explicit lists with no filters and no sources, so the two models are not mixed: a dynamic playlist is still a query, and it uses a manual one only as a set of tracks.
 
@@ -26,4 +27,4 @@ A dynamic playlist is a query over the whole library. Often the real intent is n
 
 - A dynamic playlist's membership can change when a source it draws on changes, including a manual one that is edited.
 - A source with a limit above 500 cannot be drawn on, since its tracks are bound one by one into the query.
-- There is no playlist delete yet; once there is, deleting a playlist that others draw on needs a rule (refuse, or detach).
+- Deleting a playlist is guarded. The engine refuses to delete one that others draw on unless the caller says to remove it from their sources. The CLI always asks first, whether or not anything draws on it, and the user types the playlist's exact name to confirm, like deleting a repository; `--yes` skips the question for scripts. The question lists the playlists that lose a source, and warns about those left with none, since a playlist with no source draws on the whole library.

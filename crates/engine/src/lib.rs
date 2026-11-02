@@ -7,9 +7,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_core::{
-    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, EntityKind,
-    EntityRef, Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind, Result, Rng,
-    ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
+    AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, Dependent,
+    EntityKind, EntityRef, Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind,
+    Result, Rng, ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
 };
 use weave_local::LocalFiles;
 use weave_storage::Storage;
@@ -332,6 +332,18 @@ impl Library {
             .storage
             .update_playlist(&p.id, p.description.as_deref(), &merged)?;
         Ok(p)
+    }
+
+    /// The dynamic playlists that draw on this playlist.
+    pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
+        self.storage.playlist_dependents(name)
+    }
+
+    /// Delete a playlist. Refused while other playlists draw on it unless `detach` is true,
+    /// which removes it from their sources (a playlist left with none draws on the whole
+    /// library). Returns the playlists it was removed from.
+    pub fn delete_playlist(&mut self, name: &str, detach: bool) -> Result<Vec<EntityRef>> {
+        self.storage.delete_playlist(name, detach)
     }
 
     /// Make a dynamic playlist draw on the whole library again.

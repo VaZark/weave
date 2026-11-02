@@ -276,3 +276,105 @@ fn an_ad_hoc_search_can_draw_on_playlists_by_name_and_a_deep_chain_is_refused() 
         .to_string();
     assert!(msg.contains("levels deep"), "{msg}");
 }
+
+#[test]
+fn deleting_a_playlist_others_draw_on_is_refused_until_it_may_detach() {
+    let mut st = fixture();
+    manual(&mut st, "Road trip", &["A", "B", "E"]);
+    st.add_tags_to(weave_core::EntityKind::Playlist, "road-trip", &s(&["trip"]))
+        .unwrap();
+    st.create_playlist("Spanish", None, &from_and(&["road trip"], &["lang:es"]))
+        .unwrap();
+    st.create_manual_playlist("Other", None).unwrap();
+    st.create_playlist("Either", None, &from(&["road trip", "other"]))
+        .unwrap();
+
+    let deps = st.playlist_dependents("road-trip").unwrap();
+    let summary: Vec<_> = deps
+        .iter()
+        .map(|d| (d.playlist.id.as_str(), d.only_source))
+        .collect();
+    assert_eq!(summary, [("either", false), ("spanish", true)]);
+
+    let msg = st
+        .delete_playlist("Road trip", false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        msg.contains("\"Spanish\"") && msg.contains("\"Either\""),
+        "{msg}"
+    );
+    assert!(
+        st.playlist("road-trip").is_ok(),
+        "a refused delete changes nothing"
+    );
+    assert_eq!(
+        st.playlist("spanish").unwrap().filter.sources,
+        ["road-trip"]
+    );
+
+    // with permission: it goes, its tracks and tags with it, and the sources are cleaned up
+    let detached = st.delete_playlist("Road trip", true).unwrap();
+    assert_eq!(
+        detached.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+        ["either", "spanish"]
+    );
+    assert!(st.playlist("road-trip").is_err());
+    assert_eq!(st.playlist("either").unwrap().filter.sources, ["other"]);
+    assert!(st.playlist("spanish").unwrap().filter.sources.is_empty());
+    // a playlist left with no source draws on the whole library, here its own rules only
+    assert_eq!(of(&st, "spanish"), ["A", "C", "E"]);
+    let leftover: i64 = st
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 'road-trip'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftover, 0);
+    // the name is free again
+    st.create_manual_playlist("Road trip", None).unwrap();
+}
+
+#[test]
+fn deleting_a_playlist_nobody_draws_on_needs_no_permission() {
+    let mut st = fixture();
+    manual(&mut st, "Picks", &["A"]);
+    st.create_playlist("Mine", None, &from(&["picks"])).unwrap();
+    assert!(st.playlist_dependents("mine").unwrap().is_empty());
+    assert!(st.delete_playlist("Mine", false).unwrap().is_empty());
+    assert!(st.playlist("mine").is_err());
+    assert!(st.playlist("picks").is_ok(), "the source is untouched");
+    assert!(matches!(
+        st.delete_playlist("nope", false),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn a_chain_keeps_working_when_its_middle_is_deleted() {
+    let mut st = fixture();
+    manual(&mut st, "Base", &["A", "B", "C"]);
+    st.create_playlist("Middle", None, &from(&["base"]))
+        .unwrap();
+    st.create_playlist("Top", None, &from_and(&["middle"], &["lang:es"]))
+        .unwrap();
+    assert_eq!(of(&st, "top"), ["A", "C"]);
+    st.delete_playlist("middle", true).unwrap();
+    assert!(st.playlist("top").unwrap().filter.sources.is_empty());
+    assert_eq!(
+        of(&st, "top"),
+        ["A", "C", "E"],
+        "now it uses the whole library"
+    );
+    assert!(st.playlist("base").is_ok());
+}
+
+fn from_and(names: &[&str], tags: &[&str]) -> FilterSpec {
+    FilterSpec {
+        sources: s(names),
+        tag_all: s(tags),
+        ..Default::default()
+    }
+}
