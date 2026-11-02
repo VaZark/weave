@@ -20,8 +20,8 @@ use std::process::ExitCode;
 use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use weave::core::{
-    EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField, parse_duration,
-    parse_span,
+    ChildPolicy, EndOfQueue, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort, SortField,
+    TagClause, TagOp, TagRange, parse_duration, parse_span,
 };
 use weave::{Library, Player, SessionView};
 
@@ -60,6 +60,36 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum TagCmd {
+    /// Create a tag, like `genre:bachata` or `practice`, optionally under a parent.
+    Create {
+        name: String,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// List tags with their parents and track counts.
+    List,
+    /// Set a tag's parent, or clear it. Assignments do not change, only what the parent matches.
+    Parent {
+        name: String,
+        #[arg(conflicts_with = "clear", required_unless_present = "clear")]
+        parent: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Delete a tag and its assignments; say what happens to its children.
+    Delete {
+        name: String,
+        /// Children become top-level tags.
+        #[arg(long, group = "children")]
+        detach_children: bool,
+        /// Children and their descendants are deleted too.
+        #[arg(long, group = "children")]
+        delete_children: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Index audio files without modifying them.
     Import { path: PathBuf },
@@ -91,6 +121,9 @@ enum Cmd {
     },
     /// Show a track's tags.
     Tags { track_id: String },
+    /// Manage the tag vocabulary and hierarchy.
+    #[command(subcommand)]
+    Tag(TagCmd),
     /// Mark tracks as favorites.
     Favorite {
         #[arg(required = true)]
@@ -381,31 +414,29 @@ impl ResultArgs {
 
 #[derive(Args, Default)]
 struct FilterArgs {
-    /// Require every tag.
-    #[arg(long, value_delimiter = ',')]
-    tag_all: Vec<String>,
-    /// Require at least one tag.
-    #[arg(long, value_delimiter = ',')]
-    tag_any: Vec<String>,
-    /// Exclude tracks with any of these tags.
-    #[arg(long, value_delimiter = ',')]
-    tag_none: Vec<String>,
-    #[arg(long)]
-    bpm_min: Option<f64>,
-    #[arg(long)]
-    bpm_max: Option<f64>,
+    /// Require every tag: `bachata,90s`, or by key `genre=bachata,sensual`. Repeatable.
+    /// Matches child tags too; `genre==bachata` (or `=genre:bachata`) matches that tag only.
+    #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
+    tag_all: Vec<TagCond>,
+    /// Require at least one tag: `bachata,zouk`, `genre=bachata,sals`, `genre,style=salsa`.
+    #[arg(long, value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
+    tag_any: Vec<TagCond>,
+    /// Exclude tracks with any of these tags: `live`, `period=80s,70s`.
+    #[arg(long, alias = "tag-none", value_name = "[KEYS=]TAGS", value_parser = parse_tag_cond)]
+    tag_exclude: Vec<TagCond>,
+    /// Numeric range on a keyed tag, ends optional: `bpm=90..120`, `bpm=100..`, `year=..1999`.
+    #[arg(long, value_name = "KEY=MIN..MAX", value_parser = parse_tag_range)]
+    tag_range: Vec<TagRange>,
+    /// Case-insensitive part of the title. Genre, year and BPM are tags:
+    /// `--tag-any genre=bachata`, `--tag-range year=1990..1999`.
     #[arg(long)]
     title: Option<String>,
+    /// Case-insensitive part of the artist.
     #[arg(long)]
     artist: Option<String>,
+    /// Case-insensitive part of the album.
     #[arg(long)]
     album: Option<String>,
-    #[arg(long)]
-    genre: Option<String>,
-    #[arg(long)]
-    year_min: Option<i32>,
-    #[arg(long)]
-    year_max: Option<i32>,
     /// Only favorites.
     #[arg(long, conflicts_with = "not_favorite")]
     favorite: bool,
@@ -422,20 +453,95 @@ struct FilterArgs {
     result: ResultArgs,
 }
 
+/// One `--tag-*` value. Bare (`bachata,90s`): plain tag names. Keyed (`genre=bachata,sals`):
+/// the tags `key:value`, for each of the comma-separated keys.
+#[derive(Clone, Debug)]
+struct TagCond {
+    keys: Vec<String>,
+    values: Vec<String>,
+    exact: bool,
+}
+
+fn parse_tag_cond(text: &str) -> Result<TagCond, String> {
+    let list = |s: &str| -> Vec<String> {
+        s.split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let (keys, values, exact) = match text.split_once('=').filter(|(k, _)| !k.trim().is_empty()) {
+        Some((k, v)) => {
+            let (v, exact) = v.strip_prefix('=').map_or((v, false), |v| (v, true));
+            (list(k), list(v), exact)
+        }
+        None => (Vec::new(), list(text), false),
+    };
+    if values.is_empty() {
+        return Err("expected tags, like `bachata,zouk` or `genre=bachata,sals`".into());
+    }
+    Ok(TagCond {
+        keys,
+        values,
+        exact,
+    })
+}
+
+fn parse_tag_range(text: &str) -> Result<TagRange, String> {
+    let bad = || "expected KEY=MIN..MAX, like `bpm=90..120`, `bpm=100..` or `year=..1999`";
+    let (key, range) = text.split_once('=').ok_or_else(bad)?;
+    let (min, max) = range.split_once("..").ok_or_else(bad)?;
+    let bound = |s: &str| -> Result<Option<f64>, String> {
+        match s.trim() {
+            "" => Ok(None),
+            n => n
+                .parse()
+                .map(Some)
+                .map_err(|_| format!("\"{n}\" is not a number")),
+        }
+    };
+    Ok(TagRange {
+        key: key.trim().to_string(),
+        min: bound(min)?,
+        max: bound(max)?,
+    })
+}
+
+/// Bare conditions fill the flat tag lists; keyed ones become clauses.
+fn split_conds(op: TagOp, conds: Vec<TagCond>) -> (Vec<String>, Vec<TagClause>) {
+    let mut flat = Vec::new();
+    let mut clauses = Vec::new();
+    for c in conds {
+        if c.keys.is_empty() {
+            flat.extend(c.values);
+        } else {
+            clauses.push(TagClause {
+                op,
+                keys: c.keys,
+                values: c.values,
+                exact: c.exact,
+            });
+        }
+    }
+    (flat, clauses)
+}
+
 impl From<FilterArgs> for FilterSpec {
     fn from(a: FilterArgs) -> Self {
+        let (tag_all, mut tag_clauses) = split_conds(TagOp::All, a.tag_all);
+        let (tag_any, any) = split_conds(TagOp::Any, a.tag_any);
+        let (tag_none, none) = split_conds(TagOp::Exclude, a.tag_exclude);
+        tag_clauses.extend(any);
+        tag_clauses.extend(none);
         FilterSpec {
-            tag_all: a.tag_all,
-            tag_any: a.tag_any,
-            tag_none: a.tag_none,
-            bpm_min: a.bpm_min,
-            bpm_max: a.bpm_max,
+            tag_all,
+            tag_any,
+            tag_none,
+            tag_clauses,
+            tag_range: a.tag_range,
             title: a.title,
             artist: a.artist,
             album: a.album,
-            genre: a.genre,
-            year_min: a.year_min,
-            year_max: a.year_max,
             favorite: match (a.favorite, a.not_favorite) {
                 (true, _) => Some(true),
                 (_, true) => Some(false),
@@ -573,6 +679,58 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Cmd::Tags { track_id } => {
             let tags = lib.tags(&track_id)?;
             out(json, &tags, || tags.iter().for_each(|t| outln!("{t}")))?;
+        }
+        Cmd::Tag(TagCmd::Create { name, parent }) => {
+            let tag = lib.create_tag(&name, parent.as_deref())?;
+            out(json, &tag, || outln!("created tag {}", tag.name))?;
+        }
+        Cmd::Tag(TagCmd::List) => {
+            let tags = lib.list_tags()?;
+            out(json, &tags, || {
+                let rows = tags
+                    .iter()
+                    .map(|t| {
+                        vec![
+                            t.name.clone(),
+                            t.parent.clone().unwrap_or_else(|| "-".into()),
+                            t.tracks.to_string(),
+                        ]
+                    })
+                    .collect();
+                print_columns(&["TAG", "PARENT", "TRACKS"], rows, &[], None);
+            })?;
+        }
+        Cmd::Tag(TagCmd::Parent {
+            name,
+            parent,
+            clear: _,
+        }) => {
+            let tag = lib.set_tag_parent(&name, parent.as_deref())?;
+            out(json, &tag, || match &tag.parent {
+                Some(p) => outln!("{} is now under {p}", tag.name),
+                None => outln!("{} is now a top-level tag", tag.name),
+            })?;
+        }
+        Cmd::Tag(TagCmd::Delete {
+            name,
+            detach_children,
+            delete_children,
+        }) => {
+            let policy = match (detach_children, delete_children) {
+                (true, _) => ChildPolicy::Detach,
+                (_, true) => ChildPolicy::Delete,
+                _ => {
+                    return Err(Error::InvalidInput(
+                        "say what happens to the children: --detach-children or --delete-children"
+                            .into(),
+                    )
+                    .into());
+                }
+            };
+            let n = lib.delete_tag(&name, policy)?;
+            out(json, &serde_json::json!({ "deleted": n }), || {
+                outln!("deleted {n} tag(s)")
+            })?;
         }
         Cmd::Favorite { track_ids } => {
             let n = lib.set_favorite(&track_ids, true)?;
@@ -912,8 +1070,8 @@ mod arg_tests {
             "random",
             "--tag-all",
             "bachata,90s",
-            "--bpm-min",
-            "90",
+            "--tag-range",
+            "bpm=90..",
             "--limit",
             "20",
         ])
@@ -924,7 +1082,7 @@ mod arg_tests {
         };
         let spec = FilterSpec::from(filter);
         assert_eq!(
-            (spec.tag_all, spec.bpm_min, spec.limit),
+            (spec.tag_all, spec.tag_range[0].min, spec.limit),
             (vec!["bachata".into(), "90s".into()], Some(90.0), Some(20))
         );
         assert!(
@@ -1013,6 +1171,52 @@ mod arg_tests {
         for bad in ["", "abc", "1:", ":30", "1:2:3:4", "12", "+", "1.5s"] {
             assert!(parse_position(bad, secs(0)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn keyed_tag_filters_become_clauses_and_bare_ones_stay_flat() {
+        let Cmd::Search { filter, .. } = parse(&[
+            "search",
+            "--tag-any",
+            "genre=bachata,sals",
+            "--tag-all",
+            "practice,90s",
+            "--tag-all",
+            "genre,style==salsa",
+            "--tag-none",
+            "period=80s",
+            "--tag-range",
+            "bpm=90..120",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not a search")
+        };
+        let f = FilterSpec::from(filter);
+        assert_eq!(f.tag_all, ["practice", "90s"]);
+        assert_eq!(f.tag_clauses.len(), 3);
+        let c = &f.tag_clauses[0];
+        assert_eq!((c.op, c.exact, c.keys.len()), (TagOp::All, true, 2));
+        assert_eq!(f.tag_clauses[1].values, ["bachata", "sals"]);
+        assert_eq!(f.tag_clauses[2].op, TagOp::Exclude);
+        assert_eq!(
+            (f.tag_range[0].min, f.tag_range[0].max),
+            (Some(90.0), Some(120.0))
+        );
+        assert_eq!(
+            output::describe(&f),
+            "--tag-all practice,90s --tag-all genre,style==salsa --tag-any genre=bachata,sals \
+             --tag-exclude period=80s --tag-range bpm=90..120"
+        );
+        assert!(parse(&["search", "--tag-any", "genre="]).is_err());
+        assert!(parse(&["search", "--tag-range", "bpm=fast"]).is_err());
+        assert!(parse(&["search", "--tag-range", "bpm"]).is_err());
+        let Cmd::Search { filter, .. } = parse(&["search", "--tag-none", "live"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!(FilterSpec::from(filter).tag_none, ["live"]);
     }
 
     #[test]

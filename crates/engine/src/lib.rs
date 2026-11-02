@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_core::{
-    Backend, CapabilityDescriptor, Error, FilterSpec, Page, Playlist, PlaylistKind, Result, Rng,
-    ScannedTrack, SearchResult, Track,
+    Backend, CapabilityDescriptor, ChildPolicy, Error, FilterSpec, Page, Playlist, PlaylistKind,
+    Result, Rng, ScannedTrack, SearchResult, Tag, Track,
 };
 use weave_local::LocalBackend;
 use weave_storage::Storage;
@@ -96,8 +96,32 @@ impl Library {
         self.storage.remove_tags(track_id, tags)
     }
 
+    /// A track's tags.
     pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
         self.storage.tags(track_id)
+    }
+
+    /// Create a tag, optionally under an existing parent.
+    pub fn create_tag(&mut self, name: &str, parent: Option<&str>) -> Result<Tag> {
+        self.storage.create_tag(name, parent)
+    }
+
+    pub fn tag(&self, name: &str) -> Result<Tag> {
+        self.storage.tag(name)
+    }
+
+    pub fn list_tags(&self) -> Result<Vec<Tag>> {
+        self.storage.list_tags()
+    }
+
+    /// Set or clear (`None`) a tag's parent; self-parenting and cycles are rejected.
+    pub fn set_tag_parent(&mut self, name: &str, parent: Option<&str>) -> Result<Tag> {
+        self.storage.set_tag_parent(name, parent)
+    }
+
+    /// Delete a tag, detaching or deleting its children. Returns how many tags were deleted.
+    pub fn delete_tag(&mut self, name: &str, children: ChildPolicy) -> Result<usize> {
+        self.storage.delete_tag(name, children)
     }
 
     // --- favorites and ratings -------------------------------------------
@@ -229,13 +253,13 @@ mod tests {
                 "p",
                 None,
                 FilterSpec {
-                    bpm_min: Some(90.0),
+                    rating_min: Some(4),
                     ..Default::default()
                 },
             )
             .unwrap();
         assert_eq!(p.filter.tag_all, ["bachata"]);
-        assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, Some(90.0));
+        assert_eq!(lib.playlist("P").unwrap().filter.rating_min, Some(4));
     }
 
     #[test]
@@ -245,7 +269,7 @@ mod tests {
             "P",
             None,
             FilterSpec {
-                bpm_max: Some(100.0),
+                rating_max: Some(2),
                 ..Default::default()
             },
         )
@@ -254,12 +278,12 @@ mod tests {
             "P",
             None,
             FilterSpec {
-                bpm_min: Some(120.0),
+                rating_min: Some(4),
                 ..Default::default()
             },
         );
         assert!(matches!(r, Err(Error::InvalidFilter(_))));
-        assert_eq!(lib.playlist("P").unwrap().filter.bpm_min, None);
+        assert_eq!(lib.playlist("P").unwrap().filter.rating_min, None);
     }
 
     #[test]
@@ -333,7 +357,7 @@ mod tests {
             "mix",
             None,
             FilterSpec {
-                bpm_min: Some(90.0),
+                rating_min: Some(4),
                 ..Default::default()
             },
         );

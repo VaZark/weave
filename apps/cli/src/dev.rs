@@ -1,7 +1,9 @@
 //! Debug-build-only helpers. Compiled out of release builds.
 
 use weave::Library;
-use weave::core::{FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, track_slug};
+use weave::core::{
+    FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagRange, track_slug,
+};
 
 /// Not a registered backend: seeded tracks have no files behind them.
 const SEED_BACKEND: &str = "seed";
@@ -177,7 +179,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             FilterSpec {
                 tag_all: strs(&["bachata", "90s"]),
                 tag_none: strs(&["live", "remix"]),
-                bpm_min: Some(90.0),
+                tag_range: vec![TagRange::new("bpm", Some(90.0), None)],
                 ..Default::default()
             },
         ),
@@ -186,8 +188,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Fast and fun",
             FilterSpec {
                 tag_any: strs(&["party", "electronic"]),
-                bpm_min: Some(115.0),
-                bpm_max: Some(140.0),
+                tag_range: vec![TagRange::new("bpm", Some(115.0), Some(140.0))],
                 sort: Some(Sort {
                     field: SortField::Bpm,
                     descending: true,
@@ -199,7 +200,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
             "Old classics",
             "Before 1970",
             FilterSpec {
-                year_max: Some(1969),
+                tag_range: vec![TagRange::new("year", None, Some(1969.0))],
                 ..Default::default()
             },
         ),

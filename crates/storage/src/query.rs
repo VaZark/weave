@@ -1,7 +1,7 @@
 //! Translates a `FilterSpec` into parameterized SQL. No user text is interpolated.
 
 use rusqlite::types::Value;
-use weave_core::{FilterSpec, Sort, SortField, normalize_tag};
+use weave_core::{FilterSpec, Sort, SortField, TagOp, parse_tag_ref};
 
 pub const FROM: &str = " FROM track_metadata m \
      JOIN tracks t ON t.id = m.track_id \
@@ -35,49 +35,106 @@ pub fn order_by(sort: Option<Sort>) -> String {
     format!(" ORDER BY {expr} IS NULL, {expr} {dir}, {DEFAULT_ORDER}")
 }
 
-fn placeholders(n: usize) -> String {
-    vec!["?"; n].join(",")
+/// Present on the track: the tag itself or any descendant (one `?`: the normalized name).
+const HAS: &str =
+    "EXISTS (SELECT 1 FROM track_tags tt WHERE tt.track_id = m.track_id AND tt.tag_id IN (
+         WITH RECURSIVE d(id) AS (
+             SELECT id FROM tags WHERE normalized_name = ?
+             UNION
+             SELECT c.id FROM tags c JOIN d ON c.parent_id = d.id)
+         SELECT id FROM d))";
+
+/// Present as an explicit assignment of exactly this tag (one `?`).
+const HAS_EXACT: &str = "EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
+         WHERE tt.track_id = m.track_id AND g.normalized_name = ?)";
+
+/// `(a OR b …)` over alternatives, binding one name per alternative.
+fn any_of(names: &[String], exact: bool, args: &mut Vec<Value>) -> String {
+    let has = if exact { HAS_EXACT } else { HAS };
+    args.extend(names.iter().map(|n| Value::Text(n.clone())));
+    format!("({})", vec![has; names.len()].join(" OR "))
 }
 
-fn tag_keys(tags: &[String]) -> Vec<Value> {
-    tags.iter().map(|t| Value::Text(normalize_tag(t))).collect()
+fn tag_condition(
+    op: TagOp,
+    groups: &[Vec<String>],
+    exact: bool,
+    sql: &mut String,
+    args: &mut Vec<Value>,
+) {
+    match op {
+        // Every group must hold, each satisfied by any of its alternatives.
+        TagOp::All => {
+            for g in groups {
+                let c = any_of(g, exact, args);
+                *sql += &format!(" AND {c}");
+            }
+        }
+        TagOp::Any => {
+            let flat: Vec<String> = groups.iter().flatten().cloned().collect();
+            let c = any_of(&flat, exact, args);
+            *sql += &format!(" AND {c}");
+        }
+        TagOp::Exclude => {
+            let flat: Vec<String> = groups.iter().flatten().cloned().collect();
+            let c = any_of(&flat, exact, args);
+            *sql += &format!(" AND NOT {c}");
+        }
+    }
 }
-
-const TAGGED: &str = "SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-                      WHERE tt.track_id = m.track_id AND g.normalized_name IN";
 
 /// ` WHERE …` for `FROM`. Expects a normalized, validated filter.
 pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
     let mut sql = String::from(" WHERE 1=1");
     let mut args: Vec<Value> = Vec::new();
 
-    if !f.tag_all.is_empty() {
-        // Tags are deduplicated by normalize(), so the distinct count must equal the list length.
-        sql += &format!(
-            " AND (SELECT COUNT(DISTINCT g.normalized_name) FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-               WHERE tt.track_id = m.track_id AND g.normalized_name IN ({})) = ?",
-            placeholders(f.tag_all.len())
-        );
-        args.extend(tag_keys(&f.tag_all));
-        args.push(Value::Integer(f.tag_all.len() as i64));
+    // Flat lists: a leading `=` on an entry asks for an exact match.
+    for (op, list) in [
+        (TagOp::All, &f.tag_all),
+        (TagOp::Any, &f.tag_any),
+        (TagOp::Exclude, &f.tag_none),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
+        let refs: Vec<(bool, String)> = list.iter().map(|t| parse_tag_ref(t)).collect();
+        match op {
+            TagOp::All => {
+                for (exact, name) in refs {
+                    tag_condition(op, &[vec![name]], exact, &mut sql, &mut args);
+                }
+            }
+            _ => {
+                // Mixed exact/descendant entries OR together.
+                let parts: Vec<String> = refs
+                    .iter()
+                    .map(|(exact, name)| {
+                        args.push(Value::Text(name.clone()));
+                        (if *exact { HAS_EXACT } else { HAS }).to_string()
+                    })
+                    .collect();
+                let not = if op == TagOp::Exclude { "NOT " } else { "" };
+                sql += &format!(" AND {not}({})", parts.join(" OR "));
+            }
+        }
     }
-    if !f.tag_any.is_empty() {
-        sql += &format!(" AND EXISTS ({TAGGED} ({}))", placeholders(f.tag_any.len()));
-        args.extend(tag_keys(&f.tag_any));
+    for c in &f.tag_clauses {
+        tag_condition(c.op, &c.names(), c.exact, &mut sql, &mut args);
     }
-    if !f.tag_none.is_empty() {
-        sql += &format!(
-            " AND NOT EXISTS ({TAGGED} ({}))",
-            placeholders(f.tag_none.len())
-        );
-        args.extend(tag_keys(&f.tag_none));
+    for r in &f.tag_range {
+        sql += " AND EXISTS (SELECT 1 FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
+                   WHERE tt.track_id = m.track_id AND g.key = ?";
+        args.push(Value::Text(r.key.clone()));
+        for (op, v) in [(">=", r.min), ("<=", r.max)] {
+            if let Some(v) = v {
+                sql += &format!(" AND g.value_num {op} ?");
+                args.push(Value::Real(v));
+            }
+        }
+        sql += ")";
     }
-    // NULL compares as NULL, so unknown BPM/year/rating never matches a bound.
+    // NULL compares as NULL, so an unrated track never matches a bound.
     for (col, op, v) in [
-        ("m.bpm", ">=", f.bpm_min.map(Value::Real)),
-        ("m.bpm", "<=", f.bpm_max.map(Value::Real)),
-        ("m.year", ">=", f.year_min.map(|y| Value::Integer(y.into()))),
-        ("m.year", "<=", f.year_max.map(|y| Value::Integer(y.into()))),
         (
             "a.rating",
             ">=",
@@ -103,7 +160,6 @@ pub fn where_clause(f: &FilterSpec) -> (String, Vec<Value>) {
         ("title_norm", &f.title),
         ("artist_norm", &f.artist),
         ("album_norm", &f.album),
-        ("genre_norm", &f.genre),
     ] {
         if let Some(v) = val {
             sql += &format!(" AND instr(m.{col}, ?) > 0");

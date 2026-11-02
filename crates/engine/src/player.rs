@@ -1404,8 +1404,8 @@ mod tests {
         };
         assert!(matches!(lib.play_random(none), Err(Error::InvalidInput(_))));
         let bad = FilterSpec {
-            bpm_min: Some(9.0),
-            bpm_max: Some(1.0),
+            rating_min: Some(4),
+            rating_max: Some(2),
             ..Default::default()
         };
         assert!(matches!(lib.play_random(bad), Err(Error::InvalidFilter(_))));

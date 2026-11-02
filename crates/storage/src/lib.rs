@@ -6,6 +6,7 @@ mod migrations;
 mod playlists;
 mod query;
 mod session;
+mod tags;
 
 use std::path::Path;
 
@@ -14,7 +15,7 @@ use std::collections::HashMap;
 
 use weave_core::{
     Error, FilterSpec, Metadata, Page, Result, ScannedTrack, SearchResult, Track, TrackId,
-    normalize_tag, slugify, track_slug,
+    metadata_tags, slugify, track_slug,
 };
 
 fn db_err(e: rusqlite::Error) -> Error {
@@ -105,6 +106,9 @@ impl Storage {
             )
             .map_err(db_err)?;
             insert_metadata(&tx, &id, &t.metadata)?;
+            for name in metadata_tags(&t.metadata) {
+                tags::assign(&tx, &id, &name)?;
+            }
             tx.execute(
                 "INSERT INTO sources (id, track_id, backend_id, external_id) VALUES (?1, ?2, ?3, ?4)",
                 params![uuid::Uuid::new_v4().simple().to_string(), id, backend_id, t.external_id],
@@ -313,65 +317,6 @@ impl Storage {
             .optional()
             .map_err(db_err)
     }
-
-    /// Add tags (deduplicated, case-insensitive). Returns how many were newly applied.
-    pub fn add_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
-        let track_id = self.resolve_id(track_id)?;
-        let track_id = track_id.as_str();
-        let tx = self.conn.transaction().map_err(db_err)?;
-        let mut added = 0;
-        for name in names {
-            let display = name.trim();
-            let norm = normalize_tag(display);
-            if norm.is_empty() {
-                return Err(Error::InvalidInput("tag names cannot be empty".into()));
-            }
-            let tag_id = ensure_tag(&tx, display, &norm)?;
-            added += tx
-                .execute(
-                    "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
-                    params![track_id, tag_id],
-                )
-                .map_err(db_err)?;
-        }
-        tx.commit().map_err(db_err)?;
-        Ok(added)
-    }
-
-    /// Remove tag associations. Returns how many were removed.
-    pub fn remove_tags(&mut self, track_id: &str, names: &[String]) -> Result<usize> {
-        let track_id = self.resolve_id(track_id)?;
-        let track_id = track_id.as_str();
-        let tx = self.conn.transaction().map_err(db_err)?;
-        let mut removed = 0;
-        for name in names {
-            removed += tx
-                .execute(
-                    "DELETE FROM track_tags WHERE track_id = ?1 AND tag_id IN
-                       (SELECT id FROM tags WHERE normalized_name = ?2)",
-                    params![track_id, normalize_tag(name)],
-                )
-                .map_err(db_err)?;
-        }
-        tx.commit().map_err(db_err)?;
-        Ok(removed)
-    }
-
-    pub fn tags(&self, track_id: &str) -> Result<Vec<String>> {
-        let track_id = self.resolve_id(track_id)?;
-        let track_id = track_id.as_str();
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT g.name FROM track_tags tt JOIN tags g ON g.id = tt.tag_id
-                 WHERE tt.track_id = ?1 ORDER BY g.normalized_name",
-            )
-            .map_err(db_err)?;
-        stmt.query_map([track_id], |r| r.get(0))
-            .map_err(db_err)?
-            .collect::<std::result::Result<_, _>>()
-            .map_err(db_err)
-    }
 }
 
 /// `base`, or `base-2`, `base-3`… if taken.
@@ -431,20 +376,6 @@ fn insert_metadata(tx: &Transaction, id: &str, m: &Metadata) -> Result<()> {
     Ok(())
 }
 
-fn ensure_tag(tx: &Transaction, display: &str, norm: &str) -> Result<i64> {
-    tx.execute(
-        "INSERT OR IGNORE INTO tags (name, normalized_name) VALUES (?1, ?2)",
-        params![display, norm],
-    )
-    .map_err(db_err)?;
-    tx.query_row(
-        "SELECT id FROM tags WHERE normalized_name = ?1",
-        [norm],
-        |r| r.get(0),
-    )
-    .map_err(db_err)
-}
-
 /// Offset and size of the window to read, given the total and the requested page.
 fn window(total: usize, page: Page) -> (usize, usize) {
     if page.offset >= total {
@@ -459,3 +390,5 @@ fn window(total: usize, page: Page) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_tags;

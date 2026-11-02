@@ -13,6 +13,7 @@ mod playlist;
 mod queue;
 mod rng;
 mod slug;
+mod tag;
 mod track;
 
 pub use backend::{
@@ -20,7 +21,7 @@ pub use backend::{
 };
 pub use duration::{parse_duration, parse_span};
 pub use error::{Error, Result};
-pub use filter::{FilterSpec, Sort, SortField, normalize_tag};
+pub use filter::{FilterSpec, Sort, SortField, TagClause, TagOp, TagRange};
 pub use lyrics::{LyricLine, Lyrics};
 pub use playback::{Playback, SourceRef};
 pub use playlist::{Playlist, PlaylistKind};
@@ -30,4 +31,8 @@ pub use queue::{
 };
 pub use rng::Rng;
 pub use slug::{playlist_slug, slugify, track_slug};
-pub use track::{Metadata, Page, SearchResult, Tag, Track, TrackId};
+pub use tag::{
+    BPM, ChildPolicy, EXACT_PREFIX, GENRE, Tag, TagName, YEAR, is_numeric_key, metadata_tags,
+    normalize_tag, parse_tag_ref,
+};
+pub use track::{Metadata, Page, SearchResult, Track, TrackId};

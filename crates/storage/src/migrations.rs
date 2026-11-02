@@ -48,17 +48,26 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          UNIQUE (backend_id, external_id)
      );
      CREATE INDEX sources_track ON sources(track_id);
+     -- Tags: an optional key and a value (`genre:bachata`, `practice`), at most one parent.
+     -- Identity is independent of the parent; assignments are explicit and flat, and the tree
+     -- only widens queries. Cycles are rejected in code, in the same transaction as the change.
      CREATE TABLE tags (
          id              INTEGER PRIMARY KEY,
-         name            TEXT NOT NULL,
-         normalized_name TEXT NOT NULL UNIQUE
+         name            TEXT NOT NULL,            -- display spelling, `key:value`
+         normalized_name TEXT NOT NULL UNIQUE,     -- lookup identity
+         key             TEXT,                     -- lowercase; NULL for an unkeyed tag
+         value           TEXT NOT NULL,
+         value_num       REAL,                     -- the value as a number, when it is one
+         parent_id       INTEGER REFERENCES tags(id)
      );
+     CREATE INDEX tags_parent  ON tags(parent_id);
+     CREATE INDEX tags_key_num ON tags(key, value_num);
      CREATE TABLE track_tags (
          track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
          tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
          PRIMARY KEY (track_id, tag_id)
      );
-     CREATE INDEX track_tags_tag ON track_tags(tag_id);
+     CREATE INDEX track_tags_tag ON track_tags(tag_id, track_id);
      CREATE TABLE playlists (
          id              TEXT PRIMARY KEY,   -- slug, the public ID
          name            TEXT NOT NULL,

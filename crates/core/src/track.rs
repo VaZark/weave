@@ -34,17 +34,11 @@ pub struct Track {
     pub id: TrackId,
     #[serde(flatten)]
     pub metadata: Metadata,
-    /// Custom tags, in display spelling.
+    /// Tags in display spelling: those from imported metadata (`genre`, `year`, `bpm`) and the user's own.
     pub tags: Vec<String>,
     pub favorite: bool,
     /// 1 to 5 stars; `None` means unrated.
     pub rating: Option<u8>,
-}
-
-/// A user tag. `name` keeps the spelling it was first created with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Tag {
-    pub name: String,
 }
 
 /// Offset/limit window over an ordered result set.

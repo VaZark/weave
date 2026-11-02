@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 use weave::SessionView;
-use weave::core::{FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, Track};
+use weave::core::{
+    FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, TagName, TagOp, Track,
+};
 
 use crate::{Failure, PageArgs};
 
@@ -91,11 +93,22 @@ fn duration_cell(ms: Option<u64>) -> String {
     ms.map_or_else(dash, |ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))
 }
 
-fn tags_cell(t: &Track) -> String {
-    if t.tags.is_empty() {
+/// The tags not already shown in a column of their own (`hide` lists those keys).
+fn tags_cell(t: &Track, hide: &[&str]) -> String {
+    let shown: Vec<&str> = t
+        .tags
+        .iter()
+        .filter(|tag| {
+            TagName::parse_lossy(tag)
+                .key
+                .is_none_or(|k| !hide.contains(&k.as_str()))
+        })
+        .map(String::as_str)
+        .collect();
+    if shown.is_empty() {
         dash()
     } else {
-        t.tags.join(",")
+        shown.join(",")
     }
 }
 
@@ -122,7 +135,7 @@ fn print_table(tracks: &[Track], show_ids: bool, first_order: Option<usize>) {
                 duration_cell(m.duration_ms),
                 rating_cell(t),
                 favorite_cell(t),
-                tags_cell(t),
+                tags_cell(t, &["genre", "year", "bpm"]),
             ]
         })
         .collect();
@@ -250,17 +263,35 @@ pub fn describe(f: &FilterSpec) -> String {
     for (k, v) in [
         ("tag-all", &f.tag_all),
         ("tag-any", &f.tag_any),
-        ("tag-none", &f.tag_none),
+        ("tag-exclude", &f.tag_none),
     ] {
         if !v.is_empty() {
             parts.push(format!("--{k} {}", v.join(",")));
         }
     }
+    for c in &f.tag_clauses {
+        let flag = match c.op {
+            TagOp::All => "tag-all",
+            TagOp::Any => "tag-any",
+            TagOp::Exclude => "tag-exclude",
+        };
+        let eq = if c.exact { "==" } else { "=" };
+        parts.push(format!(
+            "--{flag} {}{eq}{}",
+            c.keys.join(","),
+            c.values.join(",")
+        ));
+    }
+    for r in &f.tag_range {
+        let end = |v: Option<f64>| v.map_or(String::new(), |v| v.to_string());
+        parts.push(format!(
+            "--tag-range {}={}..{}",
+            r.key,
+            end(r.min),
+            end(r.max)
+        ));
+    }
     let numbers = [
-        ("bpm-min", f.bpm_min.map(|v| v.to_string())),
-        ("bpm-max", f.bpm_max.map(|v| v.to_string())),
-        ("year-min", f.year_min.map(|v| v.to_string())),
-        ("year-max", f.year_max.map(|v| v.to_string())),
         ("rating-min", f.rating_min.map(|v| v.to_string())),
         ("rating-max", f.rating_max.map(|v| v.to_string())),
     ];
@@ -273,7 +304,6 @@ pub fn describe(f: &FilterSpec) -> String {
         ("title", &f.title),
         ("artist", &f.artist),
         ("album", &f.album),
-        ("genre", &f.genre),
     ] {
         if let Some(v) = v {
             parts.push(format!("--{k} {v:?}"));
@@ -441,7 +471,7 @@ pub fn print_queue(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Fa
                 m.album.clone().unwrap_or_else(dash),
                 m.bpm.map_or_else(dash, |b| format!("{b}")),
                 duration_cell(m.duration_ms),
-                tags_cell(t),
+                tags_cell(t, &["bpm"]),
             ]
         })
         .collect();

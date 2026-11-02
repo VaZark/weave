@@ -17,7 +17,8 @@ Build an open-source, local-first, source-neutral music management engine used b
 7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
 8. **Backend boundaries:** Plugins cannot directly mutate the canonical SQLite database. All changes pass engine validation, provenance and merge policies.
 9. **Compliant integration:** Verify current service terms and capabilities before implementing remote playback, lyrics overlays, content mixing or playlist export.
-10. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
+10. **Tags are for descriptive metadata and user-defined tags only:** Identifying data (title, artist, album, and source or path identities) is never a tag; it stays in structured columns and is filtered by dedicated text predicates. Playback state and user-protected annotations (favorite, rating) are not tags either. Do not map a new field to a tag unless it describes the track rather than identifies it.
+11. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
 
 ## Recommended implementation sequence
 
