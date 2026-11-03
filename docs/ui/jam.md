@@ -35,7 +35,7 @@ The filter page is one component with one state: tag tokens, genre and a BPM ran
 
 - **Token entry:** tags and filters become tokens inside the entry. Typing autocompletes from the user's own vocabulary; a BPM bound can be typed (`bpm<100`) or set on the range.
 - **Tag toggles:** the vocabulary as chips (the tag's icon on its colour, and its name) that switch on and off, with a find-as-you-type field above them. A chip also matches the tags under it. The live count shows a combination narrowing before it is committed. The vocabulary, icons and colours are managed in Settings → Tags.
-- **Tags elsewhere** (track lists, Now Playing) are shown as badges, the icon on the colour, with the name on hover instead of a label.
+- **Tags elsewhere:** Now Playing shows a track's tags as an icon on the tag's colour plus its value (a tag without an icon of its own gets the default of its key: genre, mood, language…). Track lists do not show tags; they are edited from a track's menu (**Edit tags and rating…**), and from an album's or artist's menu for all its tracks at once: add tags to every track, and for a tag already there, keep, delete or replace it where it matches.
 - **Detail pages** (playlist, artist, album) are not searches: a back chevron, the title, a space for a description, the facts, then a round play button over the tracks. A dynamic playlist has a settings menu whose Edit filter opens the filter page in a modal dialog that closes only with Cancel or Save.
 - **Live count:** the number of matching tracks, in the Start button and in the filter button's badge.
 - **Moving between hosts:** the jam sheet can open seeded with the current search filters, and the popover has a "Start jam with these" link that opens the sheet. Searching for romantic Spanish tracks and then playing them as a jam is one tap.
@@ -51,6 +51,6 @@ The 🎲 button picks filters at random from the user's own vocabulary: one or t
 
 ## Starting
 
-**Start · N** replaces the queue with the matching tracks, turns **shuffle on** (a jam always shuffles) and **end of queue to continue**, so the queue refills with similar tracks (shared tags, BPM near the queue's average) instead of stopping. The sheet closes (a [transition](layout.md#transitions): `Close(JamSheet)`, then the player bar shows the first track, so the change is seen) and Now Playing shows the first track.
+The round **play button** (the same as on a track list, with no label), right after the filters, replaces the queue with the matching tracks, turns **shuffle on** (a jam always shuffles) and **end of queue to continue**, so the queue refills with similar tracks (shared tags, BPM near the queue's average) instead of stopping. The sheet closes (a [transition](layout.md#transitions): `Close(JamSheet)`, then the player bar shows the first track, so the change is seen) and Now Playing shows the first track.
 
 A jam is not a playlist. It is remembered as recent jams on Home, and the queue header has **Save as playlist**, which stores the jam's filters as a dynamic playlist.

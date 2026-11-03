@@ -117,7 +117,7 @@ adaptive
 - **Header, right corner:** 🔍 Search and ✦ Jam.
 - **Search:** firing the Search action turns the centred title into a search entry with a filter button; the button opens the filter popover (see [jam](jam.md#the-filter-page)). Escape or ✕ restores the title and clears the search and its filters. A badge on the filter button counts the active filters.
 - **Jam:** the [jam sheet](jam.md) opens over the content area. The player bar stays visible and keeps playing.
-- **Queue:** a panel that slides in beside the content, with drag to reorder and the shuffle, repeat, end-of-queue and sleep timer controls.
+- **Queue:** a full-height sheet that slides up over the window (in both layouts), scrollable, with drag to reorder. It does not share a pane with the lyrics.
 
 On a phone the app is usually a thin client of the desktop instance, with an instance switcher in the settings.
 
@@ -133,3 +133,11 @@ Opening and closing is ordered with the transition protocol from [iced-libadwait
 | Open the jam from search  | `Close(SearchPopover, 100 ms)` → `Open(JamSheet, 200 ms)`, with the search filters carried over |
 
 The frontend's own views (jam sheet, queue panel, header search) report through the same events when their animation ends. A new sequence replaces the steps that have not started and lets the step in flight finish, so nothing is left half-closed.
+
+## Back
+
+Back goes to the previous place, not to a fixed parent. Opening a page from somewhere (an artist from Home, an album from a search, an artist from an album's track menu) pushes where you were, including an active search and its text; the chevron pops it. A top-level destination (a sidebar row, a tab, a Library pill) starts the history over, so no chevron shows there.
+
+## Now Playing
+
+The cover; when lyrics are switched on they take the cover's place (a scrolling list that follows the song and seeks when tapped). Shuffle, repeat, lyrics and queue are toggles under the controls.

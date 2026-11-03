@@ -104,6 +104,7 @@ crates/core/       types, FilterSpec, track slugs, instance identity
 crates/storage/    SQLite schema, migrations, query building
 crates/engine/     the single API frontends call
 crates/local/     file scanning, lyrics and playback (audio detected by content, not extension)
+apps/gui/          the iced GUI (`weave-player-gui`): UI first on a fake library; its own widgets are in src/components (generic ones are meant for upstream into iced-adaptive-design), their logic in src/primitives
 apps/cli/          the `weave-player` binary, a frontend over `weave-player-lib` only (src/dev.rs is debug-only)
 ```
 
