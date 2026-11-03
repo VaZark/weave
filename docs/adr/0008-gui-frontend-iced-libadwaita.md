@@ -1,6 +1,6 @@
 # ADR 0008: The GUI frontend is built with iced and iced-libadwaita
 
-Status: accepted. Reversible: the frontend is a separate project over the `weave` library, so the toolkit can change without touching the engine.
+Status: accepted. Reversible: the frontend is a separate project over the `weave-player-lib` library, so the toolkit can change without touching the engine.
 
 ## Problem
 
@@ -8,7 +8,7 @@ Status: accepted. Reversible: the frontend is a separate project over the `weave
 
 ## Decision
 
-- **The frontend is an iced application using iced-libadwaita.** It is a separate project that embeds the `weave` library (or acts as a thin client of another instance), as `goals.md` already requires of GUIs. The design is in [docs/ui](../ui/README.md).
+- **The frontend is an iced application using iced-libadwaita.** It is a separate project that embeds the `weave-player-lib` library (or acts as a thin client of another instance), as `goals.md` already requires of GUIs. The design is in [docs/ui](../ui/README.md).
 - **No fixed shell.** Actions, triggers, views and layouts are separate, and an `adaptive` meta component picks a layout from the width. The first two layouts are a narrow one with a Spotify-style bottom tab bar (Home, Search, Library, Jam) and a wide one with a sidebar (Home and Recently played first) and Search and Jam in the header. Each layout can be built and judged alone.
 - **Transitions are commanded, bounded and reported.** A layout or overlay is told to open or close within a time, the coordinator hard-closes it at the deadline, and it reports `Early`, `OnTime` or `TimedOut`, so animations can be put in a set order ([transitions](../ui/layout.md#transitions)).
 - **Jam is a bottom sheet, not a page,** over the content area with the player bar visible. It uses the same filter page as search; the 🎲 button replaces the current filters, and a jam always shuffles and continues at the end of the queue.

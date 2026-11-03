@@ -3,8 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use weave_core::{FilterSpec, Page, Result, Track, normalize_tag};
-use weave_storage::Storage;
+use weave_player_core::{FilterSpec, Page, Result, Track, normalize_tag};
+use weave_player_storage::Storage;
 
 /// Only the most recent queue entries describe the current mood.
 const CONTEXT_TRACKS: usize = 20;
@@ -110,7 +110,7 @@ fn rank(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weave_core::{Metadata, TrackId};
+    use weave_player_core::{Metadata, TrackId};
 
     fn track(slug: &str, tags: &[&str], bpm: Option<f64>) -> Track {
         Track {

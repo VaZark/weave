@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use weave::SessionView;
-use weave::core::{
+use weave_player_lib::SessionView;
+use weave_player_lib::core::{
     FilterSpec, PlayStatus, Playlist, PlaylistKind, SearchResult, TagName, TagOp, Track,
 };
 
@@ -488,7 +488,7 @@ pub fn print_queue(json: bool, show_ids: bool, v: &SessionView) -> Result<(), Fa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weave::core::{Metadata, TrackId};
+    use weave_player_lib::core::{Metadata, TrackId};
 
     fn track(tags: &[&str]) -> Track {
         Track {

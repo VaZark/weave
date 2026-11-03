@@ -1,7 +1,7 @@
 //! Debug-build-only helpers. Compiled out of release builds.
 
-use weave::Library;
-use weave::core::{
+use weave_player_lib::Library;
+use weave_player_lib::core::{
     EntityKind, FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagClause, TagOp,
     parse_credits, track_slug,
 };
@@ -171,7 +171,7 @@ fn ensure_tree(lib: &mut Library) -> Result<()> {
                 lib.set_tag_parent(name, *parent)?;
             }
             Ok(_) => {}
-            Err(weave::core::Error::NotFound(_)) => {
+            Err(weave_player_lib::core::Error::NotFound(_)) => {
                 lib.create_tag(name, *parent)?;
             }
             Err(e) => return Err(e),
@@ -260,9 +260,9 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 
     tagged += tag_entities(lib)?;
 
-    let created = |r: weave::core::Result<weave::core::Playlist>| match r {
+    let created = |r: weave_player_lib::core::Result<weave_player_lib::core::Playlist>| match r {
         Ok(_) => Ok(1),
-        Err(weave::core::Error::AlreadyExists(_)) => Ok(0),
+        Err(weave_player_lib::core::Error::AlreadyExists(_)) => Ok(0),
         Err(e) => Err(e),
     };
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -411,7 +411,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weave::core::Page;
+    use weave_player_lib::core::Page;
 
     #[test]
     fn seed_is_idempotent_and_populates_everything() {

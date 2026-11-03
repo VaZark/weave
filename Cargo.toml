@@ -7,6 +7,7 @@ members = [
   "crates/engine",
   "crates/storage",
   "crates/weave",
+  "vendor/weaver",
 ]
 
 [workspace.package]
@@ -18,8 +19,9 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-weave-core = { path = "crates/core" }
-weave = { path = "crates/weave" }
-weave-engine = { path = "crates/engine" }
-weave-local = { path = "crates/local" }
-weave-storage = { path = "crates/storage" }
+weaver = { path = "vendor/weaver" }
+weave-player-core = { path = "crates/core" }
+weave-player-lib = { path = "crates/weave" }
+weave-player-engine = { path = "crates/engine" }
+weave-player-local = { path = "crates/local" }
+weave-player-storage = { path = "crates/storage" }

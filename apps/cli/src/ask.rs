@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Write};
 
-use weave::core::{Dependent, Playlist, PlaylistKind};
+use weave_player_lib::core::{Dependent, Playlist, PlaylistKind};
 
 /// Show `message`, then ask the user to type `name` exactly (case included) to go ahead, the way
 /// deleting a repository is confirmed. Anything else, and the input ending, is no.
@@ -61,7 +61,7 @@ pub fn delete_message(playlist: &Playlist, tracks: usize, dependents: &[Dependen
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use weave::core::{EntityRef, FilterSpec};
+    use weave_player_lib::core::{EntityRef, FilterSpec};
 
     fn ask(answer: &str) -> (bool, String) {
         let mut out = Vec::new();

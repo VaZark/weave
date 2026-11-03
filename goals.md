@@ -241,7 +241,7 @@ erDiagram
 
 ### Playback session
 
-The queue, cursor and modes are an engine feature (`weave_core::Queue`, orchestrated by `Library`), shared by the CLI, the embedded player and any other player that embeds the library.
+The queue, cursor and modes are an engine feature (`weave_player_core::Queue`, orchestrated by `Library`), shared by the CLI, the embedded player and any other player that embeds the library.
 
 - **Playback host:** a resident process (`weave-player host`) that plays the session through the `Playback` trait (rodio for local files), registers with the OS media controls and applies timers. Commands only edit the persisted session (queue, status, seek requests, volume); the host polls it every 100 ms, starts a track when `start_seq` changes, seeks when `seek_seq` changes, tells the engine when a track ends (`Library::track_ended`) and publishes the real position about once a second. Commands that leave the session playing start a host if none runs (detached, logging to `<db>.host.log`); an exclusive lock on `<db>.host.lock` keeps it to one per library. A host started late resumes at the session's position. The library and queue work with no host at all; nothing plays.
 - **Unplayable tracks** (no local file, or an undecodable one) are skipped with a logged error, and a queue with nothing playable stops instead of looping.
@@ -284,11 +284,11 @@ Rules:
 
 ### Library and CLI
 
-Two separate artifacts are built from the workspace: the `weave` **library** (`cargo build -p weave`) and the `weave-player` **CLI** (`cargo build -p weave-player`). The library contains no CLI code or dependencies; the CLI depends on `weave` and nothing else in the workspace, so whatever the CLI can do, an embedding player can do.
+Two separate artifacts are built from the workspace: the `weave-player-lib` **library** (`cargo build -p weave-player-lib`) and the `weave-player` **CLI** (`cargo build -p weave-player`). The library contains no CLI code or dependencies; the CLI depends on `weave-player-lib` and nothing else in the workspace, so whatever the CLI can do, an embedding player can do.
 
 - **`Library`** is a handle on one library database: tracks, tags, playlists, ratings, filters, the now-playing queue, lyrics, sleep timer. Several handles, in one or more processes, can be open at once; the session lives in the database.
 - **`Player`** plays the session in the embedding process, on its own thread with its own connection: audio (`Audio::Device`, `Audio::Off`, or the embedder's own `Audio::Custom` output), the real position, advancing when a track ends, the sleep timer on time, and with `media-controls` the OS media controls. It reports typed `PlayerEvent`s on a channel. Dropping it stops it. Only one player runs per library across processes (a lock file), so an embedding app and the CLI's host exclude each other: the CLI keeps working against the same library, and the app's player does the playing.
-- **Features**, none on by default: `audio`, `media-controls`, `sqlite-from-source`. The `weave::core` module has the domain types.
+- **Features**, none on by default: `audio`, `media-controls`, `sqlite-from-source`. The `weave_player_lib::core` module has the domain types.
 - Rust only, and unstable until 0.1. Wrapping it in a C ABI for non-Rust players is a possible later step.
 
 ### Local files
@@ -340,7 +340,7 @@ weave/
 │   ├── local/          # File import, lyrics and playback
 │   └── storage/        # SQLite, migrations
 ├── apps/
-│   └── cli/            # weave-player: a frontend over the `weave` library only
+│   └── cli/            # weave-player: a frontend over the `weave-player-lib` library only
 └── docs/
     ├── adr/
     ├── ui/             # design of the iced-libadwaita GUI frontend

@@ -1932,61 +1932,72 @@ dependencies = [
 ]
 
 [[package]]
-name = "weave"
-version = "0.0.1"
-dependencies = [
- "souvlaki",
- "weave-core",
- "weave-engine",
- "zbus",
-]
-
-[[package]]
-name = "weave-core"
-version = "0.0.1"
-dependencies = [
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "weave-engine"
-version = "0.0.1"
-dependencies = [
- "weave-core",
- "weave-local",
- "weave-storage",
-]
-
-[[package]]
-name = "weave-local"
-version = "0.0.1"
-dependencies = [
- "lofty",
- "rodio",
- "uuid",
- "walkdir",
- "weave-core",
-]
-
-[[package]]
 name = "weave-player"
 version = "0.0.1"
 dependencies = [
  "clap",
  "serde",
  "serde_json",
- "weave",
+ "weave-player-lib",
 ]
 
 [[package]]
-name = "weave-storage"
+name = "weave-player-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "weaver",
+]
+
+[[package]]
+name = "weave-player-engine"
+version = "0.0.1"
+dependencies = [
+ "weave-player-core",
+ "weave-player-local",
+ "weave-player-storage",
+]
+
+[[package]]
+name = "weave-player-lib"
+version = "0.0.1"
+dependencies = [
+ "souvlaki",
+ "weave-player-core",
+ "weave-player-engine",
+ "zbus",
+]
+
+[[package]]
+name = "weave-player-local"
+version = "0.0.1"
+dependencies = [
+ "lofty",
+ "rodio",
+ "uuid",
+ "walkdir",
+ "weave-player-core",
+]
+
+[[package]]
+name = "weave-player-storage"
 version = "0.0.1"
 dependencies = [
  "rusqlite",
  "serde_json",
  "uuid",
- "weave-core",
+ "weave-player-core",
+ "weaver",
+]
+
+[[package]]
+name = "weaver"
+version = "0.0.1"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

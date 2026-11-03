@@ -5,8 +5,8 @@
 
 use std::time::{Duration, Instant};
 
-use weave_core::{Error, PlayStatus, Playback, PlayerState, Result};
-use weave_engine::{Library, SessionView};
+use weave_player_core::{Error, PlayStatus, Playback, PlayerState, Result};
+use weave_player_engine::{Library, SessionView};
 
 use super::PlayerEvent;
 use super::media::{MediaService, Remote, Snapshot, TrackInfo};

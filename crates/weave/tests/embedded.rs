@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use weave::core::{Error, Metadata, PlayStatus, ScannedTrack, SleepSetting};
-use weave::{Audio, Library, Player, PlayerEvent, PlayerOptions};
+use weave_player_lib::core::{Error, Metadata, PlayStatus, ScannedTrack, SleepSetting};
+use weave_player_lib::{Audio, Library, Player, PlayerEvent, PlayerOptions};
 
 fn temp_db(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -227,7 +227,7 @@ fn a_remote_only_instance_cannot_start_a_player_until_playback_is_allowed() {
 mod with_custom_output {
     use std::sync::{Arc, Mutex};
 
-    use weave::core::{Playback, Result};
+    use weave_player_lib::core::{Playback, Result};
 
     use super::*;
 

@@ -1,7 +1,7 @@
 //! User annotations: ratings. Kept apart from source-derived metadata.
 
 use rusqlite::params;
-use weave_core::{Error, Result};
+use weave_player_core::{Error, Result};
 
 use crate::{Storage, db_err};
 

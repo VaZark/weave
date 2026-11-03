@@ -6,16 +6,16 @@ mod player;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weave_core::{
+use weave_player_core::{
     AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, Dependent,
     EntityKind, EntityRef, Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind,
     Result, Rng, ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
 };
-use weave_local::LocalFiles;
-use weave_storage::Storage;
+use weave_player_local::LocalFiles;
+use weave_player_storage::Storage;
 
 pub use player::SessionView;
-pub use weave_storage::ImportStats;
+pub use weave_player_storage::ImportStats;
 
 pub struct Library {
     storage: Storage,
@@ -454,7 +454,7 @@ mod tests {
         let mut lib = Library::open_in_memory().unwrap();
         let t = ScannedTrack {
             path: "x".into(),
-            metadata: weave_core::Metadata {
+            metadata: weave_player_core::Metadata {
                 title: "T".into(),
                 ..Default::default()
             },
@@ -472,7 +472,7 @@ mod tests {
             .iter()
             .map(|t| ScannedTrack {
                 path: (*t).into(),
-                metadata: weave_core::Metadata {
+                metadata: weave_player_core::Metadata {
                     title: (*t).into(),
                     artist: Some("x".into()),
                     ..Default::default()
@@ -522,7 +522,7 @@ mod tests {
         // dynamic membership is live
         lib.import_scanned(&[ScannedTrack {
             path: "d".into(),
-            metadata: weave_core::Metadata {
+            metadata: weave_player_core::Metadata {
                 title: "d".into(),
                 artist: Some("x".into()),
                 ..Default::default()
@@ -576,7 +576,7 @@ mod tests {
         let mut lib = Library::open_in_memory().unwrap();
         lib.import_scanned(&[ScannedTrack {
             path: "/music/a.mp3".into(),
-            metadata: weave_core::Metadata {
+            metadata: weave_player_core::Metadata {
                 title: "a".into(),
                 artist: Some("Aventura".into()),
                 album: Some("Gold".into()),

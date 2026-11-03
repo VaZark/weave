@@ -29,7 +29,7 @@ A toggle switches the window between the last **7 days** and the last **30 days*
 
 ## What the engine has to provide
 
-`goals.md` does not describe these yet. Home cannot be built until they exist in the `weave` library, which keeps the rule that the frontend owns none of them.
+`goals.md` does not describe these yet. Home cannot be built until they exist in the `weave-player-lib` library, which keeps the rule that the frontend owns none of them.
 
 - **Play history:** a row per play with the time and where it came from (jam, playlist, album, artist, single track), kept on the instance. The queue and the playback session alone cannot answer "last 7 days".
 - **Jam history:** the filters of each jam with the time last used, so a jam can be started again and saved as a playlist.

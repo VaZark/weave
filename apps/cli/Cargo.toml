@@ -12,16 +12,16 @@ path = "src/main.rs"
 default = ["audio", "media-controls"]
 # Audio output (rodio). Needs the ALSA development files on Linux; build with
 # --no-default-features for a binary that cannot play sound.
-audio = ["weave/audio"]
+audio = ["weave-player-lib/audio"]
 # OS media controls (media keys, now-playing widgets, playerctl). Linux only for now.
-media-controls = ["weave/media-controls"]
+media-controls = ["weave-player-lib/media-controls"]
 # By default the system SQLite (3.14.0 or newer) is linked. Enable this to compile
 # SQLite from source and link it statically instead (needs a C compiler).
-sqlite-from-source = ["weave/sqlite-from-source"]
+sqlite-from-source = ["weave-player-lib/sqlite-from-source"]
 
-# The CLI is a frontend over the `weave` library and nothing else.
+# The CLI is a frontend over the `weave-player-lib` library and nothing else.
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde.workspace = true
 serde_json.workspace = true
-weave.workspace = true
+weave-player-lib.workspace = true

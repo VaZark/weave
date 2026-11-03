@@ -1,5 +1,5 @@
 [package]
-name = "weave-local"
+name = "weave-player-local"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ audio = ["dep:rodio"]
 lofty = "0.22"
 rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-all"], optional = true }
 walkdir = "2"
-weave-core.workspace = true
+weave-player-core.workspace = true
 
 [dev-dependencies]
 uuid = { version = "1", features = ["v4"] }

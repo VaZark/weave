@@ -1,7 +1,10 @@
 //! Translates a `FilterSpec` into parameterized SQL. No user text is interpolated.
 
 use rusqlite::types::Value;
-use weave_core::{FilterSpec, Sort, SortField, TagOp, parse_tag_ref};
+use weave_player_core::{FilterSpec, Sort, SortField};
+use weaver::Owner;
+
+use crate::tags::{ALBUM, ARTIST, TRACK};
 
 pub const FROM: &str = " FROM track_metadata m \
      JOIN tracks t ON t.id = m.track_id \
@@ -38,125 +41,28 @@ pub fn order_by(sort: Option<Sort>) -> String {
 /// Where tag assignments live for one kind of thing, and how the query reaches its key.
 #[derive(Clone, Copy)]
 pub struct TagOwner {
-    pub table: &'static str,
-    pub col: &'static str,
+    pub owner: &'static Owner,
     /// The owner's key as the surrounding query spells it.
     pub outer: &'static str,
 }
 
 pub const TRACK_TAGS: TagOwner = TagOwner {
-    table: "track_tags",
-    col: "track_id",
+    owner: &TRACK,
     outer: "m.track_id",
 };
 pub const ARTIST_TAGS: TagOwner = TagOwner {
-    table: "artist_tags",
-    col: "artist_id",
+    owner: &ARTIST,
     outer: "ar.id",
 };
 pub const ALBUM_TAGS: TagOwner = TagOwner {
-    table: "album_tags",
-    col: "album_id",
+    owner: &ALBUM,
     outer: "al.id",
 };
-
-/// Present on the owner: the tag itself or any descendant (one `?`: the normalized name), or
-/// with `exact` an explicit assignment of exactly that tag.
-fn has(o: TagOwner, exact: bool) -> String {
-    let TagOwner { table, col, outer } = o;
-    if exact {
-        format!(
-            "EXISTS (SELECT 1 FROM {table} tt JOIN tags g ON g.id = tt.tag_id
-             WHERE tt.{col} = {outer} AND g.normalized_name = ?)"
-        )
-    } else {
-        format!(
-            "EXISTS (SELECT 1 FROM {table} tt WHERE tt.{col} = {outer} AND tt.tag_id IN (
-                 WITH RECURSIVE d(id) AS (
-                     SELECT id FROM tags WHERE normalized_name = ?
-                     UNION
-                     SELECT c.id FROM tags c JOIN d ON c.parent_id = d.id)
-                 SELECT id FROM d))"
-        )
-    }
-}
-
-/// `(a OR b …)` over alternatives, binding one name per alternative.
-fn any_of(o: TagOwner, names: &[String], exact: bool, args: &mut Vec<Value>) -> String {
-    let one = has(o, exact);
-    args.extend(names.iter().map(|n| Value::Text(n.clone())));
-    format!("({})", vec![one; names.len()].join(" OR "))
-}
-
-fn tag_condition(
-    o: TagOwner,
-    op: TagOp,
-    groups: &[Vec<String>],
-    exact: bool,
-    sql: &mut String,
-    args: &mut Vec<Value>,
-) {
-    match op {
-        // Every group must hold, each satisfied by any of its alternatives.
-        TagOp::All => {
-            for g in groups {
-                let c = any_of(o, g, exact, args);
-                *sql += &format!(" AND {c}");
-            }
-        }
-        TagOp::Any => {
-            let flat: Vec<String> = groups.iter().flatten().cloned().collect();
-            let c = any_of(o, &flat, exact, args);
-            *sql += &format!(" AND {c}");
-        }
-        TagOp::Exclude => {
-            let flat: Vec<String> = groups.iter().flatten().cloned().collect();
-            let c = any_of(o, &flat, exact, args);
-            *sql += &format!(" AND NOT {c}");
-        }
-    }
-}
 
 /// The tag conditions of a filter (flat lists and clauses) as ` AND …` terms over
 /// the given kind of owner. Expects a normalized, validated filter.
 pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
-    let mut sql = String::new();
-    let mut args: Vec<Value> = Vec::new();
-
-    // Flat lists: a leading `=` on an entry asks for an exact match.
-    for (op, list) in [
-        (TagOp::All, &f.tag_all),
-        (TagOp::Any, &f.tag_any),
-        (TagOp::Exclude, &f.tag_exclude),
-    ] {
-        if list.is_empty() {
-            continue;
-        }
-        let refs: Vec<(bool, String)> = list.iter().map(|t| parse_tag_ref(t)).collect();
-        match op {
-            TagOp::All => {
-                for (exact, name) in refs {
-                    tag_condition(o, op, &[vec![name]], exact, &mut sql, &mut args);
-                }
-            }
-            _ => {
-                // Mixed exact/descendant entries OR together.
-                let parts: Vec<String> = refs
-                    .iter()
-                    .map(|(exact, name)| {
-                        args.push(Value::Text(name.clone()));
-                        has(o, *exact)
-                    })
-                    .collect();
-                let not = if op == TagOp::Exclude { "NOT " } else { "" };
-                sql += &format!(" AND {not}({})", parts.join(" OR "));
-            }
-        }
-    }
-    for c in &f.tag_clauses {
-        tag_condition(o, c.op, &c.names(), c.exact, &mut sql, &mut args);
-    }
-    (sql, args)
+    weaver::conditions(&f.tag_filter(), o.owner, o.outer)
 }
 
 /// The filter's own conditions as ` AND …` terms for `FROM` (the caller supplies ` WHERE 1=1`).

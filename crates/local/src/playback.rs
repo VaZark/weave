@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
-use weave_core::{Error, Playback, Result};
+use weave_player_core::{Error, Playback, Result};
 
 fn player_err(what: &str, e: impl std::fmt::Display) -> Error {
     Error::Player(format!("{what}: {e}"))

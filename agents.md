@@ -12,14 +12,15 @@ Build an open-source, local-first music management engine used by a CLI and, as 
 2. **Slug IDs:** Every ID users, scripts, frontends or remote clients see is a slug (lowercase, readable, assigned once, unique). Internal surrogate keys never leak. New entities get a slug-based ID from the start; see Identifiers in `goals.md`.
 3. **User annotations are protected:** Enrichment and imports must not overwrite local tags, ratings or metadata overrides without an explicit user action.
 4. **Instances are independent:** Each instance owns its library. Never sync or merge libraries between instances; remote control acts on the library of the instance being controlled, and slugs resolve there.
-5. **One engine API:** Never implement filtering, persistence rules, playback or playlist semantics only inside a frontend. The CLI depends on the `weave` library crate and nothing else in the workspace; whatever a second player would need lives in the library.
+5. **One engine API:** Never implement filtering, persistence rules, playback or playlist semantics only inside a frontend. The CLI depends on the `weave-player-lib` library crate and nothing else in the workspace; whatever a second player would need lives in the library.
 6. **Dynamic playlists are queries:** Saved dynamic (smart) playlists retain filter definitions, with their sort and limit, and refresh against current canonical library state. A dynamic playlist may also draw on other playlists (any one of them, then its own filters on top), and stays a query. Manual playlists are explicit ordered lists with no filters and no sources; never mix the two models.
 7. **Safe imports:** Read-only imports by default; no moves, renames, tag rewrites or destructive operations without explicit opt-in.
 8. **Remote boundaries:** A remote client never touches the database. Everything goes through the owning instance's engine API and its validation. Remote access is opt-in, off by default and limited to the local network. A client is trusted only after the owner registers it on the instance; trust is per client (`view` or `control`), authenticated on every request and revocable at once. Instance settings (name, capabilities) and client management are local-only.
 9. **Local or thin client, nothing else:** No cloud accounts, hosted services, third-party streaming integrations or plugin runtimes. Network use is only between the user's own instances.
 10. **Tags are for the genre and user-defined tags only:** Identifying data (title, artist, album, and source or path identities) is never a tag; it stays in structured columns and is filtered by dedicated text predicates. Playback state and user-protected annotations (rating) are not tags either. Do not map a new field to a tag unless it describes the track rather than identifies it. Tags can go on tracks, artists, albums and playlists alike.
 11. **Never merge by guess:** Import makes a new artist rather than attach to one already in the library, because the same name can be different people. Artists, albums and tracks that look alike are suggested and asked about, and merged only when the user says so. Duplicate checking is one mechanism for all three kinds.
-12. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
+12. **The tag engine is vendored:** Tag names, the tag tree, assignments and tag-filter SQL live in `vendor/weaver`, which must not depend on any Weave crate so other projects can reuse it, and it should eventually move to its own repository. Weave-specific tag rules (the genre mapping, which kinds carry tags) stay in `weave-player-core` and `weave-player-storage`.
+13. **Keep it lean:** Favor working vertical slices and tests over speculative abstractions or premature crate extraction.
 
 ## Recommended implementation sequence
 
@@ -28,7 +29,7 @@ Build an open-source, local-first music management engine used by a CLI and, as 
 3. Implement `FilterSpec` and query evaluation; cover all/any/none, empty groups, Unicode tags, missing BPM, and inclusive boundaries.
 4. Add CLI commands with stable, scriptable output and meaningful exit codes.
 5. Save smart playlist definitions and test live membership updates on edit/import.
-6. Keep the `weave` library and its embedded player sufficient for any frontend; GUIs are separate projects that embed it.
+6. Keep the `weave-player-lib` library and its embedded player sufficient for any frontend; GUIs are separate projects that embed it.
 7. Provide local playback and queue control before optional lyrics; then the remote-control protocol and a thin client.
 8. Spike discovery, pairing and transport on a LAN before committing to a wire protocol.
 

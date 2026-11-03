@@ -5,11 +5,12 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, params};
-use weave_core::{
+use weave_player_core::{
     DedupMark, DuplicateCandidate, EntityKind, Error, MergeStats, Result, SimilarPair, entity_norm,
     loose_key,
 };
 
+use crate::tags::{ALBUM, TAGS, TRACK};
 use crate::{Storage, db_err};
 
 /// Tracks whose lengths are within this many milliseconds count as the same recording.
@@ -346,12 +347,7 @@ impl Storage {
                 params![into, from],
             )
             .map_err(db_err)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO album_tags (album_id, tag_id)
-             SELECT ?1, tag_id FROM album_tags WHERE album_id = ?2",
-            params![into, from],
-        )
-        .map_err(db_err)?;
+        TAGS.copy(&tx, &ALBUM, from, into)?;
         tx.execute("DELETE FROM albums WHERE id = ?1", [from])
             .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
@@ -369,12 +365,7 @@ impl Storage {
             params![into, from],
         )
         .map_err(db_err)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO track_tags (track_id, tag_id)
-             SELECT ?1, tag_id FROM track_tags WHERE track_id = ?2",
-            params![into, from],
-        )
-        .map_err(db_err)?;
+        TAGS.copy(&tx, &TRACK, from, into)?;
         tx.execute(
             "INSERT OR IGNORE INTO track_annotations (track_id) VALUES (?1)",
             [into],

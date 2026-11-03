@@ -1,6 +1,6 @@
 # Weave UI
 
-The design of the Weave GUI frontend: a separate application built with [iced](https://iced.rs) and [iced-libadwaita](https://github.com/VaZark/iced-libadwaita) that embeds the `weave` library, or talks to another instance as a thin client. The decision and its alternatives are in [ADR 0008](../adr/0008-gui-frontend-iced-libadwaita.md).
+The design of the Weave GUI frontend: a separate application built with [iced](https://iced.rs) and [iced-libadwaita](https://github.com/VaZark/iced-libadwaita) that embeds the `weave-player-lib` library, or talks to another instance as a thin client. The decision and its alternatives are in [ADR 0008](../adr/0008-gui-frontend-iced-libadwaita.md).
 
 Two goals shape it. It is the first real application built on iced-libadwaita, so a component that more than one app would want is built there, not here (see [components](components.md)). And it serves what Weave is for: organising music by the user's own tags, so the filter is the centre of the interface and the tags are the user's own words, never a fixed list.
 
@@ -13,7 +13,7 @@ Two goals shape it. It is the first real application built on iced-libadwaita, s
 
 ## Principles
 
-- **The frontend owns no rules.** Filtering, playback, queue and playlist semantics live in the `weave` library; the frontend renders state and sends commands. A thin client uses the same views over the remote endpoint, so every view works against either.
+- **The frontend owns no rules.** Filtering, playback, queue and playlist semantics live in the `weave-player-lib` library; the frontend renders state and sends commands. A thin client uses the same views over the remote endpoint, so every view works against either.
 - **One filter UI.** Search and jam use the same filter page. A saved dynamic playlist is that same filter, stored.
 - **Tags are the user's words.** The UI never lists a fixed set of keys. It shows the user's own vocabulary with counts, and offers autocomplete from it. Managing the vocabulary (rename, nest, merge) is a settings page, not part of the main navigation.
 - **Playing is always from somewhere.** A play action plays what is listed (all tracks, an album, a playlist, an artist's discography, a jam). There is no context-free "play".

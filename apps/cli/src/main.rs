@@ -22,11 +22,11 @@ use std::process::ExitCode;
 
 use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
-use weave::core::{
+use weave_player_lib::core::{
     ChildPolicy, EndOfQueue, EntityKind, Error, FilterSpec, Page, RepeatMode, SleepSetting, Sort,
     SortField, TagClause, TagOp, parse_duration, parse_span,
 };
-use weave::{Library, Player, SessionView};
+use weave_player_lib::{Library, Player, SessionView};
 
 use output::{
     out, print_columns, print_page, print_playlist, print_playlist_tracks, print_playlists,
@@ -759,7 +759,7 @@ fn confirm_delete(message: &str, name: &str, json: bool) -> Result<(), Failure> 
 fn review_similar(
     lib: &mut Library,
     kinds: &[EntityKind],
-    mark: Option<&weave::core::DedupMark>,
+    mark: Option<&weave_player_lib::core::DedupMark>,
     json: bool,
 ) -> Result<(), Failure> {
     use std::io::IsTerminal;
@@ -828,7 +828,7 @@ fn main() -> ExitCode {
 
 /// After a command that left the session playing: make sure a host is there to play it.
 fn start_host_if_playing(db: &std::path::Path, cli: &HostPolicy, v: &SessionView) {
-    use weave::core::PlayStatus;
+    use weave_player_lib::core::PlayStatus;
     if cli.no_host || !cfg!(feature = "audio") || v.state.status != PlayStatus::Playing {
         return;
     }

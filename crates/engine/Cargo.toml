@@ -1,15 +1,15 @@
 [package]
-name = "weave-engine"
+name = "weave-player-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [features]
-# Audio output (see weave-local).
-audio = ["weave-local/audio"]
-sqlite-from-source = ["weave-storage/sqlite-from-source"]
+# Audio output (see weave-player-local).
+audio = ["weave-player-local/audio"]
+sqlite-from-source = ["weave-player-storage/sqlite-from-source"]
 
 [dependencies]
-weave-core.workspace = true
-weave-local.workspace = true
-weave-storage.workspace = true
+weave-player-core.workspace = true
+weave-player-local.workspace = true
+weave-player-storage.workspace = true

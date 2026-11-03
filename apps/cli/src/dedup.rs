@@ -5,8 +5,8 @@
 
 use std::io::{BufRead, Write};
 
-use weave::Library;
-use weave::core::{DedupMark, EntityKind, Result, SimilarPair};
+use weave_player_lib::Library;
+use weave_player_lib::core::{DedupMark, EntityKind, Result, SimilarPair};
 
 /// The kinds that can have duplicates, in the order they are asked: artists first, since
 /// merging two artists can leave two albums of the same name.
@@ -36,7 +36,7 @@ pub fn review(
     out: &mut impl Write,
 ) -> Result<(Outcome, bool)> {
     let mut outcome = Outcome::default();
-    let io = |e: std::io::Error| weave::core::Error::InvalidInput(e.to_string());
+    let io = |e: std::io::Error| weave_player_lib::core::Error::InvalidInput(e.to_string());
     while !pairs.is_empty() {
         let SimilarPair { kind, a, b, reason } = pairs.remove(0);
         writeln!(out, "Same {kind}? ({reason})").map_err(io)?;
@@ -107,7 +107,7 @@ pub fn review_all(
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use weave::core::{FilterSpec, Metadata, ScannedTrack};
+    use weave_player_lib::core::{FilterSpec, Metadata, ScannedTrack};
 
     fn track(path: &str, title: &str, artist: &str, album: Option<&str>) -> ScannedTrack {
         ScannedTrack {
@@ -217,7 +217,7 @@ m
         assert!(!text.contains("Same album?"), "{text}");
         assert_eq!(artists(&lib), ["Aventura"]);
         let left = lib
-            .search(&FilterSpec::default(), weave::core::Page::ALL)
+            .search(&FilterSpec::default(), weave_player_lib::core::Page::ALL)
             .unwrap();
         assert_eq!(left.total, 1);
         // an album pair that is not settled by an artist merge is asked about

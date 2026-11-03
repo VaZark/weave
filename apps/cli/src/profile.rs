@@ -1,6 +1,6 @@
 //! Printing for the in-depth views: one track, one artist, one album, and their lists.
 
-use weave::core::{
+use weave_player_lib::core::{
     AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, SimilarPair, Stats, Track,
     TrackDetail,
 };
@@ -92,7 +92,7 @@ pub fn print_track(json: bool, d: &TrackDetail) -> Result<(), Failure> {
         let t = &d.track;
         let m = &t.metadata;
         outln!("{}", m.title);
-        let named = |r: &Option<weave::core::EntityRef>| {
+        let named = |r: &Option<weave_player_lib::core::EntityRef>| {
             r.as_ref()
                 .map_or_else(dash, |r| format!("{} ({})", r.name, r.id))
         };
@@ -260,7 +260,7 @@ pub fn print_similar(json: bool, pairs: &[SimilarPair]) -> Result<(), Failure> {
         let rows = pairs
             .iter()
             .map(|p| {
-                let side = |c: &weave::core::DuplicateCandidate| {
+                let side = |c: &weave_player_lib::core::DuplicateCandidate| {
                     format!("{} [{}] {}", c.name, c.id, c.detail)
                 };
                 vec![p.kind.to_string(), side(&p.a), side(&p.b), p.reason.clone()]

@@ -1,7 +1,7 @@
 //! Dynamic playlists (saved filters) and manual playlists (ordered track lists).
 
 use rusqlite::{OptionalExtension, params, types::Value};
-use weave_core::{
+use weave_player_core::{
     Dependent, EntityRef, Error, FilterSpec, Page, Playlist, PlaylistKind, Result, SearchResult,
     normalize_tag, playlist_slug, slugify,
 };
