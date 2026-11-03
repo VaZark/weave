@@ -1,13 +1,11 @@
 //! App-specific: the transport buttons and the time readout.
 
-use iced_adaptive_design::Element;
 use iced_adaptive_design::widget as w;
-
-use crate::icons::Glyph;
+use iced_adaptive_design::{Element, Icon};
 
 /// A flat glyph button; `active` makes it the accent one (shuffle on, queue open).
 pub fn glyph_button<'a, M: Clone + 'a>(
-    glyph: Glyph,
+    glyph: Icon,
     size: f32,
     active: bool,
     on_press: M,

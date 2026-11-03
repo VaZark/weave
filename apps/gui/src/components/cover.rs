@@ -2,9 +2,7 @@
 
 use iced::widget::container;
 use iced::{Background, Border, Color, Length};
-use iced_adaptive_design::Element;
-
-use crate::icons::Glyph;
+use iced_adaptive_design::{Element, Icon};
 
 const COLORS: [(u8, u8, u8); 8] = [
     (0x62, 0xa0, 0xea),
@@ -24,7 +22,7 @@ pub fn color(id: usize) -> Color {
 
 pub fn cover<'a, M: 'a>(id: usize, size: f32) -> Element<'a, M> {
     let c = color(id);
-    container(Glyph::Note.colored(size * 0.45, Color::from_rgba8(0, 0, 0, 0.55)))
+    container(Icon::MusicNote.colored(size * 0.45, Color::from_rgba8(0, 0, 0, 0.55)))
         .center(Length::Fixed(size))
         .style(move |_: &iced_adaptive_design::Theme| container::Style {
             background: Some(Background::Color(c)),

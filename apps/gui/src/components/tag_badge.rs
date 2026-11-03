@@ -1,44 +1,27 @@
-//! App-specific: a tag as its icon on its colour and its value; the full name (with the key) on
-//! hover.
+//! App-specific: a tag drawn as iad's `Chip`, with the tag's own icon and colour and its value as
+//! the label. The full name (with the key) is on hover for the read-only one.
 
-use iced::widget::{container, row, text, tooltip};
-use iced::{Alignment, Background, Border, Color, Padding};
-use iced_adaptive_design::{Element, Theme};
+use iced::widget::{text, tooltip};
+use iced_adaptive_design::Element;
+use iced_adaptive_design::widget::Chip;
 
-use super::badge::{badge, contrast};
 use crate::data::TagStyle;
-use crate::icons::Glyph;
 
 /// The part after the key: `bachata` for `genre:bachata`.
 fn value_of(name: &str) -> &str {
     name.split_once(':').map_or(name, |(_, v)| v)
 }
 
-/// A read-only tag: icon badge and value on a faint tint of the tag's colour.
-pub fn tag_pill<'a, M: 'a>(name: &str, style: &TagStyle, size: f32) -> Element<'a, M> {
-    let color = style.color;
-    let glyph = Glyph::for_tag_icon(&style.icon).colored(size * 0.58, contrast(color));
-    let pill = container(
-        row![
-            badge(glyph, color, size),
-            text(value_of(name).to_string()).size(12)
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center),
-    )
-    .padding(Padding {
-        top: 2.0,
-        right: 8.0,
-        bottom: 2.0,
-        left: 2.0,
-    })
-    .style(move |_: &Theme| container::Style {
-        background: Some(Background::Color(Color { a: 0.16, ..color })),
-        border: Border::default().rounded(size),
-        ..Default::default()
-    });
+fn chip<'a, M: Clone + 'a>(name: &str, style: &TagStyle) -> Chip<'a, M> {
+    Chip::new(value_of(name))
+        .icon(crate::icons::for_key(&style.icon))
+        .color(style.color)
+}
+
+/// A read-only tag.
+pub fn tag_pill<'a, M: Clone + 'a>(name: &str, style: &TagStyle) -> Element<'a, M> {
     tooltip(
-        pill,
+        Element::from(chip::<M>(name, style)),
         text(name.to_string()).size(12),
         tooltip::Position::Bottom,
     )
@@ -46,34 +29,15 @@ pub fn tag_pill<'a, M: 'a>(name: &str, style: &TagStyle, size: f32) -> Element<'
     .into()
 }
 
-/// A tag as a toggle: its badge and its value; the accent button while it is on.
+/// A tag as a toggle: solid in its colour while selected.
 pub fn tag_chip<'a, M: Clone + 'a>(
     name: &str,
     style: &TagStyle,
     selected: bool,
     on_press: M,
 ) -> Element<'a, M> {
-    use iced::widget::button;
-    use iced_adaptive_design::style as st;
-
-    let glyph = Glyph::for_tag_icon(&style.icon).colored(11.0, contrast(style.color));
-    let content = row![
-        badge(glyph, style.color, 20.0),
-        text(value_of(name).to_string())
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-    let b = button(content)
-        .padding(Padding {
-            top: 3.0,
-            right: 10.0,
-            bottom: 3.0,
-            left: 4.0,
-        })
-        .on_press(on_press);
-    if selected {
-        b.style(st::button::suggested).into()
-    } else {
-        b.style(st::button::default).into()
-    }
+    chip(name, style)
+        .selected(selected)
+        .on_press(on_press)
+        .into()
 }

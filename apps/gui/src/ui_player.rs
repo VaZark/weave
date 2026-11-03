@@ -10,15 +10,14 @@ use crate::components::cover::cover;
 use crate::components::tag_badge::tag_pill;
 use crate::components::transport::glyph_button;
 use crate::data::{Track, clock};
-use crate::icons::Glyph;
 use crate::{App, Element, LYRICS, Message};
 
 impl App {
     fn play_pause(&self, size: f32) -> Element<'_> {
         let g = if self.player.playing {
-            Glyph::Pause
+            Icon::Pause
         } else {
-            Glyph::Play
+            Icon::Play
         };
         w::suggested_button(g.view(size))
             .on_press(Message::TogglePlay)
@@ -27,9 +26,9 @@ impl App {
 
     fn controls(&self, size: f32) -> Element<'_> {
         row![
-            glyph_button(Glyph::Previous, size, false, Message::Previous),
+            glyph_button(Icon::SkipBackward, size, false, Message::Previous),
             self.play_pause(size),
-            glyph_button(Glyph::Next, size, false, Message::Next),
+            glyph_button(Icon::SkipForward, size, false, Message::Next),
         ]
         .spacing(4)
         .align_y(Alignment::Center)
@@ -71,14 +70,14 @@ impl App {
                 .on_press(Message::NowPlaying(!self.now_playing)),
                 self.controls(16.0),
                 container(self.seek(t)).width(Length::Fill),
-                glyph_button(Glyph::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                glyph_button(Glyph::Repeat, 16.0, self.player.repeat, Message::Repeat),
-                glyph_button(Glyph::Queue, 16.0, self.queue_open, Message::ToggleQueue),
+                glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
+                glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
+                glyph_button(Icon::Queue, 16.0, self.queue_open, Message::ToggleQueue),
                 glyph_button(
                     if self.now_playing {
-                        Glyph::Collapse
+                        Icon::GoDown
                     } else {
-                        Glyph::Expand
+                        Icon::GoUp
                     },
                     16.0,
                     false,
@@ -132,14 +131,16 @@ impl App {
                 MenuItem::check(label, self.sleep_choice == m, Message::SleepTimer(m))
             };
             self.menu_button(
-                Icon::Calendar,
+                Icon::Clock,
                 "Sleep timer",
-                Menu::new("Sleep timer").section([
-                    opt(None, "Off"),
-                    opt(Some(15), "In 15 minutes"),
-                    opt(Some(30), "In 30 minutes"),
-                    opt(Some(60), "In an hour"),
-                ]),
+                Menu::new("Sleep timer")
+                    .check_style(w::MenuCheckStyle::Mark)
+                    .section([
+                        opt(None, "Off"),
+                        opt(Some(15), "In 15 minutes"),
+                        opt(Some(30), "In 30 minutes"),
+                        opt(Some(60), "In an hour"),
+                    ]),
             )
         };
         let sleep = match self.sleep_left {
@@ -176,8 +177,8 @@ impl App {
                     space::horizontal(),
                     sleep,
                     timer,
-                    glyph_button(Glyph::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                    glyph_button(Glyph::Repeat, 16.0, self.player.repeat, Message::Repeat),
+                    glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
+                    glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -210,12 +211,9 @@ impl App {
         } else {
             container(cover(t.id, 260.0)).center(Length::Fill).into()
         };
-        let tags = row(t
-            .tags
-            .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), 22.0)))
-        .spacing(6)
-        .wrap();
+        let tags = row(t.tags.iter().map(|g| tag_pill(g, &self.lib.style_of(g))))
+            .spacing(6)
+            .wrap();
         let mut body = column![
             container(art).height(Length::Fill).width(Length::Fill),
             column![
@@ -231,14 +229,14 @@ impl App {
         .padding(16)
         .max_width(640)
         .height(Length::Fill);
-        let lyrics = glyph_button(Glyph::Lyrics, 16.0, self.show_lyrics, Message::ToggleLyrics);
+        let lyrics = glyph_button(Icon::Lyrics, 16.0, self.show_lyrics, Message::ToggleLyrics);
         if narrow {
             body = body.push(self.seek(t)).push(self.controls(20.0)).push(
                 row![
-                    glyph_button(Glyph::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                    glyph_button(Glyph::Repeat, 16.0, self.player.repeat, Message::Repeat),
+                    glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
+                    glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
                     lyrics,
-                    glyph_button(Glyph::Queue, 16.0, self.queue_open, Message::ToggleQueue),
+                    glyph_button(Icon::Queue, 16.0, self.queue_open, Message::ToggleQueue),
                 ]
                 .spacing(8),
             );
@@ -246,7 +244,7 @@ impl App {
             body = body.push(lyrics);
         }
         let close = row![
-            w::flat_button(Glyph::Collapse.view(16.0)).on_press(Message::NowPlaying(false)),
+            w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
             space::horizontal(),
         ];
         let backdrop = crate::components::cover::color(t.id);

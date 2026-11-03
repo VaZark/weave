@@ -8,7 +8,6 @@ use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::histogram_range::histogram_range_slider;
-use crate::components::play_button::play_button;
 use crate::components::tag_badge::{tag_chip, tag_pill};
 use crate::data::{self, Filter};
 use crate::{App, Element, Message, Mode3};
@@ -167,7 +166,8 @@ impl App {
         let play = column![
             space::vertical().height(Length::Fixed(14.0)),
             row![
-                play_button((n > 0).then_some(Message::StartJam)),
+                w::suggested_circular_button(Icon::Play.view(16.0))
+                    .on_press_maybe((n > 0).then_some(Message::StartJam)),
                 ty::caption(format!("{n} matches")),
                 space::horizontal(),
                 save,
@@ -330,12 +330,9 @@ impl App {
             ]
             .into()
         };
-        let tags = row(t
-            .tags
-            .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), 18.0)))
-        .spacing(6)
-        .wrap();
+        let tags = row(t.tags.iter().map(|g| tag_pill(g, &self.lib.style_of(g))))
+            .spacing(6)
+            .wrap();
         container(
             column![
                 ty::title_3(t.title.clone()),
@@ -398,7 +395,7 @@ impl App {
                 );
                 let mut line = column![
                     row![
-                        tag_pill(&r.tag, &self.lib.style_of(&r.tag), 18.0),
+                        tag_pill(&r.tag, &self.lib.style_of(&r.tag)),
                         ty::caption(format!("on {} of {}", r.count, b.ids.len())),
                         space::horizontal(),
                         modes,

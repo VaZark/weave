@@ -12,7 +12,6 @@ use iced::{Alignment, Background, Border, Color, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::transport::glyph_button;
-use crate::icons::Glyph;
 use crate::{App, Dest, Element, Layout, Message};
 
 const SEARCH_ID: &str = "search";
@@ -49,19 +48,6 @@ pub fn row_style(t: &iad::Theme, s: button::Status) -> button::Style {
         shadow: Default::default(),
         snap: false,
     }
-}
-
-/// A small filled number, for a count next to a heading.
-pub fn count_pill<'a>(n: usize) -> Element<'a> {
-    container(text(n.to_string()).size(12))
-        .padding([1, 8])
-        .style(|t: &iad::Theme| container::Style {
-            background: Some(Background::Color(t.palette.accent_bg_color)),
-            text_color: Some(t.palette.accent_fg_color),
-            border: Border::default().rounded(10),
-            ..Default::default()
-        })
-        .into()
 }
 
 impl App {
@@ -146,7 +132,7 @@ impl App {
             // Explore and Jam are tabs on narrow, so only desktop has them here.
             h = h
                 .pack_end(glyph_button(
-                    Glyph::Explore,
+                    Icon::Compass,
                     16.0,
                     self.dest == Dest::Explore && !self.jam_open && !self.searching,
                     Message::ToggleExplore,
@@ -155,7 +141,7 @@ impl App {
                     w::icon_button(Icon::Search).on_press(Message::SearchOpen(!self.searching)),
                 )
                 .pack_end(glyph_button(
-                    Glyph::Jam,
+                    Icon::Sparkle,
                     16.0,
                     self.jam_open,
                     Message::ToggleJam,
@@ -170,7 +156,11 @@ impl App {
             .spacing(6)
             .align_y(Alignment::Center);
         if n > 0 {
-            r = r.push(count_pill(n));
+            r = r.push(
+                w::Badge::count(n as u32, 99)
+                    .role(iad::Role::Accent)
+                    .solid(true),
+            );
         }
         r.into()
     }
@@ -290,12 +280,17 @@ impl App {
                     Message::SearchOpen(!self.searching),
                 ),
                 self.tab(
-                    Glyph::Explore.view(16.0).into(),
+                    Icon::Compass.view(16.0).into(),
                     "Explore",
                     explore,
                     Message::Go(Dest::Explore),
                 ),
-                self.tab(Glyph::Jam.view(16.0).into(), "Jam", jam, Message::ToggleJam),
+                self.tab(
+                    Icon::Sparkle.view(16.0).into(),
+                    "Jam",
+                    jam,
+                    Message::ToggleJam
+                ),
             ]
             .padding(4),
         )

@@ -8,7 +8,6 @@
 mod components;
 mod data;
 mod icons;
-mod primitives;
 mod ui;
 mod ui_dialogs;
 mod ui_lists;
@@ -26,7 +25,7 @@ use iad::transition::Event;
 use iad::widget::{ReorderEvent, ReorderState};
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
-use primitives::bulk_tags::{self, Change, Plan};
+use weaver::bulk::{self as bulk_tags, Change, Plan};
 
 type Element<'a> = iad::Element<'a, Message>;
 
@@ -271,10 +270,7 @@ pub struct App {
     /// The minutes chosen in the sleep-timer menu (`None`: off).
     pub sleep_choice: Option<u32>,
     /// The window of the main track list (virtualised) and where it starts.
-    pub list_total: usize,
-    pub list_first: usize,
-    pub list_window: Vec<Track>,
-    list_vp: Viewport,
+    pub list_vp: Viewport,
     pub bulk: Option<BulkEdit>,
     /// Descriptions of detail pages, by `desc_key`, and whether the open one is being edited.
     pub descriptions: std::collections::HashMap<String, String>,
@@ -285,10 +281,7 @@ pub struct App {
     pub jam_filters_open: bool,
     /// The playlist the jam was last saved as, and the filters it was saved with.
     pub jam_saved: Option<(usize, Filter)>,
-    pub jam_total: usize,
-    pub jam_first: usize,
-    pub jam_window: Vec<Track>,
-    jam_vp: Viewport,
+    pub jam_vp: Viewport,
     rng: u64,
 }
 
@@ -339,9 +332,6 @@ impl App {
             favorites: std::collections::HashSet::new(),
             sleep_left: None,
             sleep_choice: None,
-            list_total: 0,
-            list_first: 0,
-            list_window: Vec::new(),
             list_vp: Viewport::new(480.0),
             bulk: None,
             descriptions: std::collections::HashMap::new(),
@@ -349,9 +339,6 @@ impl App {
             desc_expanded: false,
             jam_filters_open: true,
             jam_saved: None,
-            jam_total: 0,
-            jam_first: 0,
-            jam_window: Vec::new(),
             jam_vp: Viewport::new(JAM_LIST),
             rng: 0x9e37_79b9_7f4a_7c15,
             lib,
@@ -408,7 +395,12 @@ impl App {
         }
         if std::env::var_os("WEAVE_GUI_SHOT").is_some() {
             tasks.push(Task::perform(
-                tokio::time::sleep(Duration::from_millis(2500)),
+                tokio::time::sleep(Duration::from_millis(
+                    std::env::var("WEAVE_GUI_DELAY")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(2500),
+                )),
                 |_| Message::Shoot,
             ));
         }
@@ -1097,7 +1089,6 @@ impl App {
                 Vec::new()
             }
         };
-        self.sync_lists();
         let snap = self.sync_lyrics();
         Task::batch([self.dispatch(cmds), snap])
     }
@@ -1138,23 +1129,6 @@ impl App {
     /// The height of a row in every track list.
     pub fn row_h(&self) -> f32 {
         if self.compact { ROW_COMPACT } else { ROW }
-    }
-
-    /// The virtualised lists keep only the rows in view (and a few around them): the jam's
-    /// matches, and the page's rows where the page is a long list.
-    fn sync_lists(&mut self) {
-        let pitch = self.row_h();
-        if self.jam_open {
-            let rows: Vec<&Track> = self.lib.filtered(&self.filter);
-            let range = self.jam_vp.window(rows.len(), pitch, 4);
-            self.jam_total = rows.len();
-            self.jam_first = range.start;
-            self.jam_window = rows[range].iter().map(|t| (*t).clone()).collect();
-        }
-        let range = self.list_vp.window(self.rows.len(), pitch, 4);
-        self.list_total = self.rows.len();
-        self.list_first = range.start;
-        self.list_window = self.rows[range].to_vec();
     }
 
     /// Keeps the lyrics of the playing track and the line to highlight; scrolls when it moves.

@@ -6,7 +6,6 @@ use iced_adaptive_design::widget as w;
 
 use super::badge::{badge, contrast};
 use super::cover::color;
-use crate::icons::Glyph;
 
 pub fn playlist_icon<'a, M: 'a>(name: &str, icon: Option<&str>, size: f32) -> Element<'a, M> {
     match icon {
@@ -17,7 +16,7 @@ pub fn playlist_icon<'a, M: 'a>(name: &str, icon: Option<&str>, size: f32) -> El
                     .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)),
             );
             badge(
-                Glyph::for_tag_icon(key).colored(size * 0.5, contrast(c)),
+                crate::icons::for_key(key).colored(size * 0.5, contrast(c)),
                 c,
                 size,
             )

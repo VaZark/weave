@@ -1,5 +1,5 @@
-//! App-specific: changing the tags of many things at once. Tags are compared without regard to
-//! case, like the engine's tag identity. Three changes: **add** a tag to everything, and for a tag
+//! Changing the tags of many things at once. Tags are compared without regard to case, like a
+//! tag's identity. Three changes: **add** a tag to everything, and for a tag
 //! that is already there, **delete** it or **replace** it with another (the match is on the
 //! tag's name, so something without it is left alone).
 

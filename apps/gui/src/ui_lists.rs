@@ -3,20 +3,16 @@
 
 use iad::Icon;
 use iad::primitives::sorting::Direction;
-use iad::widget::{self as w, Menu, MenuItem, MenuPresentation, typography as ty};
+use iad::widget::{self as w, Menu, MenuItem, MenuPresentation, VirtualList, typography as ty};
 use iced::alignment::Horizontal;
 use iced::widget::{button, column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::cover::{color, cover};
-use crate::components::detail_header::{Header, detail_header};
-use crate::components::editable_text::{Messages, editable_text};
-use crate::components::play_button::play_button;
 use crate::components::playlist_icon::playlist_icon;
 use crate::components::transport::glyph_button;
 use crate::data::{Filter, Track};
-use crate::icons::Glyph;
 use crate::ui::{autofit, card, row_style};
 use crate::{App, Col, Dest, Element, Message};
 
@@ -92,9 +88,12 @@ impl App {
     fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
         let mut views = vec![];
         if album {
-            views.push(MenuItem::action("View album", Message::ViewAlbum(id)).icon(Icon::Folder));
+            views.push(
+                MenuItem::action("View album", Message::ViewAlbum(id))
+                    .icon(crate::icons::library()),
+            );
         }
-        views.push(MenuItem::action("View artist", Message::ViewArtist(id)));
+        views.push(MenuItem::action("View artist", Message::ViewArtist(id)).icon(Icon::MusicNote));
         self.menu_button(
             Icon::ViewMore,
             "Track options",
@@ -104,7 +103,7 @@ impl App {
                     MenuItem::action("Add to queue", Message::AddToQueue(id)).icon(Icon::ListAdd),
                 ])
                 .section([
-                    MenuItem::action("Rate", Message::RateTrack(id)),
+                    MenuItem::action("Rate", Message::RateTrack(id)).icon(Icon::Star),
                     MenuItem::action("Edit tags", Message::EditTrack(id)).icon(Icon::Edit),
                     MenuItem::action("More info", Message::InfoTrack(id))
                         .icon(Icon::DialogInformation),
@@ -214,20 +213,14 @@ impl App {
 
     /// The page's tracks as a virtualised list: only the rows in view are built.
     pub fn virtual_tracks(&self, o: RowOpts) -> Element<'_> {
-        let rows: Vec<Element<'_>> = self
-            .list_window
-            .iter()
-            .map(|t| self.track_row(t, o, Message::PlayTrack(t.id)))
-            .collect();
         column![
             self.sort_header(),
-            crate::components::virtual_list::virtual_list(
-                rows,
-                self.list_total,
-                self.list_first,
-                self.row_h(),
-                Message::ListScroll,
-            ),
+            VirtualList::new(self.rows.len(), self.row_h(), &self.list_vp, move |i| {
+                let t = &self.rows[i];
+                self.track_row(t, o, Message::PlayTrack(t.id))
+            })
+            .on_scroll(Message::ListScroll)
+            .overscan(4),
         ]
         .height(Length::Fill)
         .into()
@@ -240,18 +233,14 @@ impl App {
             bpm: true,
             menu: false,
         };
-        let rows: Vec<Element<'_>> = self
-            .jam_window
-            .iter()
-            .map(|t| self.track_row(t, o, Message::PlayAll(vec![t.id])))
-            .collect();
-        crate::components::virtual_list::virtual_list(
-            rows,
-            self.jam_total,
-            self.jam_first,
-            self.row_h(),
-            Message::JamScroll,
-        )
+        let rows: Vec<&Track> = self.lib.filtered(&self.filter);
+        VirtualList::new(rows.len(), self.row_h(), &self.jam_vp, move |i| {
+            let t = rows[i];
+            self.track_row(t, o, Message::PlayAll(vec![t.id]))
+        })
+        .on_scroll(Message::JamScroll)
+        .overscan(4)
+        .into()
     }
 
     fn facts(&self, extra: Option<String>) -> Element<'_> {
@@ -266,7 +255,9 @@ impl App {
 
     fn play_all(&self) -> Element<'_> {
         let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
-        play_button((!ids.is_empty()).then_some(Message::PlayAll(ids)))
+        w::suggested_circular_button(Icon::Play.view(16.0))
+            .on_press_maybe((!ids.is_empty()).then_some(Message::PlayAll(ids)))
+            .into()
     }
 
     /// Tracks and Recently played: the play button, then the long list.
@@ -594,9 +585,17 @@ impl App {
                     Icon::Document.view(18.0).into(),
                     Dest::Playlists,
                 ),
-                link("All artists", Glyph::Note.view(18.0).into(), Dest::Artists),
-                link("All albums", Glyph::Library.view(18.0).into(), Dest::Albums),
-                link("All tracks", Glyph::Queue.view(18.0).into(), Dest::Tracks),
+                link(
+                    "All artists",
+                    Icon::MusicNote.view(18.0).into(),
+                    Dest::Artists,
+                ),
+                link(
+                    "All albums",
+                    crate::icons::library().view(18.0).into(),
+                    Dest::Albums,
+                ),
+                link("All tracks", Icon::Queue.view(18.0).into(), Dest::Tracks),
             ],
             260.0,
         );
@@ -677,31 +676,32 @@ impl App {
         self.menu_button(
             Icon::OpenMenu,
             "View",
-            Menu::new("View").section([
-                MenuItem::check("List", !self.compact, Message::ToggleCompact),
-                MenuItem::check("Compact", self.compact, Message::ToggleCompact),
-            ]),
+            Menu::new("View")
+                .check_style(w::MenuCheckStyle::Mark)
+                .section([
+                    MenuItem::check("List", !self.compact, Message::ToggleCompact),
+                    MenuItem::check("Compact", self.compact, Message::ToggleCompact),
+                ]),
         )
     }
 
     fn detail_page(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let big = 200.0;
-        let description: Element<'_> = editable_text(
+        let description: Element<'_> = w::EditableText::new(
             self.desc_key()
                 .and_then(|k| self.descriptions.get(&k))
                 .map_or("", String::as_str),
-            "Add a description",
-            self.editing_desc,
-            self.desc_expanded,
-            44.0,
-            Messages {
-                on_edit: Message::EditDescription(true),
-                on_input: Box::new(Message::Describe),
-                on_done: Message::EditDescription(false),
-                on_expand: Box::new(Message::DescExpanded),
-            },
-        );
+            Message::Describe,
+        )
+        .placeholder("Add a description")
+        .editing(self.editing_desc)
+        .expanded(self.desc_expanded)
+        .max_height(44.0)
+        .on_edit(Message::EditDescription(true))
+        .on_done(Message::EditDescription(false))
+        .on_expand(Message::DescExpanded)
+        .into();
         let (cover_el, kind, title, facts, actions, tint): (
             Element<'_>,
             String,
@@ -752,7 +752,7 @@ impl App {
                     name.clone(),
                     facts.into(),
                     vec![
-                        glyph_button(Glyph::Heart, 20.0, fav, Message::ToggleFavorite(name)),
+                        glyph_button(Icon::Heart, 20.0, fav, Message::ToggleFavorite(name)),
                         self.options_menu(false),
                     ],
                     color(i),
@@ -772,20 +772,19 @@ impl App {
             }
             _ => unreachable!("detail_page is for playlists, artists and albums"),
         };
-        let header = detail_header(
-            Header {
-                cover: cover_el,
-                kind,
-                title,
-                description,
-                facts,
-                play: self.play_all(),
-                actions,
-                end: Some(self.view_menu()),
-                tint,
-            },
-            narrow,
-        );
+        let mut header = w::DetailHeader::new(title)
+            .kind(kind)
+            .cover(cover_el)
+            .description(description)
+            .facts(facts)
+            .primary(self.play_all())
+            .end(self.view_menu())
+            .tint(tint)
+            .narrow(narrow);
+        for a in actions {
+            header = header.action(a);
+        }
+        let header: Element<'_> = header.into();
         let o = RowOpts {
             album: !matches!(self.dest, Dest::Album(_)),
             bpm: false,

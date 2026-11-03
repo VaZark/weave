@@ -40,6 +40,7 @@
 //! # let _ = ChildPolicy::Detach;
 //! ```
 
+pub mod bulk;
 mod error;
 mod filter;
 mod name;

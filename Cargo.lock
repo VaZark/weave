@@ -4927,6 +4927,7 @@ dependencies = [
  "iced-adaptive-design",
  "image",
  "tokio",
+ "weaver",
 ]
 
 [[package]]
