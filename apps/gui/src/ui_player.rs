@@ -4,14 +4,14 @@ use iad::widget::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
 use iad::{Icon, style};
-use iced::widget::{column, container, mouse_area, row, scrollable, space};
+use iced::widget::{column, container, mouse_area, row, space};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
 use crate::icons::cover;
-use crate::ui::{BAR_H, HEADER_H, TAB_H};
+use crate::ui::surface;
 use crate::{App, Element, LYRICS, Message};
 
 impl App {
@@ -96,7 +96,7 @@ impl App {
             .spacing(14)
             .align_y(Alignment::Center),
         )
-        .padding([8, 16])
+        .padding(surface::bar_padding())
         .style(style::container::headerbar)
         .into()
     }
@@ -132,11 +132,28 @@ impl App {
 
     // ---- the queue ------------------------------------------------------------------------
 
-    /// The queue page. The now-playing bar is moved to the top of the page (above the list, on
-    /// both layouts) and the queue pushes the rest of the page's content out. "Up next" is only
-    /// what follows the playing track, always editable: a delete button before the drag handle.
-    /// Shuffle, repeat and the sleep timer are here too (the wide bar already has the first two).
+    /// The queue page, settled: the now-playing bar on top (the mini player on narrow, the full
+    /// bar on wide) and the queue's body below it.
     pub fn queue_page(&self) -> Element<'_> {
+        column![self.now_bar(), self.queue_body()]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// The now-playing bar of this layout: the full bar on wide, the mini player on narrow.
+    pub fn now_bar(&self) -> Element<'_> {
+        if self.is_narrow() {
+            self.mini_player()
+        } else {
+            self.player_bar()
+        }
+    }
+
+    /// The body of the queue: the sleep timer, shuffle and repeat where the bar lacks them, and
+    /// "Up next", which is only what follows the playing track and is always editable (a delete
+    /// button before the drag handle).
+    pub fn queue_body(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let timer = {
             let opt = |m: Option<u32>, label: &'static str| {
@@ -204,30 +221,7 @@ impl App {
                         .on_toggle(move |_| Message::Repeat),
                 );
         }
-        // The now-playing bar sits on top: the mini player on narrow, the full bar on wide.
-        let now = if narrow {
-            self.mini_player()
-        } else {
-            self.player_bar()
-        };
-        // The list slides up into place when the queue opens and back down when it closes.
-        let e = self.queue_slide.eased();
-        let scroller = scrollable(container(list).padding(12));
-        let list_area: Element<'_> = if e >= 0.999 {
-            scroller.height(Length::Fill).into()
-        } else {
-            let fixed = BAR_H + 46.0 + HEADER_H + if narrow { TAB_H } else { 0.0 } + 2.0;
-            let avail = (self.win_h - fixed).max(120.0);
-            container(column![
-                space::vertical().height(Length::Fixed((1.0 - e) * avail)),
-                container(scroller).height(Length::Fixed(avail)),
-            ])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .clip(true)
-            .into()
-        };
-        column![now, container(controls).padding([6, 12]), list_area]
+        column![surface::toolbar(controls), surface::scrolling(list)]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -270,7 +264,6 @@ impl App {
         ]
         .spacing(12)
         .align_x(Alignment::Center)
-        .padding(16)
         .max_width(640)
         .height(Length::Fill);
         let lyrics = w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
@@ -302,7 +295,7 @@ impl App {
         let backdrop = iad::color::from_index(t.id);
         container(column![
             close,
-            container(body).center_x(Length::Fill).height(Length::Fill)
+            surface::full(container(body).center_x(Length::Fill))
         ])
         .width(Length::Fill)
         .height(Length::Fill)

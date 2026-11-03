@@ -9,6 +9,7 @@ use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
+use crate::ui::surface;
 use crate::{App, Element, Message, Mode3};
 use iad::widget::{ChipGroup, ChipOption, ChipSize, Histogram};
 
@@ -203,10 +204,7 @@ impl App {
                 .height(Length::Fill)
                 .into()
         };
-        container(page)
-            .padding(crate::ui::GUTTER)
-            .height(Length::Fill)
-            .into()
+        surface::full(page)
     }
 
     // ---- dialogs ------------------------------------------------------------------------

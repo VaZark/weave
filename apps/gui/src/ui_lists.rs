@@ -10,7 +10,7 @@ use iced_adaptive_design as iad;
 
 use crate::data::{Filter, Track};
 use crate::icons::{cover, playlist_avatar};
-use crate::ui::{GUTTER, card, page_surface};
+use crate::ui::{card, surface};
 use crate::{App, Col, Dest, Element, Message};
 use iad::color::{from_index, from_seed};
 
@@ -171,13 +171,10 @@ impl App {
     /// The page's tracks as a virtualised list: only the rows in view are built.
     pub fn virtual_tracks(&self, o: RowOpts) -> Element<'_> {
         column![
-            container(self.sort_header()).padding([0.0, GUTTER]),
+            surface::band(self.sort_header()),
             VirtualList::new(self.rows.len(), self.row_h(), &self.list_vp, move |i| {
                 let t = &self.rows[i];
-                container(self.track_row(t, o, Message::PlayTrack(t.id)))
-                    .padding([0.0, GUTTER])
-                    .height(Length::Fill)
-                    .into()
+                surface::row(self.track_row(t, o, Message::PlayTrack(t.id)))
             })
             .on_scroll(Message::ListScroll)
             .overscan(4),
@@ -223,15 +220,14 @@ impl App {
     /// Tracks and Recently played: the play button, then the long list.
     fn track_page(&self) -> Element<'_> {
         column![
-            container(
+            surface::toolbar(
                 row![
                     self.play_all(),
                     ty::caption(format!("{} tracks", self.rows.len()))
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center)
-            )
-            .padding([8.0, GUTTER]),
+            ),
             self.virtual_tracks(RowOpts {
                 album: true,
                 bpm: false,
@@ -245,7 +241,7 @@ impl App {
     /// Search results: the same list, narrowed.
     fn results_page(&self) -> Element<'_> {
         let list = column![
-            container(ty::caption(format!("{} tracks", self.rows.len()))).padding([8.0, GUTTER]),
+            surface::toolbar(ty::caption(format!("{} tracks", self.rows.len()))),
             self.virtual_tracks(RowOpts {
                 album: true,
                 bpm: false,
@@ -254,7 +250,7 @@ impl App {
         ]
         .height(Length::Fill);
         if self.is_narrow() {
-            column![container(self.search_entry()).padding([8.0, GUTTER]), list].into()
+            column![surface::toolbar(self.search_entry()), list].into()
         } else {
             list.into()
         }
@@ -378,42 +374,36 @@ impl App {
     }
 
     fn artists(&self) -> Element<'_> {
-        scrollable(page_surface(
+        surface::scrolling(
             self.grid(
                 (0..self.lib.artists().len())
                     .map(|i| self.artist_card(i, None))
                     .collect(),
                 130.0,
             ),
-        ))
-        .height(Length::Fill)
-        .into()
+        )
     }
 
     fn albums(&self) -> Element<'_> {
-        scrollable(page_surface(
+        surface::scrolling(
             self.grid(
                 (0..self.lib.albums().len())
                     .map(|i| self.album_card(i, true))
                     .collect(),
                 130.0,
             ),
-        ))
-        .height(Length::Fill)
-        .into()
+        )
     }
 
     fn playlists(&self) -> Element<'_> {
-        scrollable(page_surface(
+        surface::scrolling(
             self.grid(
                 (0..self.lib.playlists.len())
                     .map(|i| self.playlist_card(i))
                     .collect(),
                 260.0,
             ),
-        ))
-        .height(Length::Fill)
-        .into()
+        )
     }
 
     // ---- Home -----------------------------------------------------------------------------
@@ -470,7 +460,7 @@ impl App {
             section_all("Recent artists", Dest::Artists, artists),
         ]
         .spacing(20);
-        scrollable(page_surface(page)).height(Length::Fill).into()
+        surface::scrolling(page)
     }
 
     /// Rediscover what you loved and explore what you might: old favourites, what you play most,
@@ -594,7 +584,7 @@ impl App {
             section("You might like", might_like),
         ]
         .spacing(20);
-        scrollable(page_surface(page)).height(Length::Fill).into()
+        surface::scrolling(page)
     }
 
     // ---- detail pages -----------------------------------------------------------------------
@@ -741,40 +731,32 @@ impl App {
             let popular = self.lib.popular_albums(&name, 4);
             let latest = self.lib.latest_albums(&name, 4);
             if !popular.is_empty() {
-                page = page.push(
-                    container(section(
-                        "Popular albums",
-                        self.grid(
-                            popular
-                                .into_iter()
-                                .map(|a| self.album_card(a, false))
-                                .collect(),
-                            130.0,
-                        ),
-                    ))
-                    .padding([0.0, GUTTER])
-                    .width(Length::Fill),
-                );
+                page = page.push(surface::band(section(
+                    "Popular albums",
+                    self.grid(
+                        popular
+                            .into_iter()
+                            .map(|a| self.album_card(a, false))
+                            .collect(),
+                        130.0,
+                    ),
+                )));
             }
             if !latest.is_empty() {
-                page = page.push(
-                    container(section(
-                        "Latest albums",
-                        self.grid(
-                            latest
-                                .into_iter()
-                                .map(|a| self.album_card(a, false))
-                                .collect(),
-                            130.0,
-                        ),
-                    ))
-                    .padding([0.0, GUTTER])
-                    .width(Length::Fill),
-                );
+                page = page.push(surface::band(section(
+                    "Latest albums",
+                    self.grid(
+                        latest
+                            .into_iter()
+                            .map(|a| self.album_card(a, false))
+                            .collect(),
+                        130.0,
+                    ),
+                )));
             }
-            page = page.push(container(ty::heading("All tracks")).padding([0.0, GUTTER]));
+            page = page.push(surface::band(ty::heading("All tracks")));
         }
-        page = page.push(container(self.plain_list(&self.rows, o)).padding([0.0, GUTTER]));
+        page = page.push(surface::band(self.plain_list(&self.rows, o)));
         scrollable(page).height(Length::Fill).into()
     }
 

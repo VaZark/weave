@@ -19,17 +19,99 @@ const SEARCH_ID: &str = "search";
 pub const HEADER_H: f32 = 47.0;
 pub const BAR_H: f32 = 65.0;
 pub const TAB_H: f32 = 56.0;
+pub const MINI_H: f32 = 60.0;
 
-/// The side gutter every page keeps: headings, cards and the edges of lists.
-pub const GUTTER: f32 = 16.0;
+/// The one place the page gutter exists. A page is built only from these: nothing else in the app
+/// may hard-code a gutter (a test fails if a page file does), so every page, in either density,
+/// keeps the same distance from the window edge. The base is iad's `Container`.
+pub(crate) mod surface {
+    use super::*;
 
-/// The base surface of a page: iad's `Container` (fluid) with the same gutter on every side, so
-/// no page runs up to the window edge.
-pub fn page_surface<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-    w::Container::new(content)
-        .fluid(true)
-        .padding(iced::Padding::from(GUTTER))
-        .into()
+    /// The gutter: headings, cards and the edges of lists keep this far from the window edge.
+    const GUTTER: f32 = 16.0;
+    /// Breathing room above and below a toolbar band.
+    const BAND: f32 = 8.0;
+
+    fn sides() -> iced::Padding {
+        iced::Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: GUTTER,
+            right: GUTTER,
+        }
+    }
+
+    fn base<'a>(content: impl Into<Element<'a>>, padding: iced::Padding) -> Element<'a> {
+        w::Container::new(content)
+            .fluid(true)
+            .padding(padding)
+            .into()
+    }
+
+    /// A page that scrolls. The surface is inside the scrollable, so the scroll bar stays at the
+    /// window edge while the content keeps the gutter on every side.
+    pub fn scrolling<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+        iced::widget::scrollable(base(content, iced::Padding::from(GUTTER)))
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// A page that does not scroll as a whole (a jam, a sheet's body): the gutter on every side.
+    pub fn full<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+        container(base(content, iced::Padding::from(GUTTER)))
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// A band inside a page (a section, a heading, a list header): the side gutter only.
+    pub fn band<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+        base(content, sides())
+    }
+
+    /// A toolbar band (the play row, a search entry): the side gutter and a little air.
+    pub fn toolbar<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+        base(
+            content,
+            iced::Padding {
+                top: BAND,
+                bottom: BAND,
+                ..sides()
+            },
+        )
+    }
+
+    /// A row of a flat list: inset so its hover surface starts on the gutter.
+    pub fn row<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+        container(base(content, sides()))
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// The padding of a bar (the player bar): the gutter at the sides.
+    pub fn bar_padding() -> iced::Padding {
+        iced::Padding {
+            top: BAND,
+            bottom: BAND,
+            ..sides()
+        }
+    }
+}
+
+/// Shows `content` through a window of `height`, translating it instead of squeezing it: a
+/// scrollable that does not scroll gives its content unbounded room. `from_bottom` pins the
+/// content's bottom to the window's bottom (it is pushed up as the window shrinks).
+fn clip<'a>(content: Element<'a>, height: f32, from_bottom: bool) -> Element<'a> {
+    let s = iced::widget::scrollable(content)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::hidden(),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fixed(height));
+    if from_bottom {
+        s.anchor_bottom().into()
+    } else {
+        s.into()
+    }
 }
 
 pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
@@ -234,15 +316,48 @@ impl App {
         self.page()
     }
 
+    /// The queue opening or closing: the same final layout, only animated. The now-playing bar
+    /// rises from the bottom to the top with the page (or Now Playing, if it is open) pushed up
+    /// ahead of it, and the space it leaves below becomes the queue; closing runs it backwards.
+    /// Nothing about the layouts at either end changes.
+    fn queue_stage(&self) -> Element<'_> {
+        let narrow = self.is_narrow();
+        let e = self.queue_slide.eased();
+        let bar_h = if narrow { MINI_H } else { BAR_H };
+        // The page area: what is left of the window under the header (and above the tabs) after
+        // the bar.
+        let p = (self.win_h - 2.0 - HEADER_H - if narrow { TAB_H } else { 0.0 } - bar_h).max(120.0);
+        // Above the bar: Now Playing if it is open, else the page, pinned to the bottom of a
+        // shrinking clip, so the rising bar pushes it up and out.
+        let top: Element<'_> = if self.np_slide.mounted() {
+            container(self.now_playing_view())
+                .height(Length::Fixed(p))
+                .into()
+        } else {
+            container(self.content()).height(Length::Fixed(p)).into()
+        };
+        let above = clip(top, (1.0 - e) * p, true);
+        // Below the bar: the queue, revealed from the bar down.
+        let below = clip(
+            container(self.queue_body()).height(Length::Fixed(p)).into(),
+            e * p,
+            false,
+        );
+        column![above, self.now_bar(), below].into()
+    }
+
+    /// The page area when the queue is (or is becoming) the page.
+    fn queue_area(&self) -> Element<'_> {
+        if self.queue_slide.shown >= 1.0 {
+            container(self.queue_page()).height(Length::Fill).into()
+        } else {
+            self.queue_stage()
+        }
+    }
+
     fn wide(&self) -> Element<'_> {
         if self.queue_slide.mounted() {
-            // The queue pushes the content out and the player bar moves to the top, under the
-            // header.
-            return column![
-                self.header(),
-                container(self.sheets(self.queue_page())).height(Length::Fill),
-            ]
-            .into();
+            return column![self.header(), self.queue_area()].into();
         }
         column![
             self.header(),
@@ -316,7 +431,7 @@ impl App {
     fn narrow(&self) -> Element<'_> {
         // With the queue open it takes the page, and the mini player moves to the top of it.
         let body = if self.queue_slide.mounted() {
-            column![self.header(), self.queue_page(), self.tab_bar()]
+            column![self.header(), self.queue_area(), self.tab_bar()]
         } else {
             column![
                 self.header(),
@@ -325,6 +440,10 @@ impl App {
                 self.tab_bar(),
             ]
         };
+        if self.queue_slide.mounted() {
+            // The queue's own animation carries Now Playing with it.
+            return body.into();
+        }
         self.sheets(body.into())
     }
 }

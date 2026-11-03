@@ -316,6 +316,8 @@ pub struct App {
     pub np_slide: Slide,
     pub queue_slide: Slide,
     last_frame: Option<Instant>,
+    /// Development: freeze the animations where they are (`WEAVE_GUI_HOLD`).
+    hold: bool,
     /// The window's height, for how far a sheet travels.
     pub win_h: f32,
     pub show_lyrics: bool,
@@ -383,6 +385,7 @@ impl App {
             np_slide: Slide::default(),
             queue_slide: Slide::default(),
             last_frame: None,
+            hold: false,
             win_h: window_size().1,
             show_lyrics: false,
             history: History::new(Place::home()),
@@ -444,6 +447,17 @@ impl App {
                 "compact-home" => vec![Message::SetCompact(true)],
                 "compact-albums" => vec![Message::SetCompact(true), Message::Go(Dest::Albums)],
                 "compact-artist" => vec![Message::SetCompact(true), Message::Go(Dest::Artist(1))],
+                "queue-mid" | "playing-queue-mid" => {
+                    // Freeze the queue's opening animation halfway (with Now Playing open, or not).
+                    app.hold = true;
+                    app.queue_open = true;
+                    // eased(0.2063) is one half
+                    app.queue_slide.shown = 0.2063;
+                    if start == "playing-queue-mid" {
+                        app.np_slide.shown = 1.0;
+                    }
+                    vec![]
+                }
                 "settings" => vec![Message::OpenSettings],
                 "compact" => vec![Message::Go(Dest::Tracks), Message::ToggleCompact],
                 "artists" => vec![Message::Go(Dest::Artists)],
@@ -668,6 +682,7 @@ impl App {
                 self.adaptive.resize(w, now)
             }
             Message::Noop => Vec::new(),
+            Message::Frame(_) if self.hold => Vec::new(),
             Message::Frame(t) => {
                 let dt = self
                     .last_frame
@@ -675,8 +690,16 @@ impl App {
                     .min(0.1);
                 self.last_frame = Some(t);
                 let (np, q) = (self.now_playing, self.queue_open);
-                self.np_slide.step(np, dt);
                 self.queue_slide.step(q, dt);
+                if q && self.np_slide.mounted() {
+                    // Now Playing was open when the queue was chosen: it is held while the queue's
+                    // push animation carries it up, then gone.
+                    if self.queue_slide.shown >= 1.0 {
+                        self.np_slide.shown = 0.0;
+                    }
+                } else {
+                    self.np_slide.step(np, dt);
+                }
                 if !self.animating() {
                     self.last_frame = None;
                 }
@@ -1575,5 +1598,64 @@ mod tests {
             a.np_slide.mounted(),
             "stays mounted while it slides back down"
         );
+    }
+
+    /// The page gutter exists in one place (`ui::surface`). A page file that sets its own
+    /// gutter, or reaches for the constant, would drift from the rest: fail instead.
+    #[test]
+    fn pages_get_their_gutter_only_from_the_surface() {
+        let files = [
+            ("ui_lists.rs", include_str!("ui_lists.rs")),
+            ("ui_dialogs.rs", include_str!("ui_dialogs.rs")),
+            ("ui_player.rs", include_str!("ui_player.rs")),
+        ];
+        for (name, src) in files {
+            assert!(
+                !src.contains("GUTTER"),
+                "{name} must not use the gutter constant"
+            );
+            // a `.padding(..)` call that mentions 16 (the gutter) in its arguments
+            for (i, _) in src.match_indices(".padding(") {
+                let rest = &src[i + ".padding(".len()..];
+                let args = &rest[..rest.find(')').unwrap_or(rest.len())];
+                let has_16 = args
+                    .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .any(|t| t == "16" || t == "16.0");
+                assert!(
+                    !has_16,
+                    "{name}: `.padding({args})` hard-codes the gutter; use ui::surface"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn choosing_the_queue_carries_now_playing_up_with_it() {
+        let mut a = app();
+        let t0 = Instant::now();
+        let mut at = 0u32;
+        let mut run = |a: &mut App, n: u32| {
+            for _ in 0..n {
+                at += 1;
+                let _ = a.update(Message::Frame(t0 + Duration::from_millis(16) * at));
+            }
+        };
+        let _ = a.update(Message::NowPlaying(true));
+        run(&mut a, 40);
+        assert_eq!(a.np_slide.shown, 1.0);
+        let _ = a.update(Message::ToggleQueue);
+        assert!(a.queue_open && !a.now_playing);
+        run(&mut a, 3);
+        assert!(
+            a.np_slide.mounted() && a.queue_slide.shown < 1.0,
+            "Now Playing is held while the queue's push is under way"
+        );
+        run(&mut a, 40);
+        assert_eq!(a.queue_slide.shown, 1.0);
+        assert_eq!(
+            a.np_slide.shown, 0.0,
+            "Now Playing is gone once the queue has settled"
+        );
+        assert!(!a.animating());
     }
 }
