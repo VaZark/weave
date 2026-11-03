@@ -203,17 +203,11 @@ impl App {
 
     // ---- sheets -----------------------------------------------------------------------
 
-    /// Now Playing and the queue slide up over `base`: Now Playing first, the queue over it.
+    /// Now Playing slides up over `base`. (The queue is not a sheet: it is page content.)
     fn sheets<'a>(&'a self, base: Element<'a>) -> Element<'a> {
         let mut e = base;
         if self.now_playing {
             e = w::Overlay::new(e, self.now_playing_view())
-                .docked(w::Side::Bottom, w::Dim::Fill)
-                .scrim(false)
-                .into();
-        }
-        if self.queue_open {
-            e = w::Overlay::new(e, self.queue_view())
                 .docked(w::Side::Bottom, w::Dim::Fill)
                 .scrim(false)
                 .into();
@@ -229,6 +223,15 @@ impl App {
     }
 
     fn wide(&self) -> Element<'_> {
+        if self.queue_open {
+            // The queue pushes the content out and the player bar moves to the top, under the
+            // header.
+            return column![
+                self.header(),
+                container(self.sheets(self.queue_page())).height(Length::Fill),
+            ]
+            .into();
+        }
         column![
             self.header(),
             container(self.sheets(self.content())).height(Length::Fill),
@@ -299,12 +302,17 @@ impl App {
     }
 
     fn narrow(&self) -> Element<'_> {
-        let body = column![
-            self.header(),
-            container(self.content()).height(Length::Fill),
-            self.mini_player(),
-            self.tab_bar(),
-        ];
+        // With the queue open it takes the page, and the mini player moves to the top of it.
+        let body = if self.queue_open {
+            column![self.header(), self.queue_page(), self.tab_bar()]
+        } else {
+            column![
+                self.header(),
+                container(self.content()).height(Length::Fill),
+                self.mini_player(),
+                self.tab_bar(),
+            ]
+        };
         self.sheets(body.into())
     }
 }

@@ -223,8 +223,20 @@ pub struct BulkEdit {
     pub rows: Vec<BulkRow>,
 }
 
+impl Player {
+    /// What comes after the track playing now, as an always-editable list. The playing track is
+    /// not in it: it is shown on its own, so it cannot be dragged or removed.
+    fn sync_up_next(&mut self) {
+        let from = self.current.map_or(0, |c| c + 1).min(self.queue.len());
+        self.up_next = editing_queue(self.queue[from..].to_vec());
+    }
+}
+
 pub struct Player {
-    pub queue: ReorderState<usize>,
+    /// The whole queue, in order; `current` indexes it.
+    pub queue: Vec<usize>,
+    /// The part after `current`, which the queue page lists, reorders and removes from.
+    pub up_next: ReorderState<usize>,
     pub current: Option<usize>,
     pub playing: bool,
     pub pos: f32,
@@ -311,7 +323,8 @@ impl App {
             sort: SortState::new(),
             rows: Vec::new(),
             player: Player {
-                queue: editing_queue(queue),
+                queue,
+                up_next: editing_queue(Vec::new()),
                 current: Some(3),
                 playing: false,
                 pos: 42.0,
@@ -347,6 +360,7 @@ impl App {
             app.descriptions
                 .insert(format!("playlist:{i}"), p.description.clone());
         }
+        app.player.sync_up_next();
         app.refresh();
         let cmds = app.adaptive.resize(window_size().0, Instant::now());
         let mut tasks = vec![app.dispatch(cmds)];
@@ -452,7 +466,7 @@ impl App {
     /// Puts a track in the queue: right after the one playing, or at the end. With nothing
     /// queued it starts playing.
     fn enqueue(&mut self, id: usize, next: bool) {
-        let mut items = self.player.queue.items().to_vec();
+        let mut items = self.player.queue.clone();
         let Some(cur) = self.player.current else {
             return self.play(vec![id], 0);
         };
@@ -462,7 +476,8 @@ impl App {
             items.len()
         };
         items.insert(at, id);
-        self.player.queue = editing_queue(items);
+        self.player.queue = items;
+        self.player.sync_up_next();
     }
 
     pub fn track(&self, id: usize) -> &Track {
@@ -472,7 +487,7 @@ impl App {
     /// The track playing now.
     pub fn now(&self) -> Option<&Track> {
         let i = self.player.current?;
-        self.player.queue.items().get(i).map(|id| self.track(*id))
+        self.player.queue.get(i).map(|id| self.track(*id))
     }
 
     /// Rebuilds the rows of the current page: its scope, then the search, then the sort.
@@ -548,14 +563,15 @@ impl App {
     }
 
     fn play(&mut self, ids: Vec<usize>, start: usize) {
-        self.player.queue = editing_queue(ids);
+        self.player.queue = ids;
         self.player.current = Some(start);
         self.player.pos = 0.0;
         self.player.playing = true;
+        self.player.sync_up_next();
     }
 
     fn step(&mut self, forward: bool) {
-        let n = self.player.queue.items().len();
+        let n = self.player.queue.len();
         let Some(cur) = self.player.current else {
             return;
         };
@@ -575,6 +591,7 @@ impl App {
         } else {
             self.player.current = Some(if forward { 0 } else { n - 1 });
         }
+        self.player.sync_up_next();
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -698,25 +715,28 @@ impl App {
                 Vec::new()
             }
             Message::QueueRemove(i) => {
-                let playing = self
-                    .player
-                    .current
-                    .and_then(|c| self.player.queue.items().get(c).copied());
-                let mut items = self.player.queue.items().to_vec();
-                if i < items.len() {
-                    items.remove(i);
+                // `i` counts in the "Up next" list, which starts after the playing track.
+                let at = self.player.current.map_or(0, |c| c + 1) + i;
+                if at < self.player.queue.len() {
+                    self.player.queue.remove(at);
                 }
-                self.player.queue = editing_queue(items);
-                self.player.current =
-                    playing.and_then(|id| self.player.queue.items().iter().position(|x| *x == id));
+                self.player.sync_up_next();
                 Vec::new()
             }
             Message::NowPlaying(on) => {
                 self.now_playing = on;
+                if on {
+                    // Full-screen Now Playing and the queue page never show together.
+                    self.queue_open = false;
+                }
                 Vec::new()
             }
             Message::ToggleQueue => {
                 self.queue_open = !self.queue_open;
+                if self.queue_open {
+                    // Opening the queue collapses Now Playing, so the queue is what you see.
+                    self.now_playing = false;
+                }
                 Vec::new()
             }
             Message::ToggleLyrics => {
@@ -1042,17 +1062,20 @@ impl App {
                 Vec::new()
             }
             Message::Queue(e) => {
-                let playing = self
+                self.player.up_next.apply(e);
+                // The list is always being edited: a drop is committed at once, into the queue
+                // after the playing track.
+                self.player.up_next.submit();
+                self.player.up_next.edit();
+                let keep = self
                     .player
                     .current
-                    .and_then(|i| self.player.queue.items().get(i).copied());
-                self.player.queue.apply(e);
-                // The queue is always being edited: a drop is committed at once.
-                self.player.queue.submit();
-                self.player.queue.edit();
-                if let Some(id) = playing {
-                    self.player.current = self.player.queue.items().iter().position(|x| *x == id);
-                }
+                    .map_or(0, |c| c + 1)
+                    .min(self.player.queue.len());
+                self.player.queue.truncate(keep);
+                self.player
+                    .queue
+                    .extend_from_slice(self.player.up_next.items());
                 Vec::new()
             }
             Message::Shoot => {
@@ -1298,15 +1321,32 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_is_always_editable_and_a_row_can_be_removed() {
+    fn the_playing_track_is_not_in_up_next_and_the_rest_is_always_editable() {
         let mut a = app();
-        assert!(a.player.queue.is_editing());
-        let playing = a.now().map(|t| t.id);
-        let n = a.player.queue.items().len();
-        let _ = a.update(Message::QueueRemove(n - 1));
-        assert_eq!(a.player.queue.items().len(), n - 1);
-        assert!(a.player.queue.is_editing());
-        assert_eq!(a.now().map(|t| t.id), playing, "the playing track is kept");
+        let cur = a.player.current.unwrap();
+        let playing = a.now().map(|t| t.id).unwrap();
+        // Up next is what follows the playing track; the playing one is not in it.
+        assert_eq!(
+            a.player.up_next.items().len(),
+            a.player.queue.len() - cur - 1
+        );
+        assert!(!a.player.up_next.items().contains(&playing));
+        assert!(a.player.up_next.is_editing());
+        // removing the last upcoming row
+        let n = a.player.queue.len();
+        let last = a.player.up_next.items().len() - 1;
+        let _ = a.update(Message::QueueRemove(last));
+        assert_eq!(a.player.queue.len(), n - 1);
+        assert_eq!(
+            a.now().map(|t| t.id),
+            Some(playing),
+            "the playing track is untouched"
+        );
+        assert!(a.player.up_next.is_editing());
+        // removing the first upcoming row never touches the playing track either
+        let _ = a.update(Message::QueueRemove(0));
+        assert_eq!(a.now().map(|t| t.id), Some(playing));
+        assert_eq!(a.player.queue[cur], playing);
     }
 
     #[test]
@@ -1369,5 +1409,28 @@ mod tests {
         let _ = a.update(Message::CloseSettings);
         assert!(!a.settings_open);
         assert!(a.compact, "closing keeps what was set");
+    }
+
+    #[test]
+    fn the_queue_and_full_screen_now_playing_never_show_together() {
+        let mut a = app();
+        let _ = a.update(Message::NowPlaying(true));
+        assert!(a.now_playing);
+        let _ = a.update(Message::ToggleQueue);
+        assert!(
+            a.queue_open && !a.now_playing,
+            "opening the queue collapses Now Playing"
+        );
+        let _ = a.update(Message::NowPlaying(true));
+        assert!(
+            a.now_playing && !a.queue_open,
+            "expanding Now Playing leaves the queue"
+        );
+        let _ = a.update(Message::ToggleQueue);
+        let _ = a.update(Message::ToggleQueue);
+        assert!(
+            !a.queue_open && !a.now_playing,
+            "closing the queue does not reopen Now Playing"
+        );
     }
 }

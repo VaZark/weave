@@ -54,7 +54,8 @@ impl App {
     /// Wide layout: the player bar.
     pub fn player_bar(&self) -> Element<'_> {
         let Some(t) = self.now() else {
-            return container(ty::caption("Nothing playing")).padding(12).into();
+            // Nothing playing: no bar at all.
+            return space::vertical().height(0).into();
         };
         container(
             row![
@@ -123,9 +124,12 @@ impl App {
 
     // ---- the queue ------------------------------------------------------------------------
 
-    /// The queue: always editable, so each row has its delete button before the drag handle.
-    /// Shuffle, repeat and the sleep timer are here too.
-    pub fn queue_view(&self) -> Element<'_> {
+    /// The queue page. The now-playing bar is moved to the top of the page (above the list, on
+    /// both layouts) and the queue pushes the rest of the page's content out. "Up next" is only
+    /// what follows the playing track, always editable: a delete button before the drag handle.
+    /// Shuffle, repeat and the sleep timer are here too (the wide bar already has the first two).
+    pub fn queue_page(&self) -> Element<'_> {
+        let narrow = self.is_narrow();
         let timer = {
             let opt = |m: Option<u32>, label: &'static str| {
                 MenuItem::check(label, self.sleep_choice == m, Message::SleepTimer(m))
@@ -147,11 +151,11 @@ impl App {
             Some(left) => ty::caption(format!("Stops in {}", clock(left))),
             None => ty::caption(""),
         };
-        let list = ReorderableList::of(&self.player.queue, |id: &usize| {
+        let list = ReorderableList::of(&self.player.up_next, |id: &usize| {
             let t = &self.lib.tracks[*id];
             let at = self
                 .player
-                .queue
+                .up_next
                 .items()
                 .iter()
                 .position(|x| x == id)
@@ -169,26 +173,44 @@ impl App {
         })
         .controls(false)
         .on_event(Message::Queue);
-        container(column![
-            container(
-                row![
-                    w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue),
-                    ty::heading("Queue"),
-                    space::horizontal(),
-                    sleep,
-                    timer,
-                    glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                    glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .padding([6, 12]),
+        let mut controls = row![
+            w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue),
+            ty::heading("Up next"),
+            ty::caption(format!("{} tracks", self.player.up_next.items().len())),
+            space::horizontal(),
+            sleep,
+            timer,
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if narrow {
+            controls = controls
+                .push(glyph_button(
+                    Icon::Shuffle,
+                    16.0,
+                    self.player.shuffle,
+                    Message::Shuffle,
+                ))
+                .push(glyph_button(
+                    Icon::Repeat,
+                    16.0,
+                    self.player.repeat,
+                    Message::Repeat,
+                ));
+        }
+        // The now-playing bar sits on top: the mini player on narrow, the full bar on wide.
+        let now = if narrow {
+            self.mini_player()
+        } else {
+            self.player_bar()
+        };
+        column![
+            now,
+            container(controls).padding([6, 12]),
             scrollable(container(list).padding(12)).height(Length::Fill),
-        ])
+        ]
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(iad::style::container::window)
         .into()
     }
 

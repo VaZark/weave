@@ -117,7 +117,7 @@ adaptive
 - **Header, right corner:** 🔍 Search and ✦ Jam.
 - **Search:** firing the Search action turns the centred title into a search entry with a filter button; the button opens the filter popover (see [jam](jam.md#the-filter-page)). Escape or ✕ restores the title and clears the search and its filters. A badge on the filter button counts the active filters.
 - **Jam:** the [jam sheet](jam.md) opens over the content area. The player bar stays visible and keeps playing.
-- **Queue:** a full-height sheet that slides up over the window (in both layouts), scrollable, with drag to reorder. It does not share a pane with the lyrics.
+- **Queue:** page content, in both layouts: it replaces the page, the now-playing bar moves to the top, and "Up next" (what follows the playing track) scrolls below it, with drag to reorder and a delete button on each row.
 
 On a phone the app is usually a thin client of the desktop instance, with an instance switcher in the settings.
 
