@@ -1,7 +1,9 @@
 //! The icons iced-adaptive-design's `Icon` does not have, and the mapping from an icon *key* (what
 //! a tag or a playlist stores) to an `Icon`.
 
-use iced_adaptive_design::{Icon, IconSource};
+use iced_adaptive_design::color::from_index;
+use iced_adaptive_design::widget::{self as w, AvatarShape};
+use iced_adaptive_design::{Element, Icon, IconSource};
 
 /// Albums stacked on a shelf: the library.
 pub fn library() -> IconSource {
@@ -22,5 +24,25 @@ pub fn for_key(key: &str) -> Icon {
         "smile" => Icon::Smile,
         "note" => Icon::MusicNote,
         _ => Icon::Tag,
+    }
+}
+
+/// A cover until the engine provides art: a rounded square with a note, coloured by the track's
+/// (or album's) id from iad's avatar palette.
+pub fn cover<'a, M: 'a>(id: usize, size: f32) -> Element<'a, M> {
+    w::avatar(size, id.to_string())
+        .icon(Icon::MusicNote)
+        .shape(AvatarShape::Rounded)
+        .color(from_index(id))
+        .into()
+}
+
+/// A playlist's picture: its icon on a colour taken from its name, or the initials when it has
+/// no icon.
+pub fn playlist_avatar<'a, M: 'a>(name: &str, icon: Option<&str>, size: f32) -> Element<'a, M> {
+    let a = w::avatar(size, name.to_string());
+    match icon {
+        Some(key) => a.icon(for_key(key)).into(),
+        None => a.into(),
     }
 }

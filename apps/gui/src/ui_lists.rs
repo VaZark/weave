@@ -2,19 +2,17 @@
 //! (playlist, artist, album) and Home.
 
 use iad::Icon;
-use iad::primitives::sorting::Direction;
 use iad::widget::{self as w, Menu, MenuItem, MenuPresentation, VirtualList, typography as ty};
 use iced::alignment::Horizontal;
-use iced::widget::{button, column, container, row, scrollable, space};
+use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
-use crate::components::cover::{color, cover};
-use crate::components::playlist_icon::playlist_icon;
-use crate::components::transport::glyph_button;
 use crate::data::{Filter, Track};
-use crate::ui::{autofit, card, row_style};
+use crate::icons::{cover, playlist_avatar};
+use crate::ui::card;
 use crate::{App, Col, Dest, Element, Message};
+use iad::color::{from_index, from_seed};
 
 /// What a track row shows besides the title and its artist subtitle and the duration.
 #[derive(Clone, Copy)]
@@ -30,37 +28,28 @@ fn stars(n: f32) -> String {
     "★".repeat(full) + &"☆".repeat(5 - full)
 }
 
-fn right<'a>(s: String, w: f32) -> Element<'a> {
+fn right<'a>(s: String) -> Element<'a> {
     ty::caption(s)
-        .width(Length::Fixed(w))
+        .width(Length::Fill)
         .align_x(Horizontal::Right)
         .into()
 }
 
 fn section<'a>(title: &'a str, body: impl Into<Element<'a>>) -> Element<'a> {
-    column![ty::heading(title), body.into()]
+    column![w::SectionHeading::new(title), body.into()]
         .spacing(8)
         .width(Length::Fill)
         .into()
 }
 
-/// A section heading with a "View all" link.
+/// A section with a "View all" link to the full list.
 fn section_all<'a>(title: &'a str, all: Dest, body: impl Into<Element<'a>>) -> Element<'a> {
     column![
-        row![
-            ty::heading(title),
-            space::horizontal(),
-            w::flat_button(
-                row![ty::caption("View all"), Icon::GoNext.view(12.0)]
-                    .spacing(4)
-                    .align_y(Alignment::Center)
-            )
-            .on_press(Message::Open(all)),
-        ]
-        .align_y(Alignment::Center),
+        w::SectionHeading::new(title).link("View all", Message::Open(all)),
         body.into()
     ]
     .spacing(8)
+    .width(Length::Fill)
     .into()
 }
 
@@ -119,43 +108,25 @@ impl App {
     /// button, so it lights up as one.
     pub fn track_row<'a>(&'a self, t: &Track, o: RowOpts, on_press: Message) -> Element<'a> {
         let wide = !self.is_narrow();
-        let mut r = row![].spacing(12).align_y(Alignment::Center);
-        if self.compact {
-            r = r
-                .push(ty::body(t.title.clone()).width(Length::FillPortion(3)))
-                .push(ty::caption(t.artist.clone()).width(Length::FillPortion(2)));
-        } else {
-            r = r.push(cover(t.id, 40.0)).push(
-                column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
-                    .width(Length::FillPortion(3)),
-            );
+        let mut r = w::MediaRow::new(t.title.clone())
+            .subtitle(t.artist.clone())
+            .compact(self.compact)
+            .height(Length::Fill)
+            .on_press(on_press);
+        if !self.compact {
+            r = r.picture(cover(t.id, 40.0));
         }
         if o.album && wide {
-            r = r.push(ty::caption(t.album.clone()).width(Length::FillPortion(2)));
+            r = r.column(Length::FillPortion(2), ty::caption(t.album.clone()));
         }
         if o.bpm {
-            r = r.push(right(format!("{:.0}", t.bpm), 40.0));
+            r = r.column(Length::Fixed(40.0), right(format!("{:.0}", t.bpm)));
         }
-        r = r.push(right(t.duration(), 44.0));
+        r = r.column(Length::Fixed(44.0), right(t.duration()));
         if o.menu {
-            r = r.push(self.track_menu(t.id, o.album));
+            r = r.suffix(self.track_menu(t.id, o.album));
         }
-        // A button does not centre its content: the row is centred in it explicitly.
-        button(
-            container(r.padding(iced::Padding {
-                left: 8.0,
-                right: 16.0,
-                ..iced::Padding::ZERO
-            }))
-            .width(Length::Fill)
-            .center_y(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(0)
-        .style(row_style)
-        .on_press(on_press)
-        .into()
+        r.into()
     }
 
     /// Every row, in the page's own scroll (for pages whose lists are short).
@@ -169,45 +140,21 @@ impl App {
         .into()
     }
 
-    /// The header of a long list: sortable Title, Album and Time over the columns below.
+    /// The header of a long list: sortable Title, Album and Time over the row's columns.
     fn sort_header(&self) -> Element<'_> {
-        let b = |label: &'static str, c: Col| -> Element<'_> {
-            let arrow = match self.sort.direction(&c) {
-                Some(Direction::Asc) => Icon::GoUp,
-                Some(Direction::Desc) => Icon::GoDown,
-                None => Icon::GoUpDown,
-            };
-            w::flat_button(
-                row![ty::caption(label), arrow.view(12.0)]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-            )
-            .padding(0)
-            .on_press(Message::Sort(c))
-            .into()
-        };
-        let wide = !self.is_narrow();
-        let mut r = row![].spacing(12).align_y(Alignment::Center);
+        let mut h = w::SortHeader::new(&self.sort, Message::Sort);
         if !self.compact {
-            r = r.push(space::horizontal().width(Length::Fixed(40.0)));
+            h = h.space(Length::Fixed(40.0));
         }
-        r = r.push(container(b("Title", Col::Title)).width(Length::FillPortion(3)));
+        h = h.column(Col::Title, "Title", Length::FillPortion(3));
         if self.compact {
-            r = r.push(container(b("Artist", Col::Artist)).width(Length::FillPortion(2)));
+            h = h.column(Col::Artist, "Artist", Length::FillPortion(2));
         }
-        if wide {
-            r = r.push(container(b("Album", Col::Album)).width(Length::FillPortion(2)));
+        if !self.is_narrow() {
+            h = h.column(Col::Album, "Album", Length::FillPortion(2));
         }
-        r = r
-            .push(container(b("Time", Col::Duration)).width(Length::Fixed(44.0)))
-            .push(space::horizontal().width(Length::Fixed(36.0)));
-        container(r)
-            .padding(iced::Padding {
-                top: 4.0,
-                bottom: 4.0,
-                left: 8.0,
-                right: 16.0,
-            })
+        h.column(Col::Duration, "Time", Length::Fixed(44.0))
+            .space(Length::Fixed(36.0))
             .into()
     }
 
@@ -305,7 +252,10 @@ impl App {
     /// Cards that fit the width; in compact mode (as in a music app's compact library) the same
     /// entries are tight rows, several to a line, with a small picture and the name beside it.
     fn grid<'a>(&self, items: Vec<Element<'a>>, card_width: f32) -> Element<'a> {
-        autofit(items, if self.compact { 280.0 } else { card_width })
+        w::CardGrid::new(items)
+            .max_width(if self.compact { 280.0 } else { card_width })
+            .spacing(12.0)
+            .into()
     }
 
     /// One compact entry: a small picture, the name, and a line of detail.
@@ -316,20 +266,11 @@ impl App {
         sub: String,
         on_press: Message,
     ) -> Element<'a> {
-        button(
-            row![
-                picture,
-                column![ty::body(name), ty::caption(sub)].width(Length::Fill),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .padding([2, 8]),
-        )
-        .width(Length::Fill)
-        .padding(0)
-        .style(row_style)
-        .on_press(on_press)
-        .into()
+        w::MediaRow::new(name)
+            .subtitle(sub)
+            .picture(picture)
+            .on_press(on_press)
+            .into()
     }
 
     fn album_card(&self, i: usize, show_artist: bool) -> Element<'_> {
@@ -367,7 +308,7 @@ impl App {
         };
         if self.compact {
             return self.compact_entry(
-                playlist_icon(&p.name, p.icon, 36.0),
+                playlist_avatar(&p.name, p.icon, 36.0),
                 p.name.clone(),
                 format!("{kind} · {n} tracks"),
                 Message::Open(Dest::Playlist(i)),
@@ -375,7 +316,7 @@ impl App {
         }
         w::card_button(
             row![
-                playlist_icon(&p.name, p.icon, 40.0),
+                playlist_avatar(&p.name, p.icon, 40.0),
                 column![
                     ty::heading(p.name.clone()),
                     ty::caption(format!(
@@ -578,27 +519,26 @@ impl App {
             .width(Length::Fill)
             .into()
         };
-        let links = autofit(
-            vec![
-                link(
-                    "All playlists",
-                    Icon::Document.view(18.0).into(),
-                    Dest::Playlists,
-                ),
-                link(
-                    "All artists",
-                    Icon::MusicNote.view(18.0).into(),
-                    Dest::Artists,
-                ),
-                link(
-                    "All albums",
-                    crate::icons::library().view(18.0).into(),
-                    Dest::Albums,
-                ),
-                link("All tracks", Icon::Queue.view(18.0).into(), Dest::Tracks),
-            ],
-            260.0,
-        );
+        let links = w::CardGrid::new(vec![
+            link(
+                "All playlists",
+                Icon::Document.view(18.0).into(),
+                Dest::Playlists,
+            ),
+            link(
+                "All artists",
+                Icon::MusicNote.view(18.0).into(),
+                Dest::Artists,
+            ),
+            link(
+                "All albums",
+                crate::icons::library().view(18.0).into(),
+                Dest::Albums,
+            ),
+            link("All tracks", Icon::Queue.view(18.0).into(), Dest::Tracks),
+        ])
+        .max_width(260.0)
+        .spacing(12.0);
         let k = if self.days == 7 { 1 } else { 4 };
         let usage = row![
             card(column![ty::title_2(format!("{}h", 6 * k)), ty::caption("listened")].spacing(2)),
@@ -714,7 +654,7 @@ impl App {
                 let p = &self.lib.playlists[i];
                 let extra = p.filter.as_ref().map(|f| self.filter_sentence(f));
                 (
-                    playlist_icon(&p.name, p.icon, big),
+                    playlist_avatar(&p.name, p.icon, big),
                     if p.filter.is_some() {
                         "Dynamic playlist"
                     } else {
@@ -724,11 +664,7 @@ impl App {
                     p.name.to_string(),
                     self.facts(extra),
                     vec![self.options_menu(p.filter.is_some())],
-                    color(
-                        p.name
-                            .bytes()
-                            .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)),
-                    ),
+                    from_seed(&p.name),
                 )
             }
             Dest::Artist(i) => {
@@ -752,10 +688,17 @@ impl App {
                     name.clone(),
                     facts.into(),
                     vec![
-                        glyph_button(Icon::Heart, 20.0, fav, Message::ToggleFavorite(name)),
+                        w::IconToggleButton::new(Icon::Heart, fav)
+                            .size(20.0)
+                            .tooltip("Favorite")
+                            .on_toggle({
+                                let name = name.clone();
+                                move |_| Message::ToggleFavorite(name.clone())
+                            })
+                            .into(),
                         self.options_menu(false),
                     ],
-                    color(i),
+                    from_index(i),
                 )
             }
             Dest::Album(i) => {
@@ -767,7 +710,7 @@ impl App {
                     album,
                     self.facts(Some(format!("{artist} · {year}"))),
                     vec![self.options_menu(false)],
-                    color(i),
+                    from_index(i),
                 )
             }
             _ => unreachable!("detail_page is for playlists, artists and albums"),

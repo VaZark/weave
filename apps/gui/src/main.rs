@@ -18,11 +18,12 @@ use std::time::{Duration, Instant};
 use data::{Filter, Library, Playlist, Track};
 use iad::adaptive::{Adaptive, Layouts};
 use iad::breakpoints::WidthClass;
+use iad::primitives::history::History;
 use iad::primitives::sorting::{SortState, cmp_str};
 use iad::primitives::synced::{self, Line};
 use iad::primitives::virtualize::Viewport;
 use iad::transition::Event;
-use iad::widget::{ReorderEvent, ReorderState};
+use iad::widget::{Histogram, ReorderEvent, ReorderState};
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
 use weaver::bulk::{self as bulk_tags, Change, Plan};
@@ -30,6 +31,7 @@ use weaver::bulk::{self as bulk_tags, Change, Plan};
 type Element<'a> = iad::Element<'a, Message>;
 
 const JAM_LIST: f32 = 240.0;
+const HIST_BINS: usize = 12;
 
 /// Row heights of every track list: the normal one carries a picture and two lines.
 pub const ROW: f32 = 56.0;
@@ -81,6 +83,19 @@ pub enum Dest {
     Artist(usize),
     /// Index into `Library::albums()`.
     Album(usize),
+}
+
+impl Place {
+    pub fn home() -> Self {
+        Self::at(Dest::Home)
+    }
+    pub fn at(dest: Dest) -> Self {
+        Self {
+            dest,
+            searching: false,
+            query: String::new(),
+        }
+    }
 }
 
 /// Where the user was: what Back returns to. Detail pages are opened from anywhere (Home, a
@@ -257,7 +272,7 @@ pub struct App {
     pub now_playing: bool,
     pub queue_open: bool,
     pub show_lyrics: bool,
-    pub history: Vec<Place>,
+    pub history: History<Place>,
     pub sort: SortState<Col>,
     /// The rows the current page lists, filtered and sorted.
     pub rows: Vec<Track>,
@@ -294,6 +309,12 @@ pub struct App {
     /// The playlist the jam was last saved as, and the filters it was saved with.
     pub jam_saved: Option<(usize, Filter)>,
     pub jam_vp: Viewport,
+    /// Tempo histograms of the tracks the filters' tags leave (the slider borrows them): one for
+    /// the search and jam filter, one for the playlist dialog's draft.
+    pub hist: Histogram,
+    hist_key: Option<Vec<String>>,
+    pub hist_draft: Histogram,
+    hist_draft_key: Option<Vec<String>>,
     rng: u64,
 }
 
@@ -319,7 +340,7 @@ impl App {
             now_playing: false,
             queue_open: false,
             show_lyrics: false,
-            history: Vec::new(),
+            history: History::new(Place::home()),
             sort: SortState::new(),
             rows: Vec::new(),
             player: Player {
@@ -353,6 +374,10 @@ impl App {
             jam_filters_open: true,
             jam_saved: None,
             jam_vp: Viewport::new(JAM_LIST),
+            hist: Histogram::from_counts(data::BPM.0, data::BPM.1, vec![0; HIST_BINS]),
+            hist_key: None,
+            hist_draft: Histogram::from_counts(data::BPM.0, data::BPM.1, vec![0; HIST_BINS]),
+            hist_draft_key: None,
             rng: 0x9e37_79b9_7f4a_7c15,
             lib,
         };
@@ -604,15 +629,18 @@ impl App {
                 return iced::window::oldest().and_then(move |id| a.perform(id));
             }
             Message::Go(d) => {
-                self.history.clear();
+                self.history.go(Place::at(d));
                 self.show(d)
             }
             Message::Open(d) => {
-                self.history.push(Place {
+                // The place being left may have changed since it was entered (a search typed).
+                let here = Place {
                     dest: self.dest,
                     searching: self.searching,
                     query: self.query.clone(),
-                });
+                };
+                self.history.replace(here);
+                self.history.open(Place::at(d));
                 self.show(d)
             }
             Message::SearchOpen(false) if !self.is_narrow() && self.searching => {
@@ -975,7 +1003,7 @@ impl App {
                 Vec::new()
             }
             Message::Back => {
-                if let Some(p) = self.history.pop() {
+                if let Some(p) = self.history.back().cloned() {
                     self.dest = p.dest;
                     self.searching = p.searching;
                     self.query = p.query;
@@ -1112,6 +1140,7 @@ impl App {
                 Vec::new()
             }
         };
+        self.sync_hist();
         let snap = self.sync_lyrics();
         Task::batch([self.dispatch(cmds), snap])
     }
@@ -1147,6 +1176,28 @@ impl App {
             n += 1;
         }
         name
+    }
+
+    /// Keeps the tempo histograms in step with the tags of the filters they belong to.
+    fn sync_hist(&mut self) {
+        if self.hist_key.as_ref() != Some(&self.filter.tags) {
+            self.hist = Histogram::from_counts(
+                data::BPM.0,
+                data::BPM.1,
+                self.lib.bpm_histogram(&self.filter, HIST_BINS),
+            );
+            self.hist_key = Some(self.filter.tags.clone());
+        }
+        if let Some(d) = &self.draft
+            && self.hist_draft_key.as_ref() != Some(&d.tags)
+        {
+            self.hist_draft = Histogram::from_counts(
+                data::BPM.0,
+                data::BPM.1,
+                self.lib.bpm_histogram(d, HIST_BINS),
+            );
+            self.hist_draft_key = Some(d.tags.clone());
+        }
     }
 
     /// The height of a row in every track list.
@@ -1285,7 +1336,7 @@ mod tests {
         assert_eq!(a.dest, Dest::Artist(1));
         let _ = a.update(Message::Back);
         assert_eq!(a.dest, Dest::Home);
-        assert!(a.history.is_empty());
+        assert!(!a.history.can_back());
     }
 
     #[test]
@@ -1301,7 +1352,7 @@ mod tests {
         let _ = a.update(Message::Open(Dest::Artist(0)));
         let _ = a.update(Message::Go(Dest::Tracks));
         assert!(
-            a.history.is_empty(),
+            !a.history.can_back(),
             "a top-level destination clears the history"
         );
     }

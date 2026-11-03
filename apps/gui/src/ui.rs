@@ -7,47 +7,19 @@ use iad::adaptive::adaptive;
 use iad::widget::{self as w, typography as ty};
 use iad::window::{Chrome, State as WindowState};
 use iad::{Icon, style};
-use iced::widget::{button, column, container, row, text, text_input};
-use iced::{Alignment, Background, Border, Color, Length};
+use iced::widget::{column, container, row, text, text_input};
+use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
-use crate::components::transport::glyph_button;
 use crate::{App, Dest, Element, Layout, Message};
 
 const SEARCH_ID: &str = "search";
-
-/// Cards that fit the width: as many columns as fit, each at most `max_width` wide, the cards
-/// filling their cells. (iced has this natively: `Grid::fluid`.)
-pub fn autofit<'a>(items: Vec<Element<'a>>, max_width: f32) -> Element<'a> {
-    iced::widget::grid(items)
-        .fluid(max_width)
-        .spacing(12)
-        .height(iced::widget::grid::Sizing::EvenlyDistribute(Length::Shrink))
-        .into()
-}
 
 pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
     container(content)
         .padding(12)
         .style(style::container::card)
         .into()
-}
-
-/// A list row: no surface, no separator; the whole row lights up under the pointer.
-pub fn row_style(t: &iad::Theme, s: button::Status) -> button::Style {
-    let fg = t.palette.window_fg_color;
-    let a = match s {
-        button::Status::Hovered => 0.08,
-        button::Status::Pressed => 0.14,
-        _ => 0.0,
-    };
-    button::Style {
-        background: (a > 0.0).then_some(Background::Color(Color { a, ..fg })),
-        text_color: fg,
-        border: Border::default().rounded(8),
-        shadow: Default::default(),
-        snap: false,
-    }
 }
 
 impl App {
@@ -117,7 +89,7 @@ impl App {
     fn header(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let mut h = self.bar(true, true);
-        if !self.history.is_empty() {
+        if self.history.can_back() {
             h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::Back));
         }
         h = if self.searching && !narrow {
@@ -131,21 +103,22 @@ impl App {
         if !narrow {
             // Explore and Jam are tabs on narrow, so only desktop has them here.
             h = h
-                .pack_end(glyph_button(
-                    Icon::Compass,
-                    16.0,
-                    self.dest == Dest::Explore && !self.jam_open && !self.searching,
-                    Message::ToggleExplore,
-                ))
+                .pack_end(
+                    w::IconToggleButton::new(
+                        Icon::Compass,
+                        self.dest == Dest::Explore && !self.jam_open && !self.searching,
+                    )
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleExplore),
+                )
                 .pack_end(
                     w::icon_button(Icon::Search).on_press(Message::SearchOpen(!self.searching)),
                 )
-                .pack_end(glyph_button(
-                    Icon::Sparkle,
-                    16.0,
-                    self.jam_open,
-                    Message::ToggleJam,
-                ));
+                .pack_end(
+                    w::IconToggleButton::new(Icon::Sparkle, self.jam_open)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::ToggleJam),
+                );
         }
         h.into()
     }
@@ -170,6 +143,7 @@ impl App {
         // The popover supplies the placement; the surface (background, border, padding) is ours.
         let surface = container(self.filter_fields(
             &self.filter,
+            &self.hist,
             Message::ToggleTag,
             Message::Bpm,
             Some(Message::ClearFilter),

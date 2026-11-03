@@ -1,15 +1,16 @@
 //! The player: the bar (wide), the mini player (narrow), Now Playing and the queue sheet.
 
-use iad::widget::{self as w, Menu, MenuItem, ReorderableList, SyncedText, typography as ty};
+use iad::widget::{
+    self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
+};
 use iad::{Icon, style};
 use iced::widget::{column, container, mouse_area, row, scrollable, space};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
-use crate::components::cover::cover;
 use crate::components::tag_badge::tag_pill;
-use crate::components::transport::glyph_button;
 use crate::data::{Track, clock};
+use crate::icons::cover;
 use crate::{App, Element, LYRICS, Message};
 
 impl App {
@@ -26,9 +27,9 @@ impl App {
 
     fn controls(&self, size: f32) -> Element<'_> {
         row![
-            glyph_button(Icon::SkipBackward, size, false, Message::Previous),
+            w::icon_button(Icon::SkipBackward).on_press(Message::Previous),
             self.play_pause(size),
-            glyph_button(Icon::SkipForward, size, false, Message::Next),
+            w::icon_button(Icon::SkipForward).on_press(Message::Next),
         ]
         .spacing(4)
         .align_y(Alignment::Center)
@@ -71,19 +72,25 @@ impl App {
                 .on_press(Message::NowPlaying(!self.now_playing)),
                 self.controls(16.0),
                 container(self.seek(t)).width(Length::Fill),
-                glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
-                glyph_button(Icon::Queue, 16.0, self.queue_open, Message::ToggleQueue),
-                glyph_button(
+                w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Shuffle),
+                w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Repeat),
+                w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleQueue),
+                w::IconToggleButton::new(
                     if self.now_playing {
                         Icon::GoDown
                     } else {
                         Icon::GoUp
                     },
-                    16.0,
-                    false,
-                    Message::NowPlaying(!self.now_playing),
-                ),
+                    false
+                )
+                .size(16.0)
+                .on_toggle(move |_| Message::NowPlaying(!self.now_playing)),
             ]
             .spacing(14)
             .align_y(Alignment::Center),
@@ -185,18 +192,16 @@ impl App {
         .align_y(Alignment::Center);
         if narrow {
             controls = controls
-                .push(glyph_button(
-                    Icon::Shuffle,
-                    16.0,
-                    self.player.shuffle,
-                    Message::Shuffle,
-                ))
-                .push(glyph_button(
-                    Icon::Repeat,
-                    16.0,
-                    self.player.repeat,
-                    Message::Repeat,
-                ));
+                .push(
+                    w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::Shuffle),
+                )
+                .push(
+                    w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::Repeat),
+                );
         }
         // The now-playing bar sits on top: the mini player on narrow, the full bar on wide.
         let now = if narrow {
@@ -233,9 +238,12 @@ impl App {
         } else {
             container(cover(t.id, 260.0)).center(Length::Fill).into()
         };
-        let tags = row(t.tags.iter().map(|g| tag_pill(g, &self.lib.style_of(g))))
-            .spacing(6)
-            .wrap();
+        let tags = row(t
+            .tags
+            .iter()
+            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Medium)))
+        .spacing(6)
+        .wrap();
         let mut body = column![
             container(art).height(Length::Fill).width(Length::Fill),
             column![
@@ -251,14 +259,22 @@ impl App {
         .padding(16)
         .max_width(640)
         .height(Length::Fill);
-        let lyrics = glyph_button(Icon::Lyrics, 16.0, self.show_lyrics, Message::ToggleLyrics);
+        let lyrics = w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
+            .size(16.0)
+            .on_toggle(move |_| Message::ToggleLyrics);
         if narrow {
             body = body.push(self.seek(t)).push(self.controls(20.0)).push(
                 row![
-                    glyph_button(Icon::Shuffle, 16.0, self.player.shuffle, Message::Shuffle),
-                    glyph_button(Icon::Repeat, 16.0, self.player.repeat, Message::Repeat),
+                    w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::Shuffle),
+                    w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::Repeat),
                     lyrics,
-                    glyph_button(Icon::Queue, 16.0, self.queue_open, Message::ToggleQueue),
+                    w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                        .size(16.0)
+                        .on_toggle(move |_| Message::ToggleQueue),
                 ]
                 .spacing(8),
             );
@@ -269,7 +285,7 @@ impl App {
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
             space::horizontal(),
         ];
-        let backdrop = crate::components::cover::color(t.id);
+        let backdrop = iad::color::from_index(t.id);
         container(column![
             close,
             container(body).center_x(Length::Fill).height(Length::Fill)

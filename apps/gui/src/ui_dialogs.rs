@@ -4,16 +4,32 @@
 use iad::Icon;
 use iad::widget::{self as w, ToggleItem, typography as ty};
 use iced::widget::{column, container, row, scrollable, space, text_input};
-use iced::{Alignment, Length};
+use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
 
-use crate::components::histogram_range::histogram_range_slider;
-use crate::components::tag_badge::{tag_chip, tag_pill};
+use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
 use crate::{App, Element, Message, Mode3};
-use iad::widget::Histogram;
+use iad::widget::{ChipGroup, ChipOption, ChipSize, Histogram};
 
 impl App {
+    /// The vocabulary as chip options: each tag's value as the label, with its own icon and colour.
+    /// `query` (when not empty) keeps only the tags whose value contains it.
+    pub fn tag_options(&self, query: &str) -> Vec<ChipOption<String>> {
+        let q = query.trim().to_lowercase();
+        self.lib
+            .tag_names()
+            .into_iter()
+            .filter(|t| q.is_empty() || value_of(t).to_lowercase().contains(&q))
+            .map(|t| {
+                let style = self.lib.style_of(&t);
+                ChipOption::new(t.clone(), value_of(&t))
+                    .icon(crate::icons::for_key(&style.icon))
+                    .color(style.color)
+            })
+            .collect()
+    }
+
     /// The fields of a filter: a clear heading with the count as a badge and a clear icon, the tags
     /// as toggles across the full width (never clamped, they wrap), then the tempo. Shared by the
     /// search popover, the jam page and the playlist dialog, each with its own filter. A tag also
@@ -21,21 +37,12 @@ impl App {
     pub fn filter_fields<'a>(
         &'a self,
         filter: &'a Filter,
+        hist: &'a Histogram,
         on_toggle: fn(String) -> Message,
         on_bpm: fn((f32, f32)) -> Message,
         clear: Option<Message>,
     ) -> iced::widget::Column<'a, Message, iad::Theme> {
         let n = self.lib.filtered(filter).len();
-        let q = self.tag_query.trim().to_lowercase();
-        let chips = self
-            .lib
-            .tag_names()
-            .into_iter()
-            .filter(|t| q.is_empty() || t.to_lowercase().contains(&q))
-            .map(|t| {
-                let on = filter.tags.contains(&t);
-                tag_chip(&t, &self.lib.style_of(&t), on, on_toggle(t.clone()))
-            });
         let mut col = column![].spacing(10).width(Length::Fill);
         if let Some(clear) = clear {
             col = col.push(
@@ -50,11 +57,15 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
-        col.push(text_input("Find a tag", &self.tag_query).on_input(Message::TagQuery))
-            .push(container(row(chips).spacing(6).wrap()).width(Length::Fill))
-            // A little more air between the groups.
-            .push(space::vertical().height(6))
-            .push(self.bpm_section(filter, on_bpm))
+        col.push(
+            ChipGroup::new(self.tag_options(""), &filter.tags, on_toggle)
+                .search(&self.tag_query, Message::TagQuery)
+                .placeholder("Find a tag")
+                .on_color(Color::WHITE),
+        )
+        // A little more air between the groups.
+        .push(space::vertical().height(6))
+        .push(self.bpm_section(filter, hist, on_bpm))
     }
 
     /// The tempo: the distribution of the tracks under the handles (press a bar to take its
@@ -62,15 +73,10 @@ impl App {
     pub fn bpm_section<'a>(
         &'a self,
         filter: &'a Filter,
+        histogram: &'a Histogram,
         on_bpm: fn((f32, f32)) -> Message,
     ) -> Element<'a> {
-        const BINS: usize = 12;
         let (lo, hi) = filter.bpm;
-        let histogram = Histogram::from_counts(
-            data::BPM.0,
-            data::BPM.1,
-            self.lib.bpm_histogram(filter, BINS),
-        );
         let band = |label: &'static str, r: (f32, f32)| -> Element<'a> {
             let b = w::flat_button(ty::label(label)).on_press(on_bpm(r));
             if filter.bpm == r {
@@ -93,7 +99,9 @@ impl App {
             ]
             .align_y(Alignment::Center),
             // One component: the bars and the thumbs edit the same range.
-            histogram_range_slider(&histogram, (lo, hi), 5.0, on_bpm),
+            w::HistogramRangeSlider::new(histogram, (lo, hi), on_bpm)
+                .step(5.0)
+                .height(48.0),
             row![
                 band("Any", data::BPM),
                 band("Slow · under 90", (60.0, 90.0)),
@@ -132,7 +140,13 @@ impl App {
         .align_y(Alignment::Center);
         let filters = w::Collapsible::new(
             header,
-            self.filter_fields(&self.filter, Message::ToggleTag, Message::Bpm, None),
+            self.filter_fields(
+                &self.filter,
+                &self.hist,
+                Message::ToggleTag,
+                Message::Bpm,
+                None,
+            ),
             open,
         );
         let top = row![w::flat_button(ty::label("🎲 Surprise me")).on_press(Message::Surprise),];
@@ -237,7 +251,7 @@ impl App {
                 ty::caption(
                     "The playlist holds every track that matches these rules, now and as the library changes."
                 ),
-                self.filter_fields(draft, Message::DraftToggle, Message::DraftBpm, None),
+                self.filter_fields(draft, &self.hist_draft, Message::DraftToggle, Message::DraftBpm, None),
                 row![
                     space::horizontal(),
                     w::flat_button(ty::label("Cancel")).on_press(Message::CancelFilter),
@@ -256,27 +270,14 @@ impl App {
     /// Edit a track's tags. Modal: closed by Cancel or Save.
     pub fn track_dialog<'a>(&'a self, e: &'a crate::TrackEdit) -> Element<'a> {
         let t = self.track(e.id);
-        let q = self.tag_query.trim().to_lowercase();
-        let chips = self
-            .lib
-            .tag_names()
-            .into_iter()
-            .filter(|n| q.is_empty() || n.to_lowercase().contains(&q))
-            .map(|n| {
-                let on = e.tags.contains(&n);
-                tag_chip(
-                    &n,
-                    &self.lib.style_of(&n),
-                    on,
-                    Message::EditToggleTag(n.clone()),
-                )
-            });
         container(
             column![
                 ty::title_3(format!("Tags · {}", t.title)),
                 ty::caption(format!("{} · {}", t.artist, t.album)),
-                text_input("Find a tag", &self.tag_query).on_input(Message::TagQuery),
-                container(row(chips).spacing(6).wrap()).width(Length::Fill),
+                ChipGroup::new(self.tag_options(""), &e.tags, Message::EditToggleTag)
+                    .search(&self.tag_query, Message::TagQuery)
+                    .placeholder("Find a tag")
+                    .on_color(Color::WHITE),
                 row![
                     space::horizontal(),
                     w::flat_button(ty::label("Cancel")).on_press(Message::CancelTrack),
@@ -330,9 +331,12 @@ impl App {
             ]
             .into()
         };
-        let tags = row(t.tags.iter().map(|g| tag_pill(g, &self.lib.style_of(g))))
-            .spacing(6)
-            .wrap();
+        let tags = row(t
+            .tags
+            .iter()
+            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Small)))
+        .spacing(6)
+        .wrap();
         container(
             column![
                 ty::title_3(t.title.clone()),
@@ -369,13 +373,6 @@ impl App {
     /// Edit the tags of every track on the page: delete or replace a tag where it matches, and
     /// add tags to all of them. Modal: closed by Cancel or Save.
     pub fn bulk_dialog<'a>(&'a self, b: &'a crate::BulkEdit) -> Element<'a> {
-        let q = self.tag_query.trim().to_lowercase();
-        let names = || {
-            self.lib
-                .tag_names()
-                .into_iter()
-                .filter(|n| q.is_empty() || n.to_lowercase().contains(&q))
-        };
         let existing: Vec<Element<'a>> = b
             .rows
             .iter()
@@ -395,7 +392,7 @@ impl App {
                 );
                 let mut line = column![
                     row![
-                        tag_pill(&r.tag, &self.lib.style_of(&r.tag)),
+                        tag_pill(&r.tag, &self.lib.style_of(&r.tag), ChipSize::Small),
                         ty::caption(format!("on {} of {}", r.count, b.ids.len())),
                         space::horizontal(),
                         modes,
@@ -405,29 +402,19 @@ impl App {
                 ]
                 .spacing(6);
                 if r.mode == Mode3::Replace {
-                    let chips = names().map(|n| {
-                        let on = r.target.as_deref() == Some(n.as_str());
-                        tag_chip(
-                            &n,
-                            &self.lib.style_of(&n),
-                            on,
-                            Message::BulkTarget(r.tag.clone(), n.clone()),
+                    let tag = r.tag.clone();
+                    line = line.push(
+                        ChipGroup::new(
+                            self.tag_options(&self.tag_query),
+                            r.target.as_slice(),
+                            move |to| Message::BulkTarget(tag.clone(), to),
                         )
-                    });
-                    line = line.push(row(chips).spacing(6).wrap());
+                        .on_color(Color::WHITE),
+                    );
                 }
                 line.into()
             })
             .collect();
-        let add = names().map(|n| {
-            let on = b.add.contains(&n);
-            tag_chip(
-                &n,
-                &self.lib.style_of(&n),
-                on,
-                Message::BulkAddToggle(n.clone()),
-            )
-        });
         container(
             column![
                 ty::title_3(format!("Tags · {}", b.title)),
@@ -438,7 +425,12 @@ impl App {
                         ty::heading("Already on these tracks"),
                         column(existing).spacing(10),
                         ty::heading("Add to every track"),
-                        row(add).spacing(6).wrap(),
+                        ChipGroup::new(
+                            self.tag_options(&self.tag_query),
+                            &b.add,
+                            Message::BulkAddToggle,
+                        )
+                        .on_color(Color::WHITE),
                     ]
                     .spacing(10)
                     .padding(iced::Padding {
