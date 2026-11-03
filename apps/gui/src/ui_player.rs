@@ -11,6 +11,7 @@ use iced_adaptive_design as iad;
 use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
 use crate::icons::cover;
+use crate::ui::{BAR_H, HEADER_H, TAB_H};
 use crate::{App, Element, LYRICS, Message};
 
 impl App {
@@ -209,14 +210,27 @@ impl App {
         } else {
             self.player_bar()
         };
-        column![
-            now,
-            container(controls).padding([6, 12]),
-            scrollable(container(list).padding(12)).height(Length::Fill),
-        ]
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        // The list slides up into place when the queue opens and back down when it closes.
+        let e = self.queue_slide.eased();
+        let scroller = scrollable(container(list).padding(12));
+        let list_area: Element<'_> = if e >= 0.999 {
+            scroller.height(Length::Fill).into()
+        } else {
+            let fixed = BAR_H + 46.0 + HEADER_H + if narrow { TAB_H } else { 0.0 } + 2.0;
+            let avail = (self.win_h - fixed).max(120.0);
+            container(column![
+                space::vertical().height(Length::Fixed((1.0 - e) * avail)),
+                container(scroller).height(Length::Fixed(avail)),
+            ])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+            .into()
+        };
+        column![now, container(controls).padding([6, 12]), list_area]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     // ---- Now Playing ----------------------------------------------------------------------

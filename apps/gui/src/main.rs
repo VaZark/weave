@@ -23,7 +23,7 @@ use iad::primitives::sorting::{SortState, cmp_str};
 use iad::primitives::synced::{self, Line};
 use iad::primitives::virtualize::Viewport;
 use iad::transition::Event;
-use iad::widget::{Histogram, ReorderEvent, ReorderState};
+use iad::widget::{ReorderEvent, ReorderState};
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
 use weaver::bulk::{self as bulk_tags, Change, Plan};
@@ -31,7 +31,6 @@ use weaver::bulk::{self as bulk_tags, Change, Plan};
 type Element<'a> = iad::Element<'a, Message>;
 
 const JAM_LIST: f32 = 240.0;
-const HIST_BINS: usize = 12;
 
 /// Row heights of every track list: the normal one carries a picture and two lines.
 pub const ROW: f32 = 56.0;
@@ -118,7 +117,11 @@ pub enum Col {
 #[derive(Debug, Clone)]
 pub enum Message {
     // Resizing and the transitions between layouts.
-    Resized(f32),
+    Resized(f32, f32),
+    /// An animation frame (while a sheet or the queue slides).
+    Frame(Instant),
+    /// Swallows a press (the sliding layers sit over the page and must not pass clicks through).
+    Noop,
     Tick(Instant),
     Transition(Event<Layout>),
     Window(iad::window::Action),
@@ -247,6 +250,45 @@ impl Player {
     }
 }
 
+/// How far a sliding layer is: 0 hidden, 1 shown. It moves toward its target at a fixed speed
+/// and is eased when drawn, so opening and closing both animate (iad's own sheet entrance only
+/// animates in).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Slide {
+    pub shown: f32,
+}
+
+/// How long a slide takes, end to end.
+const SLIDE_SECS: f32 = 0.28;
+
+impl Slide {
+    /// Moves toward open or closed by `dt` seconds; `true` while still moving.
+    pub fn step(&mut self, open: bool, dt: f32) -> bool {
+        let target = if open { 1.0 } else { 0.0 };
+        if !iad::animation::enabled() {
+            self.shown = target;
+            return false;
+        }
+        let d = dt / SLIDE_SECS;
+        self.shown = if open {
+            (self.shown + d).min(1.0)
+        } else {
+            (self.shown - d).max(0.0)
+        };
+        self.shown != target
+    }
+
+    /// Ease-out: fast at first, settling at the end.
+    pub fn eased(self) -> f32 {
+        1.0 - (1.0 - self.shown).powi(3)
+    }
+
+    /// Whether it is on screen at all (opening, open or closing).
+    pub fn mounted(self) -> bool {
+        self.shown > 0.0
+    }
+}
+
 pub struct Player {
     /// The whole queue, in order; `current` indexes it.
     pub queue: Vec<usize>,
@@ -271,6 +313,11 @@ pub struct App {
     pub jam_open: bool,
     pub now_playing: bool,
     pub queue_open: bool,
+    pub np_slide: Slide,
+    pub queue_slide: Slide,
+    last_frame: Option<Instant>,
+    /// The window's height, for how far a sheet travels.
+    pub win_h: f32,
     pub show_lyrics: bool,
     pub history: History<Place>,
     pub sort: SortState<Col>,
@@ -309,12 +356,6 @@ pub struct App {
     /// The playlist the jam was last saved as, and the filters it was saved with.
     pub jam_saved: Option<(usize, Filter)>,
     pub jam_vp: Viewport,
-    /// Tempo histograms of the tracks the filters' tags leave (the slider borrows them): one for
-    /// the search and jam filter, one for the playlist dialog's draft.
-    pub hist: Histogram,
-    hist_key: Option<Vec<String>>,
-    pub hist_draft: Histogram,
-    hist_draft_key: Option<Vec<String>>,
     rng: u64,
 }
 
@@ -339,6 +380,10 @@ impl App {
             jam_open: false,
             now_playing: false,
             queue_open: false,
+            np_slide: Slide::default(),
+            queue_slide: Slide::default(),
+            last_frame: None,
+            win_h: window_size().1,
             show_lyrics: false,
             history: History::new(Place::home()),
             sort: SortState::new(),
@@ -374,10 +419,6 @@ impl App {
             jam_filters_open: true,
             jam_saved: None,
             jam_vp: Viewport::new(JAM_LIST),
-            hist: Histogram::from_counts(data::BPM.0, data::BPM.1, vec![0; HIST_BINS]),
-            hist_key: None,
-            hist_draft: Histogram::from_counts(data::BPM.0, data::BPM.1, vec![0; HIST_BINS]),
-            hist_draft_key: None,
             rng: 0x9e37_79b9_7f4a_7c15,
             lib,
         };
@@ -622,7 +663,25 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         let now = Instant::now();
         let cmds = match message {
-            Message::Resized(w) => self.adaptive.resize(w, now),
+            Message::Resized(w, h) => {
+                self.win_h = h;
+                self.adaptive.resize(w, now)
+            }
+            Message::Noop => Vec::new(),
+            Message::Frame(t) => {
+                let dt = self
+                    .last_frame
+                    .map_or(1.0 / 60.0, |p| t.saturating_duration_since(p).as_secs_f32())
+                    .min(0.1);
+                self.last_frame = Some(t);
+                let (np, q) = (self.now_playing, self.queue_open);
+                self.np_slide.step(np, dt);
+                self.queue_slide.step(q, dt);
+                if !self.animating() {
+                    self.last_frame = None;
+                }
+                Vec::new()
+            }
             Message::Tick(t) => self.adaptive.tick(t),
             Message::Transition(e) => self.adaptive.report(e, now),
             Message::Window(a) => {
@@ -1140,7 +1199,6 @@ impl App {
                 Vec::new()
             }
         };
-        self.sync_hist();
         let snap = self.sync_lyrics();
         Task::batch([self.dispatch(cmds), snap])
     }
@@ -1178,26 +1236,10 @@ impl App {
         name
     }
 
-    /// Keeps the tempo histograms in step with the tags of the filters they belong to.
-    fn sync_hist(&mut self) {
-        if self.hist_key.as_ref() != Some(&self.filter.tags) {
-            self.hist = Histogram::from_counts(
-                data::BPM.0,
-                data::BPM.1,
-                self.lib.bpm_histogram(&self.filter, HIST_BINS),
-            );
-            self.hist_key = Some(self.filter.tags.clone());
-        }
-        if let Some(d) = &self.draft
-            && self.hist_draft_key.as_ref() != Some(&d.tags)
-        {
-            self.hist_draft = Histogram::from_counts(
-                data::BPM.0,
-                data::BPM.1,
-                self.lib.bpm_histogram(d, HIST_BINS),
-            );
-            self.hist_draft_key = Some(d.tags.clone());
-        }
+    /// Whether a sheet or the queue is still sliding.
+    pub fn animating(&self) -> bool {
+        (self.np_slide.shown != if self.now_playing { 1.0 } else { 0.0 })
+            || (self.queue_slide.shown != if self.queue_open { 1.0 } else { 0.0 })
     }
 
     /// The height of a row in every track list.
@@ -1229,9 +1271,12 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            iced::window::resize_events().map(|(_, s)| Message::Resized(s.width)),
+            iced::window::resize_events().map(|(_, s)| Message::Resized(s.width, s.height)),
             self.adaptive.subscription(Message::Tick),
         ];
+        if self.animating() {
+            subs.push(iced::window::frames().map(Message::Frame));
+        }
         if self.player.playing {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Progress));
         }
@@ -1482,6 +1527,53 @@ mod tests {
         assert!(
             !a.queue_open && !a.now_playing,
             "closing the queue does not reopen Now Playing"
+        );
+    }
+
+    #[test]
+    fn a_slide_opens_and_closes_toward_its_target_and_is_mounted_while_it_moves() {
+        let mut sl = Slide::default();
+        assert!(!sl.mounted());
+        // opening: never goes backwards, ends fully shown
+        let mut last = 0.0;
+        for _ in 0..40 {
+            sl.step(true, 1.0 / 60.0);
+            assert!(sl.shown >= last);
+            last = sl.shown;
+        }
+        assert_eq!(sl.shown, 1.0);
+        assert!((sl.eased() - 1.0).abs() < 1e-6);
+        // closing: still mounted partway, gone at the end
+        if iad::animation::enabled() {
+            sl.step(false, 0.05);
+            assert!(sl.mounted() && sl.shown < 1.0, "mounted while it closes");
+        }
+        for _ in 0..40 {
+            sl.step(false, 1.0 / 60.0);
+        }
+        assert_eq!(sl.shown, 0.0);
+        assert!(!sl.mounted());
+    }
+
+    #[test]
+    fn the_app_animates_only_while_a_layer_is_between_states() {
+        let mut a = app();
+        assert!(!a.animating());
+        let _ = a.update(Message::NowPlaying(true));
+        assert!(
+            a.animating(),
+            "opening: the target moved, the slide has not caught up"
+        );
+        let t0 = Instant::now();
+        for i in 0..60u32 {
+            let _ = a.update(Message::Frame(t0 + Duration::from_millis(16) * i));
+        }
+        assert!(!a.animating());
+        assert!(a.np_slide.mounted());
+        let _ = a.update(Message::NowPlaying(false));
+        assert!(
+            a.np_slide.mounted(),
+            "stays mounted while it slides back down"
         );
     }
 }

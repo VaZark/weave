@@ -10,7 +10,7 @@ use iced_adaptive_design as iad;
 
 use crate::data::{Filter, Track};
 use crate::icons::{cover, playlist_avatar};
-use crate::ui::card;
+use crate::ui::{GUTTER, card, page_surface};
 use crate::{App, Col, Dest, Element, Message};
 use iad::color::{from_index, from_seed};
 
@@ -26,13 +26,6 @@ pub struct RowOpts {
 fn stars(n: f32) -> String {
     let full = n.round().clamp(0.0, 5.0) as usize;
     "★".repeat(full) + &"☆".repeat(5 - full)
-}
-
-fn right<'a>(s: String) -> Element<'a> {
-    ty::caption(s)
-        .width(Length::Fill)
-        .align_x(Horizontal::Right)
-        .into()
 }
 
 fn section<'a>(title: &'a str, body: impl Into<Element<'a>>) -> Element<'a> {
@@ -106,23 +99,47 @@ impl App {
     /// A flat row: the picture (not when compact), the title with its artist beneath it, the
     /// album, the tempo where asked for, the duration and the menu. The whole row is the
     /// button, so it lights up as one.
-    pub fn track_row<'a>(&'a self, t: &Track, o: RowOpts, on_press: Message) -> Element<'a> {
-        let wide = !self.is_narrow();
-        let mut r = w::MediaRow::new(t.title.clone())
-            .subtitle(t.artist.clone())
+    /// The columns of a track list, written once for the header and the rows: the picture (not
+    /// in compact mode), the title with its artist, the album where there is room, the tempo
+    /// where asked for, the time, and the menu.
+    fn media_columns(&self, o: RowOpts) -> w::MediaColumns<Col> {
+        let mut c = w::MediaColumns::new()
+            .picture(true)
             .compact(self.compact)
+            .title(Col::Title, "Title")
+            .subtitle(Col::Artist, "Artist");
+        if o.album && !self.is_narrow() {
+            c = c.column(Col::Album, "Album", Length::FillPortion(2));
+        }
+        if o.bpm {
+            c = c.label("BPM", Length::Fixed(40.0)).align(Horizontal::Right);
+        }
+        c = c
+            .column(Col::Duration, "Time", Length::Fixed(w::TIME_WIDTH))
+            .align(Horizontal::Right);
+        if o.menu {
+            c = c.suffix(true);
+        }
+        c
+    }
+
+    pub fn track_row<'a>(&'a self, t: &Track, o: RowOpts, on_press: Message) -> Element<'a> {
+        let mut r = self
+            .media_columns(o)
+            .row(t.title.clone())
+            .subtitle(t.artist.clone())
             .height(Length::Fill)
             .on_press(on_press);
         if !self.compact {
             r = r.picture(cover(t.id, 40.0));
         }
-        if o.album && wide {
-            r = r.column(Length::FillPortion(2), ty::caption(t.album.clone()));
+        if o.album && !self.is_narrow() {
+            r = r.cell(ty::caption(t.album.clone()));
         }
         if o.bpm {
-            r = r.column(Length::Fixed(40.0), right(format!("{:.0}", t.bpm)));
+            r = r.cell(ty::caption(format!("{:.0}", t.bpm)));
         }
-        r = r.column(Length::Fixed(44.0), right(t.duration()));
+        r = r.cell(ty::caption(t.duration()));
         if o.menu {
             r = r.suffix(self.track_menu(t.id, o.album));
         }
@@ -140,31 +157,27 @@ impl App {
         .into()
     }
 
-    /// The header of a long list: sortable Title, Album and Time over the row's columns.
+    /// The header of a long list: sortable Title, Album and Time over the rows' columns.
     fn sort_header(&self) -> Element<'_> {
-        let mut h = w::SortHeader::new(&self.sort, Message::Sort);
-        if !self.compact {
-            h = h.space(Length::Fixed(40.0));
-        }
-        h = h.column(Col::Title, "Title", Length::FillPortion(3));
-        if self.compact {
-            h = h.column(Col::Artist, "Artist", Length::FillPortion(2));
-        }
-        if !self.is_narrow() {
-            h = h.column(Col::Album, "Album", Length::FillPortion(2));
-        }
-        h.column(Col::Duration, "Time", Length::Fixed(44.0))
-            .space(Length::Fixed(36.0))
-            .into()
+        self.media_columns(RowOpts {
+            album: true,
+            bpm: false,
+            menu: true,
+        })
+        .header(&self.sort, Message::Sort)
+        .into()
     }
 
     /// The page's tracks as a virtualised list: only the rows in view are built.
     pub fn virtual_tracks(&self, o: RowOpts) -> Element<'_> {
         column![
-            self.sort_header(),
+            container(self.sort_header()).padding([0.0, GUTTER]),
             VirtualList::new(self.rows.len(), self.row_h(), &self.list_vp, move |i| {
                 let t = &self.rows[i];
-                self.track_row(t, o, Message::PlayTrack(t.id))
+                container(self.track_row(t, o, Message::PlayTrack(t.id)))
+                    .padding([0.0, GUTTER])
+                    .height(Length::Fill)
+                    .into()
             })
             .on_scroll(Message::ListScroll)
             .overscan(4),
@@ -218,7 +231,7 @@ impl App {
                 .spacing(12)
                 .align_y(Alignment::Center)
             )
-            .padding([8, 16]),
+            .padding([8.0, GUTTER]),
             self.virtual_tracks(RowOpts {
                 album: true,
                 bpm: false,
@@ -232,7 +245,7 @@ impl App {
     /// Search results: the same list, narrowed.
     fn results_page(&self) -> Element<'_> {
         let list = column![
-            container(ty::caption(format!("{} tracks", self.rows.len()))).padding([8, 16]),
+            container(ty::caption(format!("{} tracks", self.rows.len()))).padding([8.0, GUTTER]),
             self.virtual_tracks(RowOpts {
                 album: true,
                 bpm: false,
@@ -241,7 +254,7 @@ impl App {
         ]
         .height(Length::Fill);
         if self.is_narrow() {
-            column![container(self.search_entry()).padding([8, 16]), list].into()
+            column![container(self.search_entry()).padding([8.0, GUTTER]), list].into()
         } else {
             list.into()
         }
@@ -365,49 +378,40 @@ impl App {
     }
 
     fn artists(&self) -> Element<'_> {
-        scrollable(
-            container(
-                self.grid(
-                    (0..self.lib.artists().len())
-                        .map(|i| self.artist_card(i, None))
-                        .collect(),
-                    130.0,
-                ),
-            )
-            .padding(16),
-        )
+        scrollable(page_surface(
+            self.grid(
+                (0..self.lib.artists().len())
+                    .map(|i| self.artist_card(i, None))
+                    .collect(),
+                130.0,
+            ),
+        ))
         .height(Length::Fill)
         .into()
     }
 
     fn albums(&self) -> Element<'_> {
-        scrollable(
-            container(
-                self.grid(
-                    (0..self.lib.albums().len())
-                        .map(|i| self.album_card(i, true))
-                        .collect(),
-                    130.0,
-                ),
-            )
-            .padding(16),
-        )
+        scrollable(page_surface(
+            self.grid(
+                (0..self.lib.albums().len())
+                    .map(|i| self.album_card(i, true))
+                    .collect(),
+                130.0,
+            ),
+        ))
         .height(Length::Fill)
         .into()
     }
 
     fn playlists(&self) -> Element<'_> {
-        scrollable(
-            container(
-                self.grid(
-                    (0..self.lib.playlists.len())
-                        .map(|i| self.playlist_card(i))
-                        .collect(),
-                    260.0,
-                ),
-            )
-            .padding(16),
-        )
+        scrollable(page_surface(
+            self.grid(
+                (0..self.lib.playlists.len())
+                    .map(|i| self.playlist_card(i))
+                    .collect(),
+                260.0,
+            ),
+        ))
         .height(Length::Fill)
         .into()
     }
@@ -465,9 +469,8 @@ impl App {
             section_all("Recent albums", Dest::Albums, albums),
             section_all("Recent artists", Dest::Artists, artists),
         ]
-        .spacing(20)
-        .padding(16);
-        scrollable(page).height(Length::Fill).into()
+        .spacing(20);
+        scrollable(page_surface(page)).height(Length::Fill).into()
     }
 
     /// Rediscover what you loved and explore what you might: old favourites, what you play most,
@@ -590,9 +593,8 @@ impl App {
             ty::title_3("Explore"),
             section("You might like", might_like),
         ]
-        .spacing(20)
-        .padding(16);
-        scrollable(page).height(Length::Fill).into()
+        .spacing(20);
+        scrollable(page_surface(page)).height(Length::Fill).into()
     }
 
     // ---- detail pages -----------------------------------------------------------------------
@@ -750,7 +752,7 @@ impl App {
                             130.0,
                         ),
                     ))
-                    .padding([0, 16])
+                    .padding([0.0, GUTTER])
                     .width(Length::Fill),
                 );
             }
@@ -766,13 +768,13 @@ impl App {
                             130.0,
                         ),
                     ))
-                    .padding([0, 16])
+                    .padding([0.0, GUTTER])
                     .width(Length::Fill),
                 );
             }
-            page = page.push(container(ty::heading("All tracks")).padding([0, 16]));
+            page = page.push(container(ty::heading("All tracks")).padding([0.0, GUTTER]));
         }
-        page = page.push(container(self.plain_list(&self.rows, o)).padding([0, 8]));
+        page = page.push(container(self.plain_list(&self.rows, o)).padding([0.0, GUTTER]));
         scrollable(page).height(Length::Fill).into()
     }
 

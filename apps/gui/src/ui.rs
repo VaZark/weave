@@ -7,13 +7,30 @@ use iad::adaptive::adaptive;
 use iad::widget::{self as w, typography as ty};
 use iad::window::{Chrome, State as WindowState};
 use iad::{Icon, style};
-use iced::widget::{column, container, row, text, text_input};
+use iced::widget::{column, container, mouse_area, row, space, stack, text, text_input};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
 use crate::{App, Dest, Element, Layout, Message};
 
 const SEARCH_ID: &str = "search";
+
+/// Rough heights of the fixed parts of a layout, to know how far a sliding layer travels.
+pub const HEADER_H: f32 = 47.0;
+pub const BAR_H: f32 = 65.0;
+pub const TAB_H: f32 = 56.0;
+
+/// The side gutter every page keeps: headings, cards and the edges of lists.
+pub const GUTTER: f32 = 16.0;
+
+/// The base surface of a page: iad's `Container` (fluid) with the same gutter on every side, so
+/// no page runs up to the window edge.
+pub fn page_surface<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+    w::Container::new(content)
+        .fluid(true)
+        .padding(iced::Padding::from(GUTTER))
+        .into()
+}
 
 pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
     container(content)
@@ -143,7 +160,6 @@ impl App {
         // The popover supplies the placement; the surface (background, border, padding) is ours.
         let surface = container(self.filter_fields(
             &self.filter,
-            &self.hist,
             Message::ToggleTag,
             Message::Bpm,
             Some(Message::ClearFilter),
@@ -177,16 +193,38 @@ impl App {
 
     // ---- sheets -----------------------------------------------------------------------
 
-    /// Now Playing slides up over `base`. (The queue is not a sheet: it is page content.)
-    fn sheets<'a>(&'a self, base: Element<'a>) -> Element<'a> {
-        let mut e = base;
-        if self.now_playing {
-            e = w::Overlay::new(e, self.now_playing_view())
-                .docked(w::Side::Bottom, w::Dim::Fill)
-                .scrim(false)
-                .into();
+    /// The height of the page area (or, on narrow, the whole body): how far Now Playing travels.
+    pub fn region_h(&self) -> f32 {
+        let h = (self.win_h - 2.0).max(200.0);
+        if self.is_narrow() {
+            h
+        } else {
+            (h - HEADER_H - BAR_H).max(200.0)
         }
-        e
+    }
+
+    /// Now Playing slides up over `base` and slides back down when it closes: it stays mounted
+    /// while it moves. (The queue is not a sheet: it is page content that slides in.)
+    fn sheets<'a>(&'a self, base: Element<'a>) -> Element<'a> {
+        if !self.np_slide.mounted() {
+            return base;
+        }
+        let e = self.np_slide.eased();
+        let layer: Element<'a> = if e >= 0.999 {
+            self.now_playing_view()
+        } else {
+            let h = self.region_h();
+            container(column![
+                space::vertical().height(Length::Fixed((1.0 - e) * h)),
+                container(self.now_playing_view()).height(Length::Fixed(h)),
+            ])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true)
+            .into()
+        };
+        // The layer sits over the page: it swallows presses so they do not reach what is below.
+        stack![base, mouse_area(layer).on_press(Message::Noop)].into()
     }
 
     // ---- layouts ----------------------------------------------------------------------
@@ -197,7 +235,7 @@ impl App {
     }
 
     fn wide(&self) -> Element<'_> {
-        if self.queue_open {
+        if self.queue_slide.mounted() {
             // The queue pushes the content out and the player bar moves to the top, under the
             // header.
             return column![
@@ -277,7 +315,7 @@ impl App {
 
     fn narrow(&self) -> Element<'_> {
         // With the queue open it takes the page, and the mini player moves to the top of it.
-        let body = if self.queue_open {
+        let body = if self.queue_slide.mounted() {
             column![self.header(), self.queue_page(), self.tab_bar()]
         } else {
             column![

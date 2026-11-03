@@ -37,7 +37,6 @@ impl App {
     pub fn filter_fields<'a>(
         &'a self,
         filter: &'a Filter,
-        hist: &'a Histogram,
         on_toggle: fn(String) -> Message,
         on_bpm: fn((f32, f32)) -> Message,
         clear: Option<Message>,
@@ -65,7 +64,7 @@ impl App {
         )
         // A little more air between the groups.
         .push(space::vertical().height(6))
-        .push(self.bpm_section(filter, hist, on_bpm))
+        .push(self.bpm_section(filter, on_bpm))
     }
 
     /// The tempo: the distribution of the tracks under the handles (press a bar to take its
@@ -73,10 +72,12 @@ impl App {
     pub fn bpm_section<'a>(
         &'a self,
         filter: &'a Filter,
-        histogram: &'a Histogram,
         on_bpm: fn((f32, f32)) -> Message,
     ) -> Element<'a> {
         let (lo, hi) = filter.bpm;
+        // Built here: it depends on the filter's tags, so nothing is kept in the app.
+        let histogram =
+            Histogram::from_counts(data::BPM.0, data::BPM.1, self.lib.bpm_histogram(filter, 12));
         let band = |label: &'static str, r: (f32, f32)| -> Element<'a> {
             let b = w::flat_button(ty::label(label)).on_press(on_bpm(r));
             if filter.bpm == r {
@@ -140,13 +141,7 @@ impl App {
         .align_y(Alignment::Center);
         let filters = w::Collapsible::new(
             header,
-            self.filter_fields(
-                &self.filter,
-                &self.hist,
-                Message::ToggleTag,
-                Message::Bpm,
-                None,
-            ),
+            self.filter_fields(&self.filter, Message::ToggleTag, Message::Bpm, None),
             open,
         );
         let top = row![w::flat_button(ty::label("🎲 Surprise me")).on_press(Message::Surprise),];
@@ -208,7 +203,10 @@ impl App {
                 .height(Length::Fill)
                 .into()
         };
-        container(page).padding(16).height(Length::Fill).into()
+        container(page)
+            .padding(crate::ui::GUTTER)
+            .height(Length::Fill)
+            .into()
     }
 
     // ---- dialogs ------------------------------------------------------------------------
@@ -251,7 +249,7 @@ impl App {
                 ty::caption(
                     "The playlist holds every track that matches these rules, now and as the library changes."
                 ),
-                self.filter_fields(draft, &self.hist_draft, Message::DraftToggle, Message::DraftBpm, None),
+                self.filter_fields(draft, Message::DraftToggle, Message::DraftBpm, None),
                 row![
                     space::horizontal(),
                     w::flat_button(ty::label("Cancel")).on_press(Message::CancelFilter),
@@ -404,11 +402,10 @@ impl App {
                 if r.mode == Mode3::Replace {
                     let tag = r.tag.clone();
                     line = line.push(
-                        ChipGroup::new(
-                            self.tag_options(&self.tag_query),
-                            r.target.as_slice(),
-                            move |to| Message::BulkTarget(tag.clone(), to),
-                        )
+                        ChipGroup::new(self.tag_options(""), r.target.as_slice(), move |to| {
+                            Message::BulkTarget(tag.clone(), to)
+                        })
+                        .query(&self.tag_query)
                         .on_color(Color::WHITE),
                     );
                 }
@@ -425,12 +422,9 @@ impl App {
                         ty::heading("Already on these tracks"),
                         column(existing).spacing(10),
                         ty::heading("Add to every track"),
-                        ChipGroup::new(
-                            self.tag_options(&self.tag_query),
-                            &b.add,
-                            Message::BulkAddToggle,
-                        )
-                        .on_color(Color::WHITE),
+                        ChipGroup::new(self.tag_options(""), &b.add, Message::BulkAddToggle,)
+                            .query(&self.tag_query)
+                            .on_color(Color::WHITE),
                     ]
                     .spacing(10)
                     .padding(iced::Padding {
