@@ -23,3 +23,9 @@ Two goals shape it. It is the first real application built on iced-libadwaita, s
 ## Vocabulary
 
 A **jam** is a shuffled, filter-driven queue that keeps refilling. It is not the persisted playback **session** (the queue and its position) described in `goals.md`; starting a jam replaces the queue and uses the session like any other play action.
+
+## Status
+
+The first version is `apps/gui` (`cargo run -p weave-player-gui`). It runs on a fake library and a simulated player, so the UI can be judged before the engine is wired in: both layouts, Home, the track table, artists, albums, playlists, search with the filter popover, the jam sheet, Now Playing with synced lyrics and the queue. Development switches: `WEAVE_GUI_SIZE=420x760`, `WEAVE_GUI_START=jam|search|library|playing|queue|lyrics` and `WEAVE_GUI_SHOT=file.png` (screenshot and quit).
+
+Our own widgets live in `apps/gui/src/components`, with their headless logic in `apps/gui/src/primitives`; generic ones (the synced lyrics list) carry no dependency on the app, so they can move upstream.

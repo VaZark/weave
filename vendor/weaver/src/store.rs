@@ -23,6 +23,23 @@ pub struct Owner {
     pub key_type: &'static str,
 }
 
+/// `#rgb` or `#rrggbb` (any case) as lowercase `#rrggbb`.
+fn normalize_color(text: &str) -> Result<String> {
+    let hex = text.trim().strip_prefix('#').unwrap_or("");
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) || !matches!(hex.len(), 3 | 6) {
+        return Err(Error::InvalidInput(format!(
+            "\"{}\" is not a colour; use #rgb or #rrggbb",
+            text.trim()
+        )));
+    }
+    let full: String = if hex.len() == 3 {
+        hex.chars().flat_map(|c| [c, c]).collect()
+    } else {
+        hex.to_string()
+    };
+    Ok(format!("#{}", full.to_lowercase()))
+}
+
 /// The tag store over a set of owner kinds. Cheap to copy; holds no connection.
 #[derive(Debug, Clone, Copy)]
 pub struct Tags {
@@ -44,7 +61,9 @@ impl Tags {
                  normalized_name TEXT NOT NULL UNIQUE, -- lookup identity
                  key             TEXT,                 -- lowercase; NULL for an unkeyed tag
                  value           TEXT NOT NULL,
-                 parent_id       INTEGER REFERENCES tags(id)
+                 parent_id       INTEGER REFERENCES tags(id),
+                 icon            TEXT,                 -- opaque key or path; the app resolves it
+                 color           TEXT                  -- `#rrggbb`
              );
              CREATE INDEX tags_parent ON tags(parent_id);
              CREATE INDEX tags_key ON tags(key);\n",
@@ -82,7 +101,7 @@ impl Tags {
             })
             .collect();
         format!(
-            "SELECT g.name, g.key, g.value, p.name{counts}
+            "SELECT g.name, g.key, g.value, p.name, g.icon, g.color{counts}
              FROM tags g LEFT JOIN tags p ON p.id = g.parent_id"
         )
     }
@@ -90,13 +109,15 @@ impl Tags {
     fn row(&self, r: &rusqlite::Row) -> rusqlite::Result<Tag> {
         let mut counts = Vec::new();
         for (i, o) in self.owners.iter().enumerate() {
-            counts.push((o.name.to_string(), r.get::<_, i64>(4 + i)? as usize));
+            counts.push((o.name.to_string(), r.get::<_, i64>(6 + i)? as usize));
         }
         Ok(Tag {
             name: r.get(0)?,
             key: r.get(1)?,
             value: r.get(2)?,
             parent: r.get(3)?,
+            icon: r.get(4)?,
+            color: r.get(5)?,
             counts,
         })
     }
@@ -264,6 +285,34 @@ impl Tags {
             .map_err(db_err)?
             .collect::<std::result::Result<_, _>>()
             .map_err(db_err)
+    }
+
+    /// Set a tag's look: an icon (any non-empty key or path; the application decides what it
+    /// means) and a colour (`#rgb` or `#rrggbb`, stored as lowercase `#rrggbb`). `None` clears
+    /// that part. Identity, parent and assignments are untouched.
+    pub fn set_style(
+        &self,
+        conn: &mut Connection,
+        name: &str,
+        icon: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Tag> {
+        let icon = icon.map(str::trim).filter(|i| !i.is_empty());
+        if let Some(i) = icon
+            && (i.len() > 512 || i.chars().any(char::is_control))
+        {
+            return Err(Error::InvalidInput("that is not a valid tag icon".into()));
+        }
+        let color = color.map(normalize_color).transpose()?;
+        let tx = conn.transaction().map_err(db_err)?;
+        let id = Self::tag_id(&tx, name)?;
+        tx.execute(
+            "UPDATE tags SET icon = ?1, color = ?2 WHERE id = ?3",
+            params![icon, color, id],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        self.get(conn, name)
     }
 
     /// Set or clear (`None`) a tag's parent. Rejects self-parenting and any cycle; assignments

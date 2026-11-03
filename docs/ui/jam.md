@@ -34,7 +34,9 @@ The filter page is one component with one state: tag tokens, genre and a BPM ran
 | Bottom sheet                   | Setting up a jam                   | **Start · N**                |
 
 - **Token entry:** tags and filters become tokens inside the entry. Typing autocompletes from the user's own vocabulary; a BPM bound can be typed (`bpm<100`) or set on the range.
-- **Tag browser:** the vocabulary as a tree with a track count beside every tag, counted against the tokens already chosen, so a combination can be seen narrowing before it is committed. It is a read-only view; the vocabulary is managed in Settings → Tags.
+- **Tag toggles:** the vocabulary as chips (the tag's icon on its colour, and its name) that switch on and off, with a find-as-you-type field above them. A chip also matches the tags under it. The live count shows a combination narrowing before it is committed. The vocabulary, icons and colours are managed in Settings → Tags.
+- **Tags elsewhere** (track lists, Now Playing) are shown as badges, the icon on the colour, with the name on hover instead of a label.
+- **Detail pages** (playlist, artist, album) are not searches: a back chevron, the title, a space for a description, the facts, then a round play button over the tracks. A dynamic playlist has a settings menu whose Edit filter opens the filter page in a modal dialog that closes only with Cancel or Save.
 - **Live count:** the number of matching tracks, in the Start button and in the filter button's badge.
 - **Moving between hosts:** the jam sheet can open seeded with the current search filters, and the popover has a "Start jam with these" link that opens the sheet. Searching for romantic Spanish tracks and then playing them as a jam is one tap.
 - A saved dynamic playlist opens in the filter page for editing, and "Save as playlist" stores the current filters as a dynamic playlist.

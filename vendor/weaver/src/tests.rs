@@ -191,3 +191,39 @@ fn filter_normalizing_and_validation() {
     let bad = clause(TagOp::Any, &["not a key"], &["x"], false);
     assert!(bad.validate().is_err());
 }
+
+#[test]
+fn a_tag_has_an_icon_and_a_color() {
+    let mut db = fixture();
+    let t = TAGS.get(&db, "genre:zouk").unwrap();
+    assert_eq!((t.icon, t.color), (None, None));
+    let t = TAGS
+        .set_style(&mut db, "GENRE:Zouk", Some(" moon "), Some("#C0F"))
+        .unwrap();
+    assert_eq!(t.icon.as_deref(), Some("moon"));
+    assert_eq!(t.color.as_deref(), Some("#cc00ff"));
+    // part of it can be cleared, and listing carries it
+    TAGS.set_style(&mut db, "genre:zouk", None, Some("#112233"))
+        .unwrap();
+    let listed = TAGS.list(&db).unwrap();
+    let z = listed.iter().find(|t| t.name == "genre:zouk").unwrap();
+    assert_eq!(
+        (z.icon.as_deref(), z.color.as_deref()),
+        (None, Some("#112233"))
+    );
+    // invalid colours are rejected and nothing changes
+    for bad in ["red", "#12", "#ggg", "123456", ""] {
+        assert!(
+            matches!(
+                TAGS.set_style(&mut db, "genre:zouk", Some("x"), Some(bad)),
+                Err(Error::InvalidInput(_))
+            ),
+            "{bad}"
+        );
+    }
+    assert_eq!(TAGS.get(&db, "genre:zouk").unwrap().icon, None);
+    assert!(matches!(
+        TAGS.set_style(&mut db, "nope", None, None),
+        Err(Error::NotFound(_))
+    ));
+}

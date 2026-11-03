@@ -18,6 +18,9 @@ pub struct Tag {
     pub value: String,
     /// Display name of the parent tag; `None` for a root.
     pub parent: Option<String>,
+    /// How a frontend draws the tag: an icon key or path and a `#rrggbb` colour.
+    pub icon: Option<String>,
+    pub color: Option<String>,
     /// Things assigned this tag explicitly (descendants not counted).
     pub tracks: usize,
     pub artists: usize,
@@ -36,6 +39,8 @@ impl From<weaver::Tag> for Tag {
             key: t.key,
             value: t.value,
             parent: t.parent,
+            icon: t.icon,
+            color: t.color,
         }
     }
 }

@@ -15,6 +15,7 @@ Imported metadata sat in fixed columns while user tags were flat names, so filte
 - Multiple roots are allowed. Self-parenting and cycles are rejected in the same transaction as the change. Deleting a tag requires choosing `Detach` (children become roots) or `Delete` (descendants go too).
 - Tags go on tracks, artists, albums and playlists: one vocabulary and one tree, with an assignment table per kind (`track_tags`, `artist_tags`, `album_tags`, `playlist_tags`). A filter only looks at the kind it is run against; a track does not inherit its artist's or album's tags.
 - Schema: `tags(name, normalized_name, key, value, parent_id)` and `track_tags(track_id, tag_id)`, indexed on `parent_id`, the normalized name, `key` and `(tag_id, track_id)`. Descendants come from a recursive CTE; no closure table until benchmarks justify one.
+- A tag may carry a look for frontends: an opaque `icon` (a key or path, meaning is the frontend's) and a `#rrggbb` `color`. Both are optional, belong to the tag (not to an assignment) and never affect identity, the tree or filters. The tag engine is the vendored `weaver` crate.
 - Tags are text. Numbers (year, BPM, duration, rating) are columns of the track with their own bounds, not tags. Tag names cannot start with `=`.
 
 **What is a tag**

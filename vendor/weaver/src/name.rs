@@ -93,6 +93,9 @@ pub struct Tag {
     pub value: String,
     /// Display name of the parent tag; `None` for a root.
     pub parent: Option<String>,
+    /// How the application draws it: an opaque icon key or path, and a `#rrggbb` colour.
+    pub icon: Option<String>,
+    pub color: Option<String>,
     /// Direct assignments (descendants not counted), per owner kind, in the order the owners
     /// were given to [`crate::Tags::new`].
     pub counts: Vec<(String, usize)>,

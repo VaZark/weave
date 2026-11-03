@@ -111,6 +111,16 @@ impl Library {
         self.storage.set_tag_parent(name, parent)
     }
 
+    /// Set a tag's icon (a key or path) and colour (`#rrggbb`); `None` clears that part.
+    pub fn set_tag_style(
+        &mut self,
+        name: &str,
+        icon: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Tag> {
+        self.storage.set_tag_style(name, icon, color)
+    }
+
     /// Delete a tag, detaching or deleting its children. Returns how many tags were deleted.
     pub fn delete_tag(&mut self, name: &str, children: ChildPolicy) -> Result<usize> {
         self.storage.delete_tag(name, children)

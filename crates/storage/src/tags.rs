@@ -127,6 +127,16 @@ impl Storage {
         Ok(TAGS.list(&self.conn)?.into_iter().map(Tag::from).collect())
     }
 
+    /// Set a tag's icon (a key or path) and colour (`#rrggbb`); `None` clears that part.
+    pub fn set_tag_style(
+        &mut self,
+        name: &str,
+        icon: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Tag> {
+        Ok(TAGS.set_style(&mut self.conn, name, icon, color)?.into())
+    }
+
     /// Set or clear (`None`) a tag's parent. Rejects self-parenting and any cycle; assignments
     /// are untouched, only what `has(parent)` reaches changes.
     pub fn set_tag_parent(&mut self, name: &str, parent: Option<&str>) -> Result<Tag> {

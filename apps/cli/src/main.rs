@@ -183,6 +183,19 @@ enum TagCmd {
         #[arg(long)]
         clear: bool,
     },
+    /// Set how a frontend draws a tag: an icon (a key or path) and a colour (#rrggbb). Only the
+    /// parts you give change; clear one with its --clear flag.
+    Style {
+        name: String,
+        #[arg(long)]
+        icon: Option<String>,
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long, conflicts_with = "icon")]
+        clear_icon: bool,
+        #[arg(long, conflicts_with = "color")]
+        clear_color: bool,
+    },
     /// Delete a tag and its assignments; say what happens to its children.
     Delete {
         name: String,
@@ -1047,6 +1060,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
                         vec![
                             t.name.clone(),
                             t.parent.clone().unwrap_or_else(|| "-".into()),
+                            t.icon.clone().unwrap_or_else(|| "-".into()),
+                            t.color.clone().unwrap_or_else(|| "-".into()),
                             t.tracks.to_string(),
                             t.artists.to_string(),
                             t.albums.to_string(),
@@ -1055,7 +1070,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     })
                     .collect();
                 print_columns(
-                    &["TAG", "PARENT", "TRACKS", "ARTISTS", "ALBUMS", "PLAYLISTS"],
+                    &[
+                        "TAG",
+                        "PARENT",
+                        "ICON",
+                        "COLOR",
+                        "TRACKS",
+                        "ARTISTS",
+                        "ALBUMS",
+                        "PLAYLISTS",
+                    ],
                     rows,
                     &[],
                     None,
@@ -1071,6 +1095,34 @@ fn run(cli: Cli) -> Result<(), Failure> {
             out(json, &tag, || match &tag.parent {
                 Some(p) => outln!("{} is now under {p}", tag.name),
                 None => outln!("{} is now a top-level tag", tag.name),
+            })?;
+        }
+        Cmd::Tag(TagCmd::Style {
+            name,
+            icon,
+            color,
+            clear_icon,
+            clear_color,
+        }) => {
+            let current = lib.tag(&name)?;
+            let icon = if clear_icon {
+                None
+            } else {
+                icon.or(current.icon)
+            };
+            let color = if clear_color {
+                None
+            } else {
+                color.or(current.color)
+            };
+            let tag = lib.set_tag_style(&name, icon.as_deref(), color.as_deref())?;
+            out(json, &tag, || {
+                outln!(
+                    "{}: icon {}, color {}",
+                    tag.name,
+                    tag.icon.as_deref().unwrap_or("-"),
+                    tag.color.as_deref().unwrap_or("-")
+                )
             })?;
         }
         Cmd::Tag(TagCmd::Delete {

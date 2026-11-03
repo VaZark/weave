@@ -208,3 +208,18 @@ fn import_turns_the_genre_into_an_ordinary_tag() {
     assert_eq!(st.import_tracks(&[t]).unwrap().added, 0);
     assert_eq!(st.tags(&i).unwrap(), ["genre:Bachata", "practice"]);
 }
+
+#[test]
+fn a_tag_can_have_an_icon_and_a_color() {
+    let mut st = Storage::open_in_memory().unwrap();
+    st.create_tag("mood:calm", None).unwrap();
+    let t = st
+        .set_tag_style("Mood:Calm", Some("moon"), Some("#4A90D9"))
+        .unwrap();
+    assert_eq!(
+        (t.icon.as_deref(), t.color.as_deref()),
+        (Some("moon"), Some("#4a90d9"))
+    );
+    assert!(st.set_tag_style("mood:calm", None, Some("blue")).is_err());
+    assert_eq!(st.list_tags().unwrap()[0].icon.as_deref(), Some("moon"));
+}
