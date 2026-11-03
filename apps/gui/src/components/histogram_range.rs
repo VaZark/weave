@@ -1,56 +1,48 @@
-//! Generic: a histogram that doubles as a range picker. Bars inside the selected range are
-//! accented, the others dimmed, and pressing a bar selects that bin's range. Put a
-//! `range_slider` under it for the exact handles. Candidate for upstreaming.
+//! A histogram over a range slider that edit **one** range: pressing a bar picks that bin's range,
+//! dragging a thumb moves the ends, and the bars inside the range are accented.
 //!
-//! After the numeric facets of Esri's `HistogramRangeSlider` and Hooked on Facets: the
-//! distribution shows where values cluster, which two bare handles cannot.
+//! This is iced-adaptive-design's `ComposedComponent` (several parts, one shared state, one
+//! `on_change`, one rule) filled with its `BarChart::histogram` and `range_slider`; it replaces
+//! the hand-drawn bars this file used to hold. The same component is defined in iad's gallery
+//! (`composed_demo.rs`); this one takes the bounds from the histogram instead of 0..=100.
 
-use iced::widget::{column, container, mouse_area, row, space};
-use iced::{Alignment, Background, Border, Color, Length};
-use iced_adaptive_design::{Element, Theme};
+use iced_adaptive_design::Element;
+use iced_adaptive_design::widget::{BarChart, ComposedComponent, Histogram, range_slider};
 
-/// `bins` evenly cover `min..max`; `selection` is the chosen `(lo, hi)`; `on_pick` gets a bin's
-/// range when its bar is pressed.
-pub fn histogram_range<'a, M: Clone + 'a>(
-    bins: &[usize],
-    min: f32,
-    max: f32,
-    selection: (f32, f32),
-    height: f32,
-    on_pick: impl Fn((f32, f32)) -> M + 'a,
+/// `histogram` covers `min..max`; `range` is the chosen `(lo, hi)`; `step` is how far a thumb
+/// moves at a time. `on_change` gets the next range from whichever part the user touched.
+pub fn histogram_range_slider<'a, M: 'a>(
+    histogram: &Histogram,
+    range: (f32, f32),
+    step: f32,
+    on_change: impl Fn((f32, f32)) -> M + 'a,
 ) -> Element<'a, M> {
-    let peak = bins.iter().copied().max().unwrap_or(0).max(1) as f32;
-    let width = (max - min) / bins.len().max(1) as f32;
-    let bars = bins.iter().enumerate().map(|(i, count)| {
-        let (lo, hi) = (min + i as f32 * width, min + (i + 1) as f32 * width);
-        let inside = hi > selection.0 && lo < selection.1;
-        let h = if *count == 0 {
-            2.0
-        } else {
-            (*count as f32 / peak * height).max(4.0)
-        };
-        let bar = container(space::horizontal())
-            .width(Length::Fill)
-            .height(Length::Fixed(h))
-            .style(move |t: &Theme| container::Style {
-                background: Some(Background::Color(if inside {
-                    t.palette.accent_bg_color
-                } else {
-                    Color {
-                        a: 0.22,
-                        ..t.palette.window_fg_color
-                    }
-                })),
-                border: Border::default().rounded(2),
-                ..Default::default()
-            });
-        mouse_area(
-            column![space::vertical().height(Length::Fill), bar]
-                .height(Length::Fixed(height))
-                .align_x(Alignment::Center),
-        )
-        .on_press(on_pick((lo, hi)))
+    let (min, max) = (histogram.min(), histogram.max());
+    let (for_selected, for_pick) = (histogram.clone(), histogram.clone());
+    ComposedComponent::new(range, on_change)
+        // Part 1: the bars. Those inside the range are accented; pressing one picks its range.
+        .part(move |r| {
+            BarChart::histogram(&for_selected)
+                .height(48.0)
+                .selected({
+                    let h = for_selected.clone();
+                    let r = *r;
+                    move |i| h.selected(i, r)
+                })
+                .on_pick(move |i| for_pick.bin_range(i))
+                .minimal()
+                .gap(0.07)
+                .into()
+        })
+        // Part 2: the thumbs, for the exact ends.
+        .part(move |r| {
+            range_slider(min..=max, *r, |moved| moved)
+                .step(step)
+                .min_gap(step)
+                .into()
+        })
+        // The rule, once, whichever part sent the value: lo <= hi.
+        .normalize(|(lo, hi)| (lo.min(hi), lo.max(hi)))
+        .spacing(6.0)
         .into()
-    });
-    row(bars).spacing(2).width(Length::Fill).into()
 }

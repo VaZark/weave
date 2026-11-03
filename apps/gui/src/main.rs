@@ -10,26 +10,31 @@ mod data;
 mod icons;
 mod primitives;
 mod ui;
+mod ui_dialogs;
+mod ui_lists;
+mod ui_player;
 
 use std::time::{Duration, Instant};
 
-use data::{Filter, Library, Track};
+use data::{Filter, Library, Playlist, Track};
 use iad::adaptive::{Adaptive, Layouts};
 use iad::breakpoints::WidthClass;
-use iad::primitives::sorting::{SortState, cmp_f64, cmp_str};
+use iad::primitives::sorting::{SortState, cmp_str};
+use iad::primitives::synced::{self, Line};
 use iad::primitives::virtualize::Viewport;
 use iad::transition::Event;
 use iad::widget::{ReorderEvent, ReorderState};
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
 use primitives::bulk_tags::{self, Change, Plan};
-use primitives::synced::{self, Line};
 
 type Element<'a> = iad::Element<'a, Message>;
 
-/// Row height of the jam sheet's list, and the height assumed for it before it reports.
-pub const JAM_ROW: f32 = 32.0;
 const JAM_LIST: f32 = 240.0;
+
+/// Row heights of every track list: the normal one carries a picture and two lines.
+pub const ROW: f32 = 56.0;
+pub const ROW_COMPACT: f32 = 32.0;
 
 const WINDOW: (f32, f32) = (1120.0, 720.0);
 
@@ -64,6 +69,9 @@ impl std::fmt::Display for Layout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dest {
     Home,
+    /// Rediscover and explore: old favourites, what you play most, what you might like, and
+    /// links to every list.
+    Explore,
     Recent,
     Tracks,
     Artists,
@@ -90,8 +98,7 @@ pub enum Col {
     Title,
     Artist,
     Album,
-    Bpm,
-    Rating,
+    Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -108,8 +115,23 @@ pub enum Message {
     Open(Dest),
     SearchOpen(bool),
     SearchText(String),
-    OpenJam,
-    CloseJam,
+    /// The jam is a page: this shows it, or goes back to the page you were on.
+    ToggleJam,
+    ToggleExplore,
+    ToggleCompact,
+    SetCompact(bool),
+    OpenSettings,
+    CloseSettings,
+    WhileDays(u32),
+    ToggleFavorite(String),
+    SleepTimer(Option<u32>),
+    ListScroll(Viewport),
+    RateTrack(usize),
+    SetRating(usize, u8),
+    CloseRate,
+    InfoTrack(usize),
+    CloseInfo,
+    QueueRemove(usize),
     NowPlaying(bool),
     ToggleQueue,
     ToggleLyrics,
@@ -125,7 +147,8 @@ pub enum Message {
     /// Plays the rows of the page from this track.
     PlayTrack(usize),
     PlayAll(Vec<usize>),
-    Preset(usize),
+    /// Stores the jam's filters as a dynamic playlist.
+    SaveJamAsPlaylist,
     JamScroll(Viewport),
     // A track's menu.
     PlayNext(usize),
@@ -139,7 +162,6 @@ pub enum Message {
     BulkTarget(String, String),
     BulkSave,
     BulkCancel,
-    EditRating(u8),
     EditToggleTag(String),
     SaveTrack,
     CancelTrack,
@@ -170,11 +192,10 @@ pub enum Message {
     Shot(iced::window::Screenshot),
 }
 
-/// The track being edited in the dialog: its rating and tags as they will be saved.
+/// The track whose tags are being edited in the dialog.
 #[derive(Debug, Clone)]
 pub struct TrackEdit {
     pub id: usize,
-    pub rating: u8,
     pub tags: Vec<String>,
 }
 
@@ -237,6 +258,23 @@ pub struct App {
     /// The filter being edited in the playlist dialog, and its tag tree.
     pub draft: Option<Filter>,
     pub edit_track: Option<TrackEdit>,
+    pub rate_track: Option<usize>,
+    pub info_track: Option<usize>,
+    /// One setting for every track list (and the jam's): rows without a picture, one line.
+    pub compact: bool,
+    pub settings_open: bool,
+    /// "It's been a while" on Home: rated highly, not played for this many days.
+    pub while_days: u32,
+    pub favorites: std::collections::HashSet<String>,
+    /// Seconds left on the sleep timer.
+    pub sleep_left: Option<f32>,
+    /// The minutes chosen in the sleep-timer menu (`None`: off).
+    pub sleep_choice: Option<u32>,
+    /// The window of the main track list (virtualised) and where it starts.
+    pub list_total: usize,
+    pub list_first: usize,
+    pub list_window: Vec<Track>,
+    list_vp: Viewport,
     pub bulk: Option<BulkEdit>,
     /// Descriptions of detail pages, by `desc_key`, and whether the open one is being edited.
     pub descriptions: std::collections::HashMap<String, String>,
@@ -245,6 +283,8 @@ pub struct App {
     /// The jam sheet's matches as a virtualised list: the window of rows built, and where it
     /// starts in the full list.
     pub jam_filters_open: bool,
+    /// The playlist the jam was last saved as, and the filters it was saved with.
+    pub jam_saved: Option<(usize, Filter)>,
     pub jam_total: usize,
     pub jam_first: usize,
     pub jam_window: Vec<Track>,
@@ -278,7 +318,7 @@ impl App {
             sort: SortState::new(),
             rows: Vec::new(),
             player: Player {
-                queue: ReorderState::new(queue),
+                queue: editing_queue(queue),
                 current: Some(3),
                 playing: false,
                 pos: 42.0,
@@ -291,11 +331,24 @@ impl App {
             days: 7,
             draft: None,
             edit_track: None,
+            rate_track: None,
+            info_track: None,
+            compact: false,
+            settings_open: false,
+            while_days: 180,
+            favorites: std::collections::HashSet::new(),
+            sleep_left: None,
+            sleep_choice: None,
+            list_total: 0,
+            list_first: 0,
+            list_window: Vec::new(),
+            list_vp: Viewport::new(480.0),
             bulk: None,
             descriptions: std::collections::HashMap::new(),
             editing_desc: false,
             desc_expanded: false,
             jam_filters_open: true,
+            jam_saved: None,
             jam_total: 0,
             jam_first: 0,
             jam_window: Vec::new(),
@@ -312,13 +365,24 @@ impl App {
         let mut tasks = vec![app.dispatch(cmds)];
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
-                "jam" => vec![Message::OpenJam],
-                "jam-filters" => vec![Message::OpenJam, Message::JamFilters(true)],
+                "jam" => vec![Message::ToggleJam],
+                "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
                 "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
                 "library" => vec![Message::Go(Dest::Tracks)],
+                "home-end" => vec![
+                    Message::Go(Dest::Home),
+                    Message::ListScroll(Viewport::new(480.0)),
+                ],
+                "explore" => vec![Message::Go(Dest::Explore)],
+                "compact-home" => vec![Message::SetCompact(true)],
+                "compact-albums" => vec![Message::SetCompact(true), Message::Go(Dest::Albums)],
+                "compact-artist" => vec![Message::SetCompact(true), Message::Go(Dest::Artist(1))],
+                "settings" => vec![Message::OpenSettings],
+                "compact" => vec![Message::Go(Dest::Tracks), Message::ToggleCompact],
                 "artists" => vec![Message::Go(Dest::Artists)],
                 "popover" => vec![Message::SearchOpen(true)],
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
+                "playlist-in" => vec![Message::Open(Dest::Playlist(0))],
                 "edit-track" => vec![Message::Go(Dest::Tracks), Message::EditTrack(3)],
                 "bulk" => vec![Message::Go(Dest::Album(2)), Message::BulkOpen],
                 "describe" => vec![Message::Go(Dest::Artist(1)), Message::EditDescription(true)],
@@ -406,7 +470,7 @@ impl App {
             items.len()
         };
         items.insert(at, id);
-        self.player.queue = ReorderState::new(items);
+        self.player.queue = editing_queue(items);
     }
 
     pub fn track(&self, id: usize) -> &Track {
@@ -478,8 +542,7 @@ impl App {
             Col::Title => cmp_str(&a.title.to_lowercase(), &b.title.to_lowercase()),
             Col::Artist => cmp_str(&a.artist.to_lowercase(), &b.artist.to_lowercase()),
             Col::Album => cmp_str(&a.album.to_lowercase(), &b.album.to_lowercase()),
-            Col::Bpm => cmp_f64(a.bpm.into(), b.bpm.into()),
-            Col::Rating => a.rating.cmp(&b.rating),
+            Col::Duration => a.secs.cmp(&b.secs),
         });
         self.rows = rows;
     }
@@ -493,7 +556,7 @@ impl App {
     }
 
     fn play(&mut self, ids: Vec<usize>, start: usize) {
-        self.player.queue = ReorderState::new(ids);
+        self.player.queue = editing_queue(ids);
         self.player.current = Some(start);
         self.player.pos = 0.0;
         self.player.playing = true;
@@ -543,6 +606,9 @@ impl App {
                 });
                 self.show(d)
             }
+            Message::SearchOpen(false) if !self.is_narrow() && self.searching => {
+                return self.update(Message::Go(Dest::Home));
+            }
             Message::SearchOpen(on) => {
                 self.searching = on;
                 self.jam_open = false;
@@ -559,12 +625,98 @@ impl App {
                 self.refresh();
                 Vec::new()
             }
-            Message::OpenJam => {
-                self.jam_open = true;
+            Message::ToggleJam => {
+                if self.jam_open {
+                    // On desktop, unselecting a header button returns to Home.
+                    if !self.is_narrow() {
+                        return self.update(Message::Go(Dest::Home));
+                    }
+                    self.jam_open = false;
+                } else {
+                    self.jam_open = true;
+                    self.now_playing = false;
+                    self.searching = false;
+                }
                 Vec::new()
             }
-            Message::CloseJam => {
-                self.jam_open = false;
+            Message::ToggleExplore => {
+                if self.dest == Dest::Explore && !self.jam_open && !self.searching {
+                    return self.update(Message::Go(Dest::Home));
+                }
+                return self.update(Message::Go(Dest::Explore));
+            }
+            Message::SetCompact(on) => {
+                self.compact = on;
+                Vec::new()
+            }
+            Message::OpenSettings => {
+                self.settings_open = true;
+                Vec::new()
+            }
+            Message::CloseSettings => {
+                self.settings_open = false;
+                Vec::new()
+            }
+            Message::ToggleCompact => {
+                self.compact = !self.compact;
+                Vec::new()
+            }
+            Message::WhileDays(d) => {
+                self.while_days = d;
+                Vec::new()
+            }
+            Message::ToggleFavorite(a) => {
+                if !self.favorites.remove(&a) {
+                    self.favorites.insert(a);
+                }
+                Vec::new()
+            }
+            Message::SleepTimer(m) => {
+                self.sleep_left = m.map(|m| m as f32 * 60.0);
+                self.sleep_choice = m;
+                Vec::new()
+            }
+            Message::ListScroll(v) => {
+                self.list_vp = v;
+                Vec::new()
+            }
+            Message::RateTrack(id) => {
+                self.rate_track = Some(id);
+                Vec::new()
+            }
+            Message::SetRating(id, r) => {
+                if let Some(t) = self.lib.tracks.get_mut(id) {
+                    // Pressing the current rating clears it.
+                    t.rating = if t.rating == r { 0 } else { r };
+                }
+                self.rate_track = None;
+                self.refresh();
+                Vec::new()
+            }
+            Message::CloseRate => {
+                self.rate_track = None;
+                Vec::new()
+            }
+            Message::InfoTrack(id) => {
+                self.info_track = Some(id);
+                Vec::new()
+            }
+            Message::CloseInfo => {
+                self.info_track = None;
+                Vec::new()
+            }
+            Message::QueueRemove(i) => {
+                let playing = self
+                    .player
+                    .current
+                    .and_then(|c| self.player.queue.items().get(c).copied());
+                let mut items = self.player.queue.items().to_vec();
+                if i < items.len() {
+                    items.remove(i);
+                }
+                self.player.queue = editing_queue(items);
+                self.player.current =
+                    playing.and_then(|id| self.player.queue.items().iter().position(|x| *x == id));
                 Vec::new()
             }
             Message::NowPlaying(on) => {
@@ -653,13 +805,23 @@ impl App {
                 }
                 Vec::new()
             }
-            Message::Preset(i) => {
-                let (_, tags, bpm) = PRESETS[i];
-                self.filter = Filter {
-                    tags: tags.iter().map(|t| t.to_string()).collect(),
-                    bpm,
-                };
-                return self.update(Message::StartJam);
+            Message::SaveJamAsPlaylist => {
+                let n = self.lib.filtered(&self.filter).len();
+                if n > 0 {
+                    let name = self.new_playlist_name();
+                    self.lib.playlists.push(Playlist {
+                        name: name.clone(),
+                        icon: None,
+                        description: String::new(),
+                        filter: Some(self.filter.clone()),
+                        tracks: Vec::new(),
+                    });
+                    let i = self.lib.playlists.len() - 1;
+                    self.descriptions
+                        .insert(format!("playlist:{i}"), String::new());
+                    self.jam_saved = Some((i, self.filter.clone()));
+                }
+                Vec::new()
             }
             Message::JamFilters(on) => {
                 self.jam_filters_open = on;
@@ -697,7 +859,6 @@ impl App {
                 let t = self.track(id);
                 self.edit_track = Some(TrackEdit {
                     id,
-                    rating: t.rating,
                     tags: t.tags.clone(),
                 });
                 Vec::new()
@@ -778,13 +939,6 @@ impl App {
                 self.bulk = None;
                 Vec::new()
             }
-            Message::EditRating(r) => {
-                if let Some(e) = &mut self.edit_track {
-                    // Pressing the current rating clears it.
-                    e.rating = if e.rating == r { 0 } else { r };
-                }
-                Vec::new()
-            }
             Message::EditToggleTag(t) => {
                 if let Some(e) = &mut self.edit_track {
                     toggle(&mut e.tags, t);
@@ -795,7 +949,6 @@ impl App {
                 if let Some(e) = self.edit_track.take()
                     && let Some(t) = self.lib.tracks.get_mut(e.id)
                 {
-                    t.rating = e.rating.clamp(0, 5);
                     t.tags = e.tags;
                 }
                 self.refresh();
@@ -902,6 +1055,9 @@ impl App {
                     .current
                     .and_then(|i| self.player.queue.items().get(i).copied());
                 self.player.queue.apply(e);
+                // The queue is always being edited: a drop is committed at once.
+                self.player.queue.submit();
+                self.player.queue.edit();
                 if let Some(id) = playing {
                     self.player.current = self.player.queue.items().iter().position(|x| *x == id);
                 }
@@ -924,6 +1080,14 @@ impl App {
                 return iced::exit();
             }
             Message::Progress => {
+                if let Some(left) = &mut self.sleep_left {
+                    *left -= 0.25;
+                    if *left <= 0.0 {
+                        self.sleep_left = None;
+                        self.sleep_choice = None;
+                        self.player.playing = false;
+                    }
+                }
                 self.player.pos += 0.25;
                 if let Some(t) = self.now()
                     && self.player.pos >= t.secs as f32
@@ -933,23 +1097,64 @@ impl App {
                 Vec::new()
             }
         };
-        self.sync_jam();
+        self.sync_lists();
         let snap = self.sync_lyrics();
         Task::batch([self.dispatch(cmds), snap])
     }
 
-    /// The jam sheet's matches: only the rows in view (and a few around them) are kept for the
-    /// table to build.
-    fn sync_jam(&mut self) {
-        if !self.jam_open {
-            return;
+    /// A name for a playlist saved from the jam: its tags and tempo, made unique.
+    fn new_playlist_name(&self) -> String {
+        let mut parts: Vec<String> = self
+            .filter
+            .tags
+            .iter()
+            .map(|t| t.split_once(':').map_or(t.as_str(), |(_, v)| v).to_string())
+            .collect();
+        if self.filter.bpm != data::BPM {
+            parts.push(format!(
+                "{:.0}–{:.0} BPM",
+                self.filter.bpm.0, self.filter.bpm.1
+            ));
         }
-        let rows: Vec<&Track> = self.lib.filtered(&self.filter);
-        let pitch = iad::widget::ResponsiveTable::<Track, Message>::pitch(JAM_ROW);
-        let range = self.jam_vp.window(rows.len(), pitch, 4);
-        self.jam_total = rows.len();
-        self.jam_first = range.start;
-        self.jam_window = rows[range].iter().map(|t| (*t).clone()).collect();
+        let base = if parts.is_empty() {
+            "Jam".to_string()
+        } else {
+            format!("Jam: {}", parts.join(" · "))
+        };
+        let mut name = base.clone();
+        let mut n = 2;
+        while self
+            .lib
+            .playlists
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(&name))
+        {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        name
+    }
+
+    /// The height of a row in every track list.
+    pub fn row_h(&self) -> f32 {
+        if self.compact { ROW_COMPACT } else { ROW }
+    }
+
+    /// The virtualised lists keep only the rows in view (and a few around them): the jam's
+    /// matches, and the page's rows where the page is a long list.
+    fn sync_lists(&mut self) {
+        let pitch = self.row_h();
+        if self.jam_open {
+            let rows: Vec<&Track> = self.lib.filtered(&self.filter);
+            let range = self.jam_vp.window(rows.len(), pitch, 4);
+            self.jam_total = rows.len();
+            self.jam_first = range.start;
+            self.jam_window = rows[range].iter().map(|t| (*t).clone()).collect();
+        }
+        let range = self.list_vp.window(self.rows.len(), pitch, 4);
+        self.list_total = self.rows.len();
+        self.list_first = range.start;
+        self.list_window = self.rows[range].to_vec();
     }
 
     /// Keeps the lyrics of the playing track and the line to highlight; scrolls when it moves.
@@ -968,10 +1173,7 @@ impl App {
         }
         self.lyric_line = line;
         if self.now_playing && self.show_lyrics {
-            iced::widget::operation::snap_to(
-                iced::widget::Id::new(LYRICS),
-                synced::scroll_to(line, self.lyrics.len()),
-            )
+            iad::widget::follow_synced_text(LYRICS, line, self.lyrics.len())
         } else {
             Task::none()
         }
@@ -1000,6 +1202,13 @@ impl App {
     }
 }
 
+/// A queue that is always in edit mode: its rows can be dragged and removed at any time.
+fn editing_queue(items: Vec<usize>) -> ReorderState<usize> {
+    let mut q = ReorderState::new(items);
+    q.edit();
+    q
+}
+
 /// Adds `tag` to the list, or removes it when it is there.
 fn toggle(tags: &mut Vec<String>, tag: String) {
     match tags.iter().position(|t| *t == tag) {
@@ -1012,17 +1221,6 @@ fn toggle(tags: &mut Vec<String>, tag: String) {
 
 /// A long description to judge the clamp with (`WEAVE_GUI_START=long-desc`).
 const LONG: &str = "A long description that goes on about the music in this list: where it came from, why it is here, and what it is good for on a long drive. ";
-
-/// Jam presets for Home: (name, tags, BPM range).
-pub const PRESETS: [(&str, &[&str], (f32, f32)); 3] = [
-    (
-        "Romantic Spanish",
-        &["mood:romantic", "lang:spanish"],
-        data::BPM,
-    ),
-    ("Calm and late", &["mood:calm"], data::BPM),
-    ("Bachata, mid tempo", &["genre:bachata"], (95.0, 130.0)),
-];
 
 fn fake_lyrics(title: &str, secs: u32) -> Vec<Line> {
     const LINES: [&str; 8] = [
@@ -1109,5 +1307,93 @@ mod tests {
             a.history.is_empty(),
             "a top-level destination clears the history"
         );
+    }
+
+    #[test]
+    fn compact_is_one_setting_for_every_list() {
+        let mut a = app();
+        let normal = a.row_h();
+        let _ = a.update(Message::ToggleCompact);
+        assert!(a.row_h() < normal);
+        // the jam's list uses the same height
+        let _ = a.update(Message::ToggleJam);
+        assert!(a.jam_open);
+        assert_eq!(a.row_h(), ROW_COMPACT);
+        let _ = a.update(Message::ToggleJam);
+        assert!(!a.jam_open, "the jam button toggles the page");
+    }
+
+    #[test]
+    fn the_queue_is_always_editable_and_a_row_can_be_removed() {
+        let mut a = app();
+        assert!(a.player.queue.is_editing());
+        let playing = a.now().map(|t| t.id);
+        let n = a.player.queue.items().len();
+        let _ = a.update(Message::QueueRemove(n - 1));
+        assert_eq!(a.player.queue.items().len(), n - 1);
+        assert!(a.player.queue.is_editing());
+        assert_eq!(a.now().map(|t| t.id), playing, "the playing track is kept");
+    }
+
+    #[test]
+    fn on_desktop_unselecting_a_header_button_returns_home() {
+        let mut a = app();
+        assert!(!a.is_narrow());
+        let _ = a.update(Message::Open(Dest::Artist(1)));
+        let _ = a.update(Message::ToggleExplore);
+        assert_eq!(a.dest, Dest::Explore);
+        let _ = a.update(Message::ToggleExplore);
+        assert_eq!(a.dest, Dest::Home);
+        let _ = a.update(Message::Go(Dest::Tracks));
+        let _ = a.update(Message::ToggleJam);
+        assert!(a.jam_open);
+        let _ = a.update(Message::ToggleJam);
+        assert!(!a.jam_open);
+        assert_eq!(
+            a.dest,
+            Dest::Home,
+            "closing the jam goes Home, not back to Tracks"
+        );
+        let _ = a.update(Message::SearchOpen(true));
+        let _ = a.update(Message::SearchOpen(false));
+        assert!(!a.searching);
+        assert_eq!(a.dest, Dest::Home);
+    }
+
+    #[test]
+    fn a_jam_can_be_saved_as_a_dynamic_playlist() {
+        let mut a = app();
+        let before = a.lib.playlists.len();
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert_eq!(a.lib.playlists.len(), before + 1);
+        let p = a.lib.playlists.last().unwrap();
+        assert_eq!(
+            p.filter.as_ref(),
+            Some(&a.filter),
+            "stores the filters, not the tracks"
+        );
+        assert!(p.tracks.is_empty());
+        assert!(p.name.contains("romantic"), "{}", p.name);
+        // saving the same filters again makes a second playlist with its own name
+        let first = p.name.clone();
+        a.jam_saved = None;
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert_ne!(a.lib.playlists.last().unwrap().name, first);
+    }
+
+    #[test]
+    fn the_settings_dialog_changes_the_global_settings() {
+        let mut a = app();
+        let _ = a.update(Message::OpenSettings);
+        assert!(a.settings_open);
+        let _ = a.update(Message::SetCompact(true));
+        let _ = a.update(Message::WhileDays(365));
+        assert!(a.compact);
+        assert_eq!(a.while_days, 365);
+        let _ = a.update(Message::CloseSettings);
+        assert!(!a.settings_open);
+        assert!(a.compact, "closing keeps what was set");
     }
 }

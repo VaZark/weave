@@ -29,3 +29,27 @@ A **jam** is a shuffled, filter-driven queue that keeps refilling. It is not the
 The first version is `apps/gui` (`cargo run -p weave-player-gui`). It runs on a fake library and a simulated player, so the UI can be judged before the engine is wired in: both layouts, Home, the track table, artists, albums, playlists, search with the filter popover, the jam sheet, Now Playing with synced lyrics and the queue. Development switches: `WEAVE_GUI_SIZE=420x760`, `WEAVE_GUI_START=jam|search|library|playing|queue|lyrics` and `WEAVE_GUI_SHOT=file.png` (screenshot and quit).
 
 Our own widgets live in `apps/gui/src/components`, with their headless logic in `apps/gui/src/primitives`; generic ones (the synced lyrics list) carry no dependency on the app, so they can move upstream.
+
+## Current design (supersedes the sidebar in [layout](layout.md))
+
+- **One screen, no sidebar, no library pills.** Home is only what is recent: playlists (a jam saved with **Save as playlist** is a dynamic playlist, so there is no separate list of jams), recently played, albums and artists, each section with "View all". **Explore** (a header button, and a tab on narrow) starts with the links to every list and the usage summary, then Rediscover (old favourites from "It's been a while", and what you play most) and Explore (you might like), ending with direct links to all playlists, artists, albums and tracks. Recently played is reached from Home ("View all"). The two layouts differ only in the player (a bar, or a mini player and a tab bar) and small details.
+- **Cards fit the width.** iced has this natively: `iced::widget::Grid::fluid(max_width)` gives as many columns as fit, and the cards fill their cells (`ui::autofit`).
+- **The search field takes focus when it opens** (`FocusScope` with `trap(false)` and `initial_focus`, from iced-adaptive-design).
+- **On desktop every header button is a toggle:** unselecting it returns to Home (Explore, Search, Jam; on narrow Explore and Jam are tabs, not header buttons). On narrow, tabs and Back apply.
+- **Back is the previous place** (see [layout](layout.md#back)).
+- **Jam is a page**, not a sheet. Its header button toggles it: pressed, the jam shows; pressed again, the page you were on returns. Filters are open by default and fold on request; the round play button sits right after them; the matches are a virtualised list.
+- **Track lists are flat:** no surfaces, no separators, the whole row lights up on hover. A row is the picture, the title with its artist beneath it, the album (not on an album's own page), the duration, and a menu. Tempo and rating are not in the rows: tempo is in the jam's list and under **More info**; **Rate** and **Edit tags** are menu entries. **Compact mode** (Settings) drops the picture and uses one line for tracks (every list and the jam's), and turns the cards for albums, artists and playlists into tight rows with a small picture and the name beside it, several to a line, as a music app's compact library does.
+- **Settings is a dialog** (the header gear; iad's `preferences_dialog` with a page of groups and rows): compact mode, and how many days before Explore resurfaces a highly rated track. It closes with its button or a click outside.
+- **Menus put their icons (and checks) on the right edge**, after the label.
+- **Now Playing and the queue are sheets** that slide up over the page area (the whole window body on narrow). On wide, Now Playing does not repeat the transport controls the player bar already has; on narrow it carries them. The queue is always editable (delete, then the drag handle), with shuffle, repeat and a sleep timer.
+- **Detail pages** (playlist, artist, album) copy the usual music-app header: wide, the cover on the left, kind label, large title, description, facts, and an action row (play, options, a list/compact switch at the far end); narrow, the cover centred and one action row with the options at the start and the round play button at the end. An artist page adds the aggregate rating and a favourite toggle, Popular albums (best rated, then most in playlists), Latest albums, then all tracks.
+- **Explore** uses play history: most listened artists and tracks, and "It's been a while": tracks rated 4+ not played for more than N days (90, 180 or a year, in Settings).
+
+## Developing against a local iced-adaptive-design
+
+The GUI pins a revision of iced-adaptive-design. To build against a sibling checkout that is ahead of it, create `.cargo/config.toml` (ignored by git) with a `[patch."https://github.com/VaZark/iced-libadwaita"]` entry pointing at `../iced-libadwaita`. The tempo picker is iad's `ComposedComponent` (a `BarChart::histogram` over a `range_slider`), so it needs a revision with the composed component.
+
+## TODO
+
+- **Karaoke mode:** large synced lyrics with vocal level, key and tempo shift, on Home and Now Playing. Needs the engine to duck or separate vocals.
+- Play history and favourites in the engine (Home, the artist page and "It's been a while" use sample data).

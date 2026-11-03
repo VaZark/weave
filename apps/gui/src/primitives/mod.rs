@@ -5,4 +5,3 @@
 //! **app-specific**. Keep generic ones free of imports from the rest of this crate.
 
 pub mod bulk_tags;
-pub mod synced;

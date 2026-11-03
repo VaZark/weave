@@ -28,15 +28,22 @@ pub enum Glyph {
     Target,
     Smile,
     Lyrics,
+    Explore,
 }
 
 impl Glyph {
     fn body(self) -> &'static str {
         match self {
-            Glyph::Play => r#"<path d="M5 3l8 5-8 5z" fill="black"/>"#,
+            Glyph::Play => {
+                r#"<path d="M2.5 2.8v10.4c0 1.2 1.2 1.9 2.2 1.3l8.6-5.2c.9-.5.9-1.9 0-2.5L4.7 1.5c-1-.6-2.2.1-2.2 1.3z" fill="black" stroke="none"/>"#
+            }
             Glyph::Pause => r#"<path d="M5 3v10M11 3v10" stroke-width="2.6"/>"#,
-            Glyph::Previous => r#"<path d="M4 3v10M13 3L6 8l7 5z" fill="black"/>"#,
-            Glyph::Next => r#"<path d="M12 3v10M3 3l7 5-7 5z" fill="black"/>"#,
+            Glyph::Previous => {
+                r#"<rect x="2" y="2.5" width="2" height="11" rx=".8" fill="black" stroke="none"/><path d="M14 3.4v9.2c0 .9-1 1.4-1.7.9L6.2 9.1c-.6-.5-.6-1.7 0-2.2l6.1-4.4c.7-.5 1.7 0 1.7.9z" fill="black" stroke="none"/>"#
+            }
+            Glyph::Next => {
+                r#"<rect x="12" y="2.5" width="2" height="11" rx=".8" fill="black" stroke="none"/><path d="M2 3.4v9.2c0 .9 1 1.4 1.7.9l6.1-4.4c.6-.5.6-1.7 0-2.2L3.7 2.5C3 2 2 2.5 2 3.4z" fill="black" stroke="none"/>"#
+            }
             Glyph::Shuffle => {
                 r#"<path d="M2 4.5h2.5c3 0 4 7 7 7H14M2 11.5h2.5c1 0 1.8-1 2.6-2.2M9 6.2c.7-1 1.4-1.7 2.5-1.7H14M12 2.5l2 2-2 2M12 9.5l2 2-2 2"/>"#
             }
@@ -64,6 +71,9 @@ impl Glyph {
             }
             Glyph::Star => {
                 r#"<path d="M8 2l1.8 3.7 4 .6-2.9 2.8.7 4L8 11.2 4.4 13l.7-4L2.2 6.3l4-.6z"/>"#
+            }
+            Glyph::Explore => {
+                r#"<circle cx="8" cy="8" r="6"/><path d="M10.8 5.2L9.2 9.2 5.2 10.8 6.8 6.8z"/>"#
             }
             Glyph::Lyrics => {
                 r#"<path d="M2.5 3h11v7.5h-6.2L4.5 13v-2.5h-2z"/><path d="M5 6h6M5 8.2h4"/>"#

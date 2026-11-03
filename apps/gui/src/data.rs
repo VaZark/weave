@@ -15,6 +15,9 @@ pub struct Track {
     pub bpm: f32,
     pub rating: u8,
     pub secs: u32,
+    /// Listening history (the engine will provide it: see docs/ui/home.md).
+    pub plays: u32,
+    pub last_played_days: u32,
 }
 
 impl Track {
@@ -109,7 +112,7 @@ impl Filter {
 
 #[derive(Debug, Clone)]
 pub struct Playlist {
-    pub name: &'static str,
+    pub name: String,
     /// An icon key (as for tags); a playlist without one is drawn as an avatar of its name.
     pub icon: Option<&'static str>,
     pub description: String,
@@ -214,12 +217,14 @@ impl Library {
                     bpm: 78.0 + ((i * 37) % 90) as f32,
                     rating: ((i * 11) % 5) as u8 + 1,
                     secs: 170 + ((i * 53) % 130) as u32,
+                    plays: ((i * 7919) % 41) as u32,
+                    last_played_days: ((i * 53) % 400) as u32,
                 }
             })
             .collect();
         let playlists = vec![
             Playlist {
-                name: "Bachata 90s",
+                name: "Bachata 90s".into(),
                 icon: Some("heart"),
                 description: "Sensual and traditional bachata, slow to mid tempo.".into(),
                 filter: Some(Filter {
@@ -229,7 +234,7 @@ impl Library {
                 tracks: Vec::new(),
             },
             Playlist {
-                name: "Late night",
+                name: "Late night".into(),
                 icon: Some("moon"),
                 description: String::new(),
                 filter: Some(Filter {
@@ -239,7 +244,7 @@ impl Library {
                 tracks: Vec::new(),
             },
             Playlist {
-                name: "Road trip",
+                name: "Road trip".into(),
                 icon: None,
                 description: "For the long drive.".into(),
                 filter: None,
@@ -279,6 +284,158 @@ impl Library {
             .find(|(n, _)| n.eq_ignore_ascii_case(tag))
             .map(|(_, s)| s.clone())
             .unwrap_or_else(|| default_style(tag))
+    }
+
+    /// An album's year (fake: the engine will carry it).
+    pub fn album_year(album: &str, artist: &str) -> i32 {
+        let h = album
+            .bytes()
+            .chain(artist.bytes())
+            .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+        2000 + (h % 25) as i32
+    }
+
+    /// The average rating of an artist's tracks, 0.0 when none is rated.
+    pub fn artist_rating(&self, artist: &str) -> f32 {
+        let r: Vec<f32> = self
+            .tracks
+            .iter()
+            .filter(|t| t.artist == artist && t.rating > 0)
+            .map(|t| f32::from(t.rating))
+            .collect();
+        if r.is_empty() {
+            0.0
+        } else {
+            r.iter().sum::<f32>() / r.len() as f32
+        }
+    }
+
+    /// An artist's albums as indexes into `albums()`.
+    pub fn albums_of(&self, artist: &str) -> Vec<usize> {
+        self.albums()
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.1 == artist)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// How many playlists hold at least one track of the album.
+    pub fn playlists_with(&self, album: &str, artist: &str) -> usize {
+        self.playlists
+            .iter()
+            .filter(|p| {
+                self.playlist_tracks(p)
+                    .iter()
+                    .any(|t| t.album == album && t.artist == artist)
+            })
+            .count()
+    }
+
+    /// Popular albums of an artist: the best rated first, then the most in playlists.
+    pub fn popular_albums(&self, artist: &str, n: usize) -> Vec<usize> {
+        let albums = self.albums();
+        let mut v: Vec<(usize, f32, usize)> = self
+            .albums_of(artist)
+            .into_iter()
+            .map(|i| {
+                let (name, _, _) = &albums[i];
+                let ts: Vec<&Track> = self
+                    .tracks
+                    .iter()
+                    .filter(|t| t.album == *name && t.artist == artist)
+                    .collect();
+                let avg =
+                    ts.iter().map(|t| f32::from(t.rating)).sum::<f32>() / ts.len().max(1) as f32;
+                (i, avg, self.playlists_with(name, artist))
+            })
+            .collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+        v.into_iter().take(n).map(|x| x.0).collect()
+    }
+
+    /// An artist's newest albums first.
+    pub fn latest_albums(&self, artist: &str, n: usize) -> Vec<usize> {
+        let albums = self.albums();
+        let mut v = self.albums_of(artist);
+        v.sort_by_key(|i| std::cmp::Reverse(Self::album_year(&albums[*i].0, &albums[*i].1)));
+        v.truncate(n);
+        v
+    }
+
+    /// Artists by how much they were played, most first.
+    pub fn most_listened_artists(&self, n: usize) -> Vec<(usize, u32)> {
+        let artists = self.artists();
+        let mut v: Vec<(usize, u32)> = artists
+            .iter()
+            .enumerate()
+            .map(|(i, (a, _))| {
+                (
+                    i,
+                    self.tracks
+                        .iter()
+                        .filter(|t| t.artist == *a)
+                        .map(|t| t.plays)
+                        .sum(),
+                )
+            })
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+
+    /// The tracks played most recently, newest first.
+    pub fn recently_played(&self, n: usize) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self.tracks.iter().collect();
+        v.sort_by(|a, b| {
+            a.last_played_days
+                .cmp(&b.last_played_days)
+                .then(a.id.cmp(&b.id))
+        });
+        v.truncate(n);
+        v
+    }
+
+    /// Artists by when one of their tracks was last played, most recent first (indexes into
+    /// `artists()`).
+    pub fn recent_artists(&self, n: usize) -> Vec<usize> {
+        let artists = self.artists();
+        let mut seen: Vec<usize> = Vec::new();
+        for t in self.recently_played(self.tracks.len()) {
+            if let Some(i) = artists.iter().position(|a| a.0 == t.artist)
+                && !seen.contains(&i)
+            {
+                seen.push(i);
+                if seen.len() == n {
+                    break;
+                }
+            }
+        }
+        seen
+    }
+
+    pub fn most_listened_tracks(&self, n: usize) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self.tracks.iter().collect();
+        v.sort_by(|a, b| b.plays.cmp(&a.plays).then(a.id.cmp(&b.id)));
+        v.truncate(n);
+        v
+    }
+
+    /// Tracks rated 4 or 5 that have not been played for more than `days` days.
+    pub fn been_a_while(&self, days: u32, n: usize) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self
+            .tracks
+            .iter()
+            .filter(|t| t.rating >= 4 && t.last_played_days > days)
+            .collect();
+        v.sort_by(|a, b| {
+            b.last_played_days
+                .cmp(&a.last_played_days)
+                .then(a.id.cmp(&b.id))
+        });
+        v.truncate(n);
+        v
     }
 
     /// Every tag of the vocabulary, a parent before its children.
@@ -353,5 +510,63 @@ impl Library {
         }
         out.sort();
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn been_a_while_is_highly_rated_and_not_played_for_the_given_days() {
+        let lib = Library::fake();
+        for days in [90, 180, 365] {
+            let v = lib.been_a_while(days, 100);
+            assert!(!v.is_empty() || days == 365);
+            assert!(v.iter().all(|t| t.rating >= 4 && t.last_played_days > days));
+        }
+        // a longer wait never adds tracks
+        assert!(lib.been_a_while(365, 100).len() <= lib.been_a_while(90, 100).len());
+    }
+
+    #[test]
+    fn an_artist_has_an_aggregate_rating_and_albums_in_two_orders() {
+        let lib = Library::fake();
+        let (name, _) = lib.artists()[1].clone();
+        let r = lib.artist_rating(&name);
+        assert!((0.0..=5.0).contains(&r) && r > 0.0);
+        let latest = lib.latest_albums(&name, 10);
+        let years: Vec<i32> = latest
+            .iter()
+            .map(|i| {
+                let a = &lib.albums()[*i];
+                Library::album_year(&a.0, &a.1)
+            })
+            .collect();
+        assert!(years.windows(2).all(|w| w[0] >= w[1]), "newest first");
+        assert_eq!(lib.popular_albums(&name, 10).len(), latest.len());
+    }
+
+    #[test]
+    fn recent_artists_are_distinct_and_the_latest_played_comes_first() {
+        let lib = Library::fake();
+        let r = lib.recent_artists(5);
+        assert_eq!(r.len(), 5);
+        let mut d = r.clone();
+        d.sort();
+        d.dedup();
+        assert_eq!(d.len(), r.len());
+        let first = &lib.artists()[r[0]].0;
+        let newest = lib.recently_played(1)[0];
+        assert_eq!(&newest.artist, first);
+    }
+
+    #[test]
+    fn most_listened_is_ordered_by_plays() {
+        let lib = Library::fake();
+        let t = lib.most_listened_tracks(10);
+        assert!(t.windows(2).all(|w| w[0].plays >= w[1].plays));
+        let a = lib.most_listened_artists(10);
+        assert!(a.windows(2).all(|w| w[0].1 >= w[1].1));
     }
 }
