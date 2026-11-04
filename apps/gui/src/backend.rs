@@ -426,6 +426,22 @@ pub mod sample {
             .unwrap();
     }
 
+    /// Adds tracks with no album tag to the engine behind `b`.
+    pub fn untagged(b: &mut Backend, titles: &[&str]) {
+        let scanned: Vec<ScannedTrack> = titles
+            .iter()
+            .map(|t| ScannedTrack {
+                path: format!("/music/{t}.mp3"),
+                metadata: Metadata {
+                    title: (*t).into(),
+                    artist: Some("x".into()),
+                    ..Metadata::default()
+                },
+            })
+            .collect();
+        b.engine.import_scanned(&scanned).unwrap();
+    }
+
     /// A library with nothing in it.
     pub fn empty() -> (Backend, Library) {
         let mut b = Backend::with(Engine::open_in_memory().unwrap());

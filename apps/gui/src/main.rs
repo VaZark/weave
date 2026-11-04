@@ -861,7 +861,7 @@ impl App {
     }
 
     /// Whether the open playlist or album plays shuffled: `None` for a page that has no such
-    /// setting, else its shuffle toggle (off until it is switched on).
+    /// setting (an artist), else its shuffle toggle (off until it is switched on).
     pub fn page_shuffle(&self) -> Option<bool> {
         match self.dest {
             Dest::Playlist(i) => self
@@ -2084,6 +2084,63 @@ mod tests {
             let _ = a.view();
             let _ = a.update(Message::Resized(1100.0, 800.0));
         }
+    }
+
+    #[test]
+    fn tracks_with_no_album_tag_show_no_album_and_belong_to_none() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::untagged(&mut backend, &["plain a", "plain b"]);
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        // Nothing is made up for them: an empty album, no album page, and a line without one.
+        let plain: Vec<&Track> = a
+            .lib
+            .tracks
+            .iter()
+            .filter(|t| t.title.starts_with("plain"))
+            .collect();
+        assert_eq!(plain.len(), 2);
+        assert!(plain.iter().all(|t| t.album.is_empty()));
+        assert_eq!(plain[0].by_line(), "x", "just the artist, no separator");
+        assert!(a.lib.albums().iter().all(|(album, _, _)| !album.is_empty()));
+        assert!(
+            !a.lib
+                .albums()
+                .iter()
+                .any(|(album, _, _)| album.contains("Unknown"))
+        );
+        // A library of only untagged tracks has no albums, and its pages say so.
+        let (mut backend, _) = backend::sample::empty();
+        backend::sample::untagged(&mut backend, &["solo"]);
+        let lib = backend.load().unwrap();
+        let mut only = App::with(backend, lib).0;
+        assert!(only.lib.albums().is_empty());
+        for dest in [Dest::Albums, Dest::Home, Dest::Explore] {
+            let _ = only.update(Message::Open(dest));
+            let _ = only.view();
+        }
+        // Every album page is a real album, so each has the shuffle toggle.
+        for i in 0..a.lib.albums().len() {
+            let _ = a.update(Message::Open(Dest::Album(i)));
+            assert!(a.page_shuffle().is_some());
+        }
+        // The pages that list them build, in both layouts, and the info and track dialogs too.
+        let id = a
+            .lib
+            .tracks
+            .iter()
+            .position(|t| t.title == "plain a")
+            .unwrap();
+        for dest in [Dest::Tracks, Dest::Albums, Dest::Home] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+        }
+        let _ = a.update(Message::InfoTrack(id));
+        let _ = a.view();
+        let _ = a.update(Message::CloseInfo);
+        a.play(vec![id], 0);
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.view();
     }
 
     #[test]

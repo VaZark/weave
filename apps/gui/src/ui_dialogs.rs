@@ -317,7 +317,7 @@ impl App {
         container(
             column![
                 ty::title_3(format!("Tags · {}", t.title)),
-                ty::caption(format!("{} · {}", t.artist, t.album)),
+                ty::caption(t.by_line()),
                 ChipGroup::new(self.tag_options(""), &e.tags, Message::EditToggleTag)
                     .search(&self.tag_query, Message::TagQuery)
                     .placeholder("Find a tag")
@@ -349,7 +349,7 @@ impl App {
         container(
             column![
                 ty::title_3(t.title.clone()),
-                ty::caption(format!("{} · {}", t.artist, t.album)),
+                ty::caption(t.by_line()),
                 stars,
                 row![
                     space::horizontal(),
@@ -385,7 +385,12 @@ impl App {
             column![
                 ty::title_3(t.title.clone()),
                 line("Artist", t.artist.clone()),
-                line("Album", t.album.clone()),
+                // A track with no album tag has no album line.
+                if t.album.is_empty() {
+                    Element::from(space::vertical().height(0))
+                } else {
+                    line("Album", t.album.clone())
+                },
                 line("Duration", t.duration()),
                 line("Tempo", format!("{:.0} BPM", t.bpm)),
                 line(

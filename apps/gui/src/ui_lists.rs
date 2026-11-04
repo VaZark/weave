@@ -226,7 +226,8 @@ impl App {
         }
         r = r.cell(ty::caption(t.duration()));
         if o.menu {
-            r = r.menu(self.track_menu(t.id, o.album));
+            // "View album" is for a track that has an album.
+            r = r.menu(self.track_menu(t.id, o.album && !t.album.is_empty()));
         }
         r.into()
     }
@@ -577,7 +578,15 @@ impl App {
                     self.short_list(&recent)
                 )
             ),
-            section_all("Recent albums", Dest::Albums, albums),
+            section_all(
+                "Recent albums",
+                Dest::Albums,
+                or_note(
+                    n_albums == 0,
+                    "Albums show up here when your tracks have an album tag.",
+                    albums
+                )
+            ),
             section_all(
                 "Recent artists",
                 Dest::Artists,
@@ -785,12 +794,17 @@ impl App {
 
     /// The shuffle toggle of a playlist or an album page, beside its ⋮: on, Play shuffles it (from
     /// a random track); off, Play plays it in order. It is kept with the playlist or the album.
-    fn shuffle_toggle(&self) -> Element<'_> {
-        w::IconToggleButton::new(Icon::Shuffle, self.page_shuffle().unwrap_or(false))
-            .size(20.0)
-            .tooltip("Shuffle")
-            .on_toggle(|on| Message::SetShufflePref(on.then_some(true)))
-            .into()
+    ///
+    /// A page that has no such setting (see `page_shuffle`) has no toggle.
+    fn shuffle_toggle(&self) -> Option<Element<'_>> {
+        let on = self.page_shuffle()?;
+        Some(
+            w::IconToggleButton::new(Icon::Shuffle, on)
+                .size(20.0)
+                .tooltip("Shuffle")
+                .on_toggle(|on| Message::SetShufflePref(on.then_some(true)))
+                .into(),
+        )
     }
 
     /// The options of a detail page: a dropdown on desktop, a button that opens the bottom sheet
@@ -897,7 +911,10 @@ impl App {
                     .into(),
                     p.name.to_string(),
                     self.facts(extra),
-                    vec![self.shuffle_toggle(), self.options_menu(p.filter.is_some())],
+                    self.shuffle_toggle()
+                        .into_iter()
+                        .chain([self.options_menu(p.filter.is_some())])
+                        .collect(),
                     from_seed(&p.name),
                 )
             }
@@ -943,7 +960,10 @@ impl App {
                     "Album".into(),
                     album,
                     self.facts(Some(format!("{artist} · {year}"))),
-                    vec![self.shuffle_toggle(), self.options_menu(false)],
+                    self.shuffle_toggle()
+                        .into_iter()
+                        .chain([self.options_menu(false)])
+                        .collect(),
                     from_index(i),
                 )
             }
@@ -1072,6 +1092,13 @@ impl App {
             }
             Dest::Artists if empty => self.empty_library("No artists yet"),
             Dest::Albums if empty => self.empty_library("No albums yet"),
+            // Tracks with no album tag belong to no album: a library of only those has none.
+            Dest::Albums if self.lib.albums().is_empty() => self.empty_page(
+                Icon::MusicNote,
+                "No albums yet",
+                Some("Tracks with an album tag are grouped into albums here."),
+                None,
+            ),
             Dest::Recent if empty => self.empty_library("No tracks yet"),
             Dest::Playlists if self.lib.playlists.is_empty() => self.empty_page(
                 Icon::MusicNote,

@@ -15,6 +15,7 @@ pub struct Track {
     pub year: Option<i32>,
     pub title: String,
     pub artist: String,
+    /// Empty for a track with no album tag.
     pub album: String,
     pub tags: Vec<String>,
     pub bpm: f32,
@@ -32,6 +33,16 @@ pub struct Track {
 }
 
 impl Track {
+    /// The artist and, when it has one, the album: "Artist · Album". A track with no album tag has
+    /// an empty `album`, and nothing is made up in its place.
+    pub fn by_line(&self) -> String {
+        if self.album.is_empty() {
+            self.artist.clone()
+        } else {
+            format!("{} · {}", self.artist, self.album)
+        }
+    }
+
     pub fn duration(&self) -> String {
         clock(self.secs as f32)
     }
@@ -222,11 +233,7 @@ impl Library {
                     .artist
                     .clone()
                     .unwrap_or_else(|| "Unknown artist".into()),
-                album: t
-                    .metadata
-                    .album
-                    .clone()
-                    .unwrap_or_else(|| "Unknown album".into()),
+                album: t.metadata.album.clone().unwrap_or_default(),
                 tags: t.tags.clone(),
                 bpm: t.metadata.bpm.unwrap_or(0.0) as f32,
                 rating: t.rating.unwrap_or(0),
@@ -595,7 +602,8 @@ impl Library {
 
     pub fn albums(&self) -> Vec<(String, String, usize)> {
         let mut out: Vec<(String, String, usize)> = Vec::new();
-        for t in &self.tracks {
+        // Tracks with no album tag belong to no album: they are not grouped into a made-up one.
+        for t in self.tracks.iter().filter(|t| !t.album.is_empty()) {
             match out
                 .iter_mut()
                 .find(|(a, b, _)| *a == t.album && *b == t.artist)

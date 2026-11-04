@@ -279,13 +279,9 @@ impl App {
         .wrap();
         let mut body = column![
             container(art).height(Length::Fill).width(Length::Fill),
-            column![
-                ty::title_2(t.title.clone()),
-                ty::body(format!("{} · {}", t.artist, t.album)),
-                tags,
-            ]
-            .spacing(6)
-            .align_x(Alignment::Center),
+            column![ty::title_2(t.title.clone()), ty::body(t.by_line()), tags,]
+                .spacing(6)
+                .align_x(Alignment::Center),
         ]
         .spacing(12)
         .align_x(Alignment::Center)
