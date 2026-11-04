@@ -779,7 +779,7 @@ fn session_round_trips_queue_order_and_state() {
     q.set_position(12_345, 99);
     q.state.start_seq = 7;
     q.state.seek_seq = 3;
-    q.jump(2).unwrap();
+    q.jump(2, &mut weave_player_core::Rng::new(1)).unwrap();
     s.save_queue(&q).unwrap();
 
     assert_eq!(s.load_queue().unwrap(), q);

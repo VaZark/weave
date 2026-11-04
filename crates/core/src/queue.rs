@@ -339,8 +339,10 @@ impl Queue {
         self.halt();
     }
 
-    /// Make the track at a 0-based list position current and start playing.
-    pub fn jump(&mut self, position: usize) -> Result<()> {
+    /// Make the track at a 0-based list position current and start playing. When shuffled the play
+    /// order starts afresh from there: the track first, then every other in a new random order,
+    /// so nothing is skipped and the queue does not end before each has had its turn.
+    pub fn jump(&mut self, position: usize, rng: &mut Rng) -> Result<()> {
         if position >= self.items.len() {
             return Err(Error::InvalidInput(format!(
                 "queue has no position {}",
@@ -349,6 +351,30 @@ impl Queue {
         }
         self.state.current = Some(position);
         self.state.status = PlayStatus::Playing;
+        if self.state.shuffle {
+            self.rebuild_order(rng);
+        }
+        Ok(())
+    }
+
+    /// Move a track between 0-based positions of the **play order** (what a shuffled queue shows
+    /// as "up next"), leaving the list as it is. Without shuffle the play order is the list, so it
+    /// is [`move_item`](Self::move_item).
+    pub fn move_in_order(&mut self, from: usize, to: usize) -> Result<()> {
+        if !self.state.shuffle {
+            return self.move_item(from, to);
+        }
+        let n = self.order.len();
+        for p in [from, to] {
+            if p >= n {
+                return Err(Error::InvalidInput(format!(
+                    "play order has no position {}",
+                    p + 1
+                )));
+            }
+        }
+        let moved = self.order.remove(from);
+        self.order.insert(to, moved);
         Ok(())
     }
 
@@ -626,7 +652,7 @@ mod tests {
     #[test]
     fn shuffle_visits_every_track_once_starting_with_current() {
         let (mut q, mut rng) = started(&["a", "b", "c", "d", "e", "f"]);
-        q.jump(2).unwrap();
+        q.jump(2, &mut rng).unwrap();
         q.set_shuffle(true, &mut rng);
         q.assert_valid();
         assert_eq!(q.order[0], 2, "current stays first");
@@ -701,7 +727,7 @@ mod tests {
     #[test]
     fn remove_before_current_keeps_cursor_on_same_track() {
         let (mut q, mut rng) = started(&["a", "b", "c", "d"]);
-        q.jump(2).unwrap();
+        q.jump(2, &mut rng).unwrap();
         q.remove(&[0, 1]).unwrap();
         q.assert_valid();
         assert_eq!((names(&q), current(&q)), (vec!["c", "d"], Some("c")));
@@ -710,8 +736,8 @@ mod tests {
 
     #[test]
     fn remove_current_moves_to_next_in_play_order() {
-        let (mut q, _) = started(&["a", "b", "c"]);
-        q.jump(1).unwrap();
+        let (mut q, mut rng) = started(&["a", "b", "c"]);
+        q.jump(1, &mut rng).unwrap();
         q.remove(&[1]).unwrap();
         q.assert_valid();
         assert_eq!((names(&q), current(&q)), (vec!["a", "c"], Some("c")));
@@ -748,8 +774,8 @@ mod tests {
 
     #[test]
     fn move_item_follows_cursor() {
-        let (mut q, _) = started(&["a", "b", "c", "d"]);
-        q.jump(0).unwrap();
+        let (mut q, mut rng) = started(&["a", "b", "c", "d"]);
+        q.jump(0, &mut rng).unwrap();
         q.move_item(0, 2).unwrap();
         q.assert_valid();
         assert_eq!(
@@ -1047,5 +1073,45 @@ mod tests {
                 .unwrap_err()
                 .contains("off, song, playlist")
         );
+    }
+
+    #[test]
+    fn jumping_in_a_shuffled_queue_starts_a_new_round_from_there() {
+        let (mut q, mut rng) = started(&["a", "b", "c", "d", "e", "f"]);
+        q.set_shuffle(true, &mut rng);
+        // However the old order ran, jumping to a track makes it first and keeps every other
+        // track still to come: the queue cannot end before all of them have played.
+        for target in [5, 0, 3] {
+            q.jump(target, &mut rng).unwrap();
+            q.assert_valid();
+            assert_eq!(q.order[0], target);
+            let mut seen = vec![current(&q).unwrap().to_string()];
+            while q.advance(AdvanceReason::UserSkip, &mut rng) == Advance::Moved {
+                seen.push(current(&q).unwrap().to_string());
+            }
+            seen.sort();
+            assert_eq!(seen, ["a", "b", "c", "d", "e", "f"], "jump to {target}");
+        }
+    }
+
+    #[test]
+    fn a_track_moves_in_the_play_order_without_touching_the_list() {
+        let (mut q, mut rng) = started(&["a", "b", "c", "d"]);
+        q.set_shuffle(true, &mut rng);
+        let list: Vec<String> = names(&q).iter().map(|n| n.to_string()).collect();
+        let order = q.order.clone();
+        q.move_in_order(1, 3).unwrap();
+        q.assert_valid();
+        assert_eq!(names(&q), list, "the list is as it was");
+        let mut expected = order.clone();
+        let moved = expected.remove(1);
+        expected.insert(3, moved);
+        assert_eq!(q.order, expected);
+        assert!(q.move_in_order(0, 4).is_err());
+        // Without shuffle the play order is the list.
+        q.set_shuffle(false, &mut rng);
+        q.move_in_order(0, 2).unwrap();
+        q.assert_valid();
+        assert_eq!(names(&q), ["b", "c", "a", "d"]);
     }
 }

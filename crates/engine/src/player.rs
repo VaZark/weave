@@ -20,6 +20,10 @@ pub struct SessionView {
     pub state: PlayerState,
     /// Queue contents in list order.
     pub tracks: Vec<Track>,
+    /// The order they play in: indexes into `tracks`. The list order unless shuffle is on, and
+    /// then a virtual shuffle (the list is not reordered), with the current track first in a
+    /// new round.
+    pub order: Vec<usize>,
     /// Time left on the sleep timer, if one is set.
     pub sleep_remaining: Option<Duration>,
     /// Where playback is in the current track.
@@ -102,6 +106,7 @@ impl Library {
         Ok(SessionView {
             state: queue.state.clone(),
             tracks: self.storage.tracks_by_slugs(&slugs)?,
+            order: queue.order.clone(),
             sleep_remaining,
             position: Duration::from_millis(queue.position_ms(self.now_ms())),
         })
@@ -344,6 +349,15 @@ impl Library {
         self.commit(&queue)
     }
 
+    /// Move a track between 1-based positions of the **play order**: what a shuffled queue lists as
+    /// up next. The list itself is left as it is. Without shuffle the two are the same.
+    pub fn queue_move_in_play_order(&mut self, from: usize, to: usize) -> Result<SessionView> {
+        let (from, to) = (to_index(from)?, to_index(to)?);
+        let mut queue = self.load_session()?;
+        queue.move_in_order(from, to)?;
+        self.commit(&queue)
+    }
+
     pub fn queue_clear(&mut self) -> Result<SessionView> {
         let mut queue = self.load_session()?;
         queue.clear();
@@ -354,7 +368,7 @@ impl Library {
     pub fn queue_jump(&mut self, position: usize) -> Result<SessionView> {
         let index = to_index(position)?;
         let mut queue = self.load_session()?;
-        queue.jump(index)?;
+        queue.jump(index, &mut self.rng)?;
         self.commit_started(&mut queue)
     }
 
@@ -1652,6 +1666,43 @@ mod tests {
         lib.play_track(&id(1)).unwrap();
         let h = lib.play_history().unwrap();
         assert_eq!((h[0].track.as_str(), h[0].plays), (id(1).as_str(), 2));
+    }
+
+    #[test]
+    fn with_shuffle_on_playing_a_track_sets_a_play_order_that_covers_the_whole_queue() {
+        let (mut lib, _) = library(6);
+        let all: Vec<String> = (1..=6).map(id).collect();
+        lib.queue_add(&all, None, false).unwrap();
+        lib.set_shuffle(true).unwrap();
+        // Starting a track in the middle of the list: the rest still plays, in some other order,
+        // and the queue does not end before every track has had its turn.
+        let v = lib.queue_jump(5).unwrap();
+        assert_eq!(v.order.len(), 6);
+        assert_eq!(
+            v.order[0],
+            v.state.current.unwrap(),
+            "the played track leads the order"
+        );
+        let mut sorted = v.order.clone();
+        sorted.sort();
+        assert_eq!(sorted, [0, 1, 2, 3, 4, 5], "a permutation of the list");
+        let mut played = vec![now(&v).unwrap().to_string()];
+        loop {
+            let v = lib.next().unwrap();
+            if v.state.status != PlayStatus::Playing {
+                break;
+            }
+            played.push(now(&v).unwrap().to_string());
+        }
+        played.sort();
+        assert_eq!(played, ["t1", "t2", "t3", "t4", "t5", "t6"]);
+        // The play order can be edited without touching the list.
+        let v = lib.queue_jump(2).unwrap();
+        let list = titles(&v).iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let (second, third) = (v.order[1], v.order[2]);
+        let v = lib.queue_move_in_play_order(2, 3).unwrap();
+        assert_eq!((v.order[1], v.order[2]), (third, second));
+        assert_eq!(titles(&v), list);
     }
 
 }
