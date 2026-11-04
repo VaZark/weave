@@ -1,7 +1,7 @@
 //! The library the views read: a snapshot of the engine's database (`Library::load`), with the
 //! tracks addressed by their index in it. The slug (the engine's identity) is on each track, and
-//! `backend` turns indexes back into slugs for the engine. The engine records no listening history
-//! yet, so `plays` and `last_played_days` stay 0 and the history sections stay empty.
+//! `backend` turns indexes back into slugs for the engine. The listening history is the engine's
+//! too (`apply_history`); a track never played has 0 plays.
 
 use iced::Color;
 use iced_adaptive_design::primitives::tree::TreeNode;
@@ -20,9 +20,15 @@ pub struct Track {
     pub bpm: f32,
     pub rating: u8,
     pub secs: u32,
-    /// Listening history (the engine does not record it yet: see docs/ui/home.md).
+    /// How rare it is among the library's tracks: 0 is the one added last (the engine's `Added`
+    /// order, newest first).
+    pub added: usize,
+    /// Listening history, from the engine (`Library::apply_history`): times played, whole days
+    /// since the last play, and when it was (unix seconds). 0 and 0 and 0 for a track never
+    /// played.
     pub plays: u32,
     pub last_played_days: u32,
+    pub played_at: i64,
 }
 
 impl Track {
@@ -151,6 +157,23 @@ pub fn default_style(tag: &str) -> TagStyle {
     }
 }
 
+/// How "Recent tracks" is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecentOrder {
+    /// What was played last (until something was played, what was added last).
+    #[default]
+    Played,
+    /// What was added to the library last.
+    Added,
+}
+
+/// Seconds since the Unix epoch.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 pub struct Library {
     pub tracks: Vec<Track>,
     pub styles: Vec<(String, TagStyle)>,
@@ -162,8 +185,25 @@ impl Library {
     /// Reads the whole library from the engine: tracks, the tag tree and the tags' looks, and the
     /// playlists.
     pub fn load(engine: &weave_player_lib::Library) -> weave_player_lib::core::Result<Self> {
-        use weave_player_lib::core::{FilterSpec, Page, PlaylistKind};
+        use weave_player_lib::core::{FilterSpec, Page, PlaylistKind, Sort, SortField};
         let found = engine.search(&FilterSpec::default(), Page::ALL)?;
+        // The order tracks were added in, newest first, as a rank for each.
+        let by_added = engine.search(
+            &FilterSpec {
+                sort: Some(Sort {
+                    field: SortField::Added,
+                    descending: true,
+                }),
+                ..FilterSpec::default()
+            },
+            Page::ALL,
+        )?;
+        let added: std::collections::HashMap<&str, usize> = by_added
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(rank, t)| (t.id.0.as_str(), rank))
+            .collect();
         let tracks: Vec<Track> = found
             .tracks
             .iter()
@@ -187,8 +227,10 @@ impl Library {
                 bpm: t.metadata.bpm.unwrap_or(0.0) as f32,
                 rating: t.rating.unwrap_or(0),
                 secs: (t.metadata.duration_ms.unwrap_or(0) / 1000) as u32,
+                added: *added.get(t.id.0.as_str()).unwrap_or(&usize::MAX),
                 plays: 0,
                 last_played_days: 0,
+                played_at: 0,
             })
             .collect();
         let index: std::collections::HashMap<&str, usize> =
@@ -239,12 +281,34 @@ impl Library {
                 tracks,
             });
         }
-        Ok(Self {
+        let mut lib = Self {
             tracks,
             styles,
             tags,
             playlists,
-        })
+        };
+        lib.apply_history(&engine.play_history()?, unix_now());
+        Ok(lib)
+    }
+
+    /// Takes the listening history from the engine: what was played, how often and when last.
+    /// Tracks not in `stats` are marked never played.
+    pub fn apply_history(&mut self, stats: &[weave_player_lib::core::PlayStat], now: i64) {
+        let index: std::collections::HashMap<String, usize> =
+            self.tracks.iter().map(|t| (t.slug.clone(), t.id)).collect();
+        for t in &mut self.tracks {
+            t.plays = 0;
+            t.last_played_days = 0;
+            t.played_at = 0;
+        }
+        for s in stats {
+            if let Some(&i) = index.get(s.track.as_str()) {
+                let t = &mut self.tracks[i];
+                t.plays = s.plays;
+                t.played_at = s.last_played_at;
+                t.last_played_days = ((now - s.last_played_at).max(0) / 86_400) as u32;
+            }
+        }
     }
 
     /// The look of a tag: its own, or the default of its key.
@@ -369,12 +433,37 @@ impl Library {
     pub fn recently_played(&self, n: usize) -> Vec<&Track> {
         let mut v: Vec<&Track> = self.tracks.iter().filter(|t| t.plays > 0).collect();
         v.sort_by(|a, b| {
-            a.last_played_days
-                .cmp(&b.last_played_days)
+            b.played_at
+                .cmp(&a.played_at)
+                .then(a.last_played_days.cmp(&b.last_played_days))
                 .then(a.id.cmp(&b.id))
         });
         v.truncate(n);
         v
+    }
+
+    /// The tracks added to the library last, newest first.
+    pub fn recently_added(&self, n: usize) -> Vec<&Track> {
+        let mut v: Vec<&Track> = self.tracks.iter().collect();
+        v.sort_by_key(|t| (t.added, t.id));
+        v.truncate(n);
+        v
+    }
+
+    /// Recent tracks: what was played last, or until anything was played what was added last.
+    /// `order` chooses the view: played (with that fallback) or added.
+    pub fn recent_tracks(&self, n: usize, order: RecentOrder) -> Vec<&Track> {
+        match order {
+            RecentOrder::Played => {
+                let played = self.recently_played(n);
+                if played.is_empty() {
+                    self.recently_added(n)
+                } else {
+                    played
+                }
+            }
+            RecentOrder::Added => self.recently_added(n),
+        }
     }
 
     /// Artists by when one of their tracks was last played, most recent first (indexes into

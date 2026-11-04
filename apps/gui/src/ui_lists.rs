@@ -9,7 +9,7 @@ use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::media_list::MediaListLayout;
-use crate::data::{Filter, Track};
+use crate::data::{Filter, RecentOrder, Track};
 use crate::icons::{cover, playlist_avatar};
 use crate::ui::card;
 use crate::{App, Col, Dest, Element, Message, Sheet};
@@ -302,17 +302,29 @@ impl App {
             .into()
     }
 
-    /// Tracks and Recently played: the play button, then the long list.
+    /// Tracks and Recent tracks: the play button, then the long list.
     fn track_page(&self) -> Element<'_> {
+        let recent = self.dest == Dest::Recent;
+        // Nothing played yet: "recently played" shows what was added last, and says so.
+        let note = if recent
+            && self.recent_order == RecentOrder::Played
+            && self.lib.recently_played(1).is_empty()
+        {
+            format!(
+                "{} tracks · nothing played yet, showing recently added",
+                self.rows.len()
+            )
+        } else {
+            format!("{} tracks", self.rows.len())
+        };
+        let mut bar = row![self.play_all(), ty::caption(note)]
+            .spacing(12)
+            .align_y(Alignment::Center);
+        if recent {
+            bar = bar.push(space::horizontal()).push(self.recent_menu());
+        }
         column![
-            surface::toolbar(
-                row![
-                    self.play_all(),
-                    ty::caption(format!("{} tracks", self.rows.len()))
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center)
-            ),
+            surface::toolbar(bar),
             self.virtual_tracks(RowOpts {
                 album: true,
                 bpm: false,
@@ -511,7 +523,13 @@ impl App {
 
     /// Home is only what is recent: jams, tracks, playlists, albums, and the usage summary.
     fn home(&self) -> Element<'_> {
-        let recent: Vec<Track> = self.lib.recently_played(5).into_iter().cloned().collect();
+        // Recent tracks: what was played, or until anything was, what was added.
+        let recent: Vec<Track> = self
+            .lib
+            .recent_tracks(5, RecentOrder::Played)
+            .into_iter()
+            .cloned()
+            .collect();
         // The newest first: a jam saved as a playlist shows up here.
         let playlists = self.grid(
             (0..self.lib.playlists.len())
@@ -551,11 +569,11 @@ impl App {
                 )
             ),
             section_all(
-                "Recently played",
+                "Recent tracks",
                 Dest::Recent,
                 or_note(
                     recent.is_empty(),
-                    "Nothing played yet. Let's start listening: press play on any track.",
+                    "Nothing here yet. Let's start listening: press play on any track.",
                     self.short_list(&recent)
                 )
             ),
@@ -788,9 +806,44 @@ impl App {
         Menu::sheet(&menu, None).into()
     }
 
+    /// The order of Recent tracks as an iad `Menu` of check items, each message passed through
+    /// `wrap`: by when it was played (until anything was, by when it was added) or by when it was
+    /// added.
+    fn recent_menu_def(&self, title: &str, wrap: impl Fn(Message) -> Message) -> Menu<Message> {
+        let item = |label: &'static str, order: RecentOrder| {
+            MenuItem::check(
+                label,
+                self.recent_order == order,
+                wrap(Message::SetRecentOrder(order)),
+            )
+        };
+        Menu::new(title).section([
+            item("Recently played", RecentOrder::Played),
+            item("Recently added", RecentOrder::Added),
+        ])
+    }
+
+    /// The ⋮ of Recent tracks: a dropdown on desktop, a bottom sheet on narrow.
+    fn recent_menu(&self) -> Element<'_> {
+        if self.is_narrow() {
+            return w::icon_button(Icon::ViewMore)
+                .on_press(Message::OpenSheet(Some(Sheet::Recent)))
+                .into();
+        }
+        self.menu_button(
+            Icon::ViewMore,
+            "Order",
+            self.recent_menu_def("Order", |m| m),
+        )
+    }
+
     /// What the bottom sheet shows.
     pub fn sheet_view(&self, sheet: Sheet) -> Element<'_> {
         match sheet {
+            Sheet::Recent => {
+                let menu = self.recent_menu_def("Order", |m| Message::SheetAction(Box::new(m)));
+                Menu::sheet(&menu, None).into()
+            }
             Sheet::Track(id, album) => self.track_sheet(id, album),
             Sheet::Options(dynamic) => self.options_sheet(dynamic),
         }

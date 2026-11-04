@@ -26,6 +26,9 @@ pub struct Snapshot {
     pub pos: f32,
     pub shuffle: bool,
     pub repeat: bool,
+    /// Counts the tracks started (the engine's `start_seq`): it changes when a track starts or
+    /// restarts, which is when the listening history grows.
+    pub started: u64,
 }
 
 pub struct Backend {
@@ -176,6 +179,7 @@ impl Backend {
             pos: v.position.as_secs_f32(),
             shuffle: v.state.shuffle,
             repeat: v.state.repeat != RepeatMode::Off,
+            started: v.state.start_seq,
         }
     }
 
@@ -291,6 +295,11 @@ impl Backend {
             .rename_playlist(name, new_name)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// The listening history, to put on the library again after a track started.
+    pub fn history(&self) -> Vec<weave_player_lib::core::PlayStat> {
+        self.engine.play_history().unwrap_or_default()
     }
 
     /// The sleep timer ran out: stop where it is.
@@ -443,6 +452,8 @@ pub mod sample {
             let i = t.id;
             t.plays = ((i * 7919) % 41) as u32;
             t.last_played_days = ((i * 53) % 400) as u32;
+            // Newer plays have a later time; the index breaks ties, as the days do.
+            t.played_at = 1_800_000_000 - i64::from(t.last_played_days) * 86_400 - i as i64;
         }
         (b, lib)
     }

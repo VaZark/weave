@@ -16,7 +16,7 @@ mod ui_player;
 
 use std::time::{Duration, Instant};
 
-use data::{Filter, Library, Playlist, Track};
+use data::{Filter, Library, Playlist, RecentOrder, Track};
 use iad::adaptive::{Adaptive, Layouts};
 use iad::breakpoints::WidthClass;
 use iad::layouts::virtualize::Viewport;
@@ -143,6 +143,8 @@ pub enum Message {
     Imported(Result<String, String>),
     /// The bottom sheet of a menu (narrow): a track's actions or a page's options.
     OpenSheet(Option<Sheet>),
+    /// How Recent tracks is ordered: by play or by when added.
+    SetRecentOrder(RecentOrder),
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
@@ -232,6 +234,8 @@ pub enum Sheet {
     Track(usize, bool),
     /// A detail page's options: whether the page is a dynamic playlist.
     Options(bool),
+    /// The order of Recent tracks.
+    Recent,
 }
 
 /// The Edit form of a detail page: the name (a playlist's) and the description, typed until Save.
@@ -369,6 +373,11 @@ pub struct App {
     /// A line shown for a moment (an import's result) and when it appeared.
     pub notice: Option<(String, Instant)>,
     pub sheet: Option<Sheet>,
+    /// The order of Recent tracks.
+    pub recent_order: RecentOrder,
+    /// The engine's count of tracks started when the history was last read: when the session's
+    /// differs, a track started and the history is read again.
+    history_seq: u64,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
     /// "It's been a while" on Home: rated highly, not played for this many days.
@@ -451,6 +460,8 @@ impl App {
             info_track: None,
             notice: None,
             sheet: None,
+            recent_order: RecentOrder::Played,
+            history_seq: 0,
             density: DensityPref::Desktop,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
@@ -588,6 +599,18 @@ impl App {
         self.apply(session);
     }
 
+    /// Reads the listening history again and puts it on the library; Recent tracks follows it.
+    fn refresh_history(&mut self) {
+        let stats = self.backend.history();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.lib.apply_history(&stats, now);
+        if self.dest == Dest::Recent {
+            self.refresh();
+        }
+    }
+
     /// Shows a line for a few seconds.
     fn say(&mut self, text: impl Into<String>) {
         self.notice = Some((text.into(), Instant::now()));
@@ -693,6 +716,11 @@ impl App {
 
     /// Mirrors the engine's session into the UI's player state.
     fn apply(&mut self, s: backend::Snapshot) {
+        // A track started since the history was read: it is a play now.
+        if s.started != self.history_seq {
+            self.history_seq = s.started;
+            self.refresh_history();
+        }
         self.player.queue = s.queue;
         self.player.current = s.current;
         self.player.playing = s.playing;
@@ -729,7 +757,14 @@ impl App {
                 .collect()
         } else {
             match self.dest {
-                Dest::Recent => self.lib.tracks.iter().rev().take(14).cloned().collect(),
+                // Recent tracks: what was played, or until anything was, what was added; or by when
+                // they were added.
+                Dest::Recent => self
+                    .lib
+                    .recent_tracks(30, self.recent_order)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
                 Dest::Artist(i) => {
                     let name = self
                         .lib
@@ -861,6 +896,11 @@ impl App {
             }
             Message::SetDensity(d) => {
                 self.density = d;
+                Vec::new()
+            }
+            Message::SetRecentOrder(order) => {
+                self.recent_order = order;
+                self.refresh();
                 Vec::new()
             }
             Message::OpenSheet(s) => {
@@ -1726,6 +1766,37 @@ mod tests {
         // Without a history Recent tracks falls back to what was added last, so it is not blank.
         let _ = a.update(Message::Open(Dest::Recent));
         assert!(!a.rows.is_empty());
+    }
+
+    #[test]
+    fn recent_tracks_follow_what_is_played_and_can_be_ordered_by_when_added() {
+        // The sample library has a made-up history; start from a library nothing was played in.
+        let (backend, mut lib) = backend::sample::backend();
+        lib.apply_history(&[], 0);
+        let mut a = App::with(backend, lib).0;
+        let _ = a.update(Message::Open(Dest::Recent));
+        // Nothing played: the tracks added last, newest first.
+        let added: Vec<usize> = a.lib.recently_added(30).iter().map(|t| t.id).collect();
+        assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), added);
+        let _ = a.view();
+        // Playing a track is a play in the engine: it comes first now, whatever its age.
+        let oldest = *added.last().unwrap();
+        a.play(vec![oldest], 0);
+        assert_eq!(a.lib.tracks[oldest].plays, 1);
+        assert_eq!(a.rows.first().map(|t| t.id), Some(oldest));
+        // Ordered by when added, the recent tracks are the added ones again.
+        let _ = a.update(Message::SetRecentOrder(RecentOrder::Added));
+        assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), added);
+        let _ = a.view();
+        // Both layouts have the menu: the dropdown, and the sheet.
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Recent)));
+        let _ = a.view();
+        let _ = a.update(Message::SheetAction(Box::new(Message::SetRecentOrder(
+            RecentOrder::Played,
+        ))));
+        assert!(a.sheet.is_none() && a.recent_order == RecentOrder::Played);
+        assert_eq!(a.rows.first().map(|t| t.id), Some(oldest));
     }
 
     #[test]

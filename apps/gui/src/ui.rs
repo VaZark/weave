@@ -93,7 +93,7 @@ impl App {
         match self.dest {
             Dest::Home => "Home".into(),
             Dest::Explore => "Explore".into(),
-            Dest::Recent => "Recently played".into(),
+            Dest::Recent => "Recent tracks".into(),
             Dest::Tracks => "Tracks".into(),
             Dest::Artists => "Artists".into(),
             Dest::Albums => "Albums".into(),
