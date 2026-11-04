@@ -10,13 +10,14 @@
 //! - [`MediaListRow`] is one row: the whole row is a flat button (it lights up as one, menu
 //!   included), and the trailing menu is laid over it, so it takes its own presses.
 //!
-//! In compact mode the picture goes and the subtitle becomes its own column, so a dense list
-//! still shows the artist.
+//! In compact mode the picture goes and the subtitle moves onto the title's line, dimmed and
+//! clipped: the title takes the room it needs and the subtitle what is left.
 
 use iad::Icon;
 use iad::primitives::sorting::{Direction, SortState};
 use iad::widget::typography as ty;
 use iced::alignment::Horizontal;
+use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, space, stack};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
@@ -49,12 +50,12 @@ pub struct MediaListLayout<K> {
     compact: bool,
     picture: bool,
     menu: bool,
-    /// The title, then the subtitle when compact, then the other columns in order.
+    /// The title, then the other columns in order.
     slots: Vec<Slot<K>>,
 }
 
 impl<K: Clone + PartialEq + 'static> MediaListLayout<K> {
-    /// `compact`: no picture, and the subtitle in a column of its own.
+    /// `compact`: no picture, and the subtitle on the title's line.
     pub fn new(compact: bool) -> Self {
         Self {
             compact,
@@ -75,20 +76,6 @@ impl<K: Clone + PartialEq + 'static> MediaListLayout<K> {
                 align: Horizontal::Left,
             },
         );
-        self
-    }
-
-    /// The line under the title, or a column of its own when compact. Declare it right after
-    /// the title.
-    pub fn subtitle(mut self, key: K, label: impl Into<String>) -> Self {
-        if self.compact {
-            self.slots.push(Slot {
-                key: Some(key),
-                label: label.into(),
-                width: Length::Fill,
-                align: Horizontal::Left,
-            });
-        }
         self
     }
 
@@ -212,7 +199,7 @@ pub struct MediaListRow<'a, K, M> {
 }
 
 impl<'a, K: Clone + PartialEq + 'static, M: Clone + 'a> MediaListRow<'a, K, M> {
-    /// The line under the title (a column of its own when compact).
+    /// The line under the title (on the title's line, clipped, when compact).
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
         self.subtitle = Some(s.into());
         self
@@ -257,17 +244,31 @@ impl<'a, K: Clone + PartialEq + 'static, M: Clone + 'a> From<MediaListRow<'a, K,
         let mut slots = layout.slots.iter();
         let title_slot = slots.next();
 
-        let mut text = column![ty::body(r.title)];
-        if !compact && let Some(s) = r.subtitle.clone() {
-            text = text.push(ty::caption(s));
-        }
+        let title = ty::body(r.title).wrapping(Wrapping::None);
+        let text: Element<'a, M> = match r.subtitle {
+            Some(sub) if compact => row![
+                title,
+                container(
+                    ty::caption(sub)
+                        .wrapping(Wrapping::None)
+                        .style(iad::style::text::dim)
+                )
+                .width(Length::Fill)
+                .clip(true),
+            ]
+            .spacing(GAP)
+            .align_y(Alignment::Center)
+            .into(),
+            Some(sub) => column![title, ty::caption(sub).wrapping(Wrapping::None)].into(),
+            None => title.into(),
+        };
         let mut head = row![].spacing(GAP).align_y(Alignment::Center);
         if layout.picture
             && let Some(p) = r.picture
         {
             head = head.push(container(p).width(PICTURE));
         }
-        head = head.push(text);
+        head = head.push(container(text).width(Length::Fill).clip(true));
         let mut line = row![
             container(head)
                 .width(title_slot.map_or(Length::Fill, |s| s.width))
@@ -276,17 +277,9 @@ impl<'a, K: Clone + PartialEq + 'static, M: Clone + 'a> From<MediaListRow<'a, K,
         .spacing(GAP)
         .align_y(Alignment::Center);
 
-        // The subtitle's own column when compact, then the rest in order.
-        let mut subtitle = r.subtitle;
-        let mut cells = r.cells.into_iter();
-        for s in slots {
-            let content: Element<'a, M> = if compact && s.key.is_some() && subtitle.is_some() {
-                ty::caption(subtitle.take().unwrap_or_default()).into()
-            } else {
-                cells.next().unwrap_or_else(|| space::horizontal().into())
-            };
+        for (s, cell) in slots.zip(r.cells) {
             line = line.push(
-                container(content)
+                container(cell)
                     .width(s.width)
                     .align_x(s.align)
                     .center_y(Length::Fill),

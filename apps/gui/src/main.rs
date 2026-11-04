@@ -134,6 +134,10 @@ pub enum Message {
     ToggleJam,
     ToggleExplore,
     OpenSettings,
+    /// The track menu's bottom sheet (narrow): the track and whether "View album" shows.
+    TrackSheet(Option<(usize, bool)>),
+    /// A choice made in the sheet: it closes, then does it.
+    SheetAction(Box<Message>),
     SetDensity(DensityPref),
     CloseSettings,
     WhileDays(u32),
@@ -361,6 +365,7 @@ pub struct App {
     pub info_track: Option<usize>,
     /// One setting for every track list (and the jam's): rows without a picture, one line.
     pub settings_open: bool,
+    pub sheet: Option<(usize, bool)>,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
     /// "It's been a while" on Home: rated highly, not played for this many days.
@@ -433,6 +438,7 @@ impl App {
             rate_track: None,
             info_track: None,
             settings_open: false,
+            sheet: None,
             density: DensityPref::Desktop,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
@@ -464,6 +470,14 @@ impl App {
                 "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
                 "library" => vec![Message::Go(Dest::Tracks)],
                 "compact-home" => vec![Message::SetDensity(DensityPref::Compact)],
+                "compact-library" => vec![
+                    Message::SetDensity(DensityPref::Compact),
+                    Message::Go(Dest::Tracks),
+                ],
+                "track-sheet" => vec![
+                    Message::Go(Dest::Tracks),
+                    Message::TrackSheet(Some((3, true))),
+                ],
                 "home-end" => vec![
                     Message::Go(Dest::Home),
                     Message::ListScroll(Viewport::new(480.0)),
@@ -756,6 +770,14 @@ impl App {
             Message::SetDensity(d) => {
                 self.density = d;
                 Vec::new()
+            }
+            Message::TrackSheet(s) => {
+                self.sheet = s;
+                Vec::new()
+            }
+            Message::SheetAction(m) => {
+                self.sheet = None;
+                return self.update(*m);
             }
             Message::OpenSettings => {
                 self.settings_open = true;

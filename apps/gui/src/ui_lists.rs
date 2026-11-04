@@ -72,32 +72,87 @@ impl App {
             .into()
     }
 
-    /// The menu of a track. `album` is false on an album's own page, where "View album" is moot.
-    fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
+    /// What a track's menu offers, in sections: icon, label, message. One list for the dropdown
+    /// (desktop) and the bottom sheet (narrow). `album` is false on an album's own page, where
+    /// "View album" is moot.
+    fn track_actions(id: usize, album: bool) -> Vec<Vec<(iad::IconSource, &'static str, Message)>> {
         let mut views = vec![];
         if album {
-            views.push(
-                MenuItem::action("View album", Message::ViewAlbum(id))
-                    .icon(crate::icons::library()),
+            views.push((
+                crate::icons::library(),
+                "View album",
+                Message::ViewAlbum(id),
+            ));
+        }
+        views.push((
+            Icon::MusicNote.into(),
+            "View artist",
+            Message::ViewArtist(id),
+        ));
+        vec![
+            vec![
+                (Icon::GoNext.into(), "Play next", Message::PlayNext(id)),
+                (
+                    Icon::ListAdd.into(),
+                    "Add to queue",
+                    Message::AddToQueue(id),
+                ),
+            ],
+            vec![
+                (Icon::Star.into(), "Rate", Message::RateTrack(id)),
+                (Icon::Edit.into(), "Edit tags", Message::EditTrack(id)),
+                (
+                    Icon::DialogInformation.into(),
+                    "More info",
+                    Message::InfoTrack(id),
+                ),
+            ],
+            views,
+        ]
+    }
+
+    /// The menu of a track: a dropdown on desktop, a button that opens the bottom sheet on narrow.
+    fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
+        if self.is_narrow() {
+            return w::icon_button(Icon::ViewMore)
+                .on_press(Message::TrackSheet(Some((id, album))))
+                .into();
+        }
+        let mut menu = Menu::new("Track");
+        for section in Self::track_actions(id, album) {
+            menu = menu.section(
+                section
+                    .into_iter()
+                    .map(|(icon, label, m)| MenuItem::action(label, m).icon(icon)),
             );
         }
-        views.push(MenuItem::action("View artist", Message::ViewArtist(id)).icon(Icon::MusicNote));
-        self.menu_button(
-            Icon::ViewMore,
-            "Track options",
-            Menu::new("Track")
-                .section([
-                    MenuItem::action("Play next", Message::PlayNext(id)).icon(Icon::GoNext),
-                    MenuItem::action("Add to queue", Message::AddToQueue(id)).icon(Icon::ListAdd),
-                ])
-                .section([
-                    MenuItem::action("Rate", Message::RateTrack(id)).icon(Icon::Star),
-                    MenuItem::action("Edit tags", Message::EditTrack(id)).icon(Icon::Edit),
-                    MenuItem::action("More info", Message::InfoTrack(id))
-                        .icon(Icon::DialogInformation),
-                ])
-                .section(views),
-        )
+        self.menu_button(Icon::ViewMore, "Track options", menu)
+    }
+
+    /// The track menu as a bottom sheet: large rows, a section per group, closing on a choice.
+    pub fn track_sheet(&self, id: usize, album: bool) -> Element<'_> {
+        let t = self.track(id);
+        let mut c = column![
+            container(column![
+                ty::heading(t.title.clone()),
+                ty::caption(t.artist.clone())
+            ])
+            .padding(iad::widget::surface::bar_padding())
+        ];
+        for section in Self::track_actions(id, album) {
+            for (icon, label, m) in section {
+                c = c.push(
+                    w::flat_button(
+                        row![ty::body(label), space::horizontal(), icon.view(18.0)]
+                            .spacing(12)
+                            .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .on_press(Message::SheetAction(Box::new(m))),
+                );
+            }
+        }
+        container(c).width(Length::Fill).into()
     }
 
     // ---- rows and lists -----------------------------------------------------------------
@@ -105,11 +160,14 @@ impl App {
     /// The columns of a track list, written once for the header and the rows: the picture (not
     /// in compact mode), the title with its artist, the album where there is room, the tempo
     /// where asked for, the time, and the menu.
+    /// The album column: on desktop only; narrow and compact lists leave it out.
+    fn show_album(&self) -> bool {
+        !self.is_narrow() && !self.compact()
+    }
+
     fn media_columns(&self, o: RowOpts) -> MediaListLayout<Col> {
-        let mut c = MediaListLayout::new(self.compact())
-            .title(Col::Title, "Title")
-            .subtitle(Col::Artist, "Artist");
-        if o.album && !self.is_narrow() {
+        let mut c = MediaListLayout::new(self.compact()).title(Col::Title, "Title");
+        if o.album && self.show_album() {
             c = c.column(
                 Col::Album,
                 "Album",
@@ -139,7 +197,7 @@ impl App {
         if !self.compact() {
             r = r.picture(cover(t.id, 40.0));
         }
-        if o.album && !self.is_narrow() {
+        if o.album && self.show_album() {
             r = r.cell(ty::caption(t.album.clone()));
         }
         if o.bpm {

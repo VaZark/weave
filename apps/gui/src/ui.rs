@@ -318,6 +318,13 @@ impl App {
                 self.tab_bar(),
             ]
         };
-        self.np_dock(body.into())
+        let base = self.np_dock(body.into());
+        match self.sheet {
+            Some((id, album)) => w::Dock::new(base, self.track_sheet(id, album))
+                .scope(w::DockScope::Window)
+                .on_outside(Message::TrackSheet(None))
+                .into(),
+            None => base,
+        }
     }
 }
