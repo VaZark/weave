@@ -322,6 +322,7 @@ impl App {
         match self.sheet {
             Some((id, album)) => w::Dock::new(base, self.track_sheet(id, album))
                 .scope(w::DockScope::Window)
+                .mode(w::DockMode::Overlay)
                 .on_outside(Message::TrackSheet(None))
                 .into(),
             None => base,

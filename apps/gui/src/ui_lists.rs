@@ -111,6 +111,25 @@ impl App {
         ]
     }
 
+    /// The track's actions as an iad `Menu`, each message passed through `wrap` (the sheet closes
+    /// on a choice, the dropdown does not need to).
+    fn track_menu_def(
+        title: String,
+        id: usize,
+        album: bool,
+        wrap: impl Fn(Message) -> Message,
+    ) -> Menu<Message> {
+        let mut menu = Menu::new(title);
+        for section in Self::track_actions(id, album) {
+            menu = menu.section(
+                section
+                    .into_iter()
+                    .map(|(icon, label, m)| MenuItem::action(label, wrap(m)).icon(icon)),
+            );
+        }
+        menu
+    }
+
     /// The menu of a track: a dropdown on desktop, a button that opens the bottom sheet on narrow.
     fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
         if self.is_narrow() {
@@ -118,41 +137,20 @@ impl App {
                 .on_press(Message::TrackSheet(Some((id, album))))
                 .into();
         }
-        let mut menu = Menu::new("Track");
-        for section in Self::track_actions(id, album) {
-            menu = menu.section(
-                section
-                    .into_iter()
-                    .map(|(icon, label, m)| MenuItem::action(label, m).icon(icon)),
-            );
-        }
-        self.menu_button(Icon::ViewMore, "Track options", menu)
+        self.menu_button(
+            Icon::ViewMore,
+            "Track options",
+            Self::track_menu_def("Track".into(), id, album, |m| m),
+        )
     }
 
-    /// The track menu as a bottom sheet: large rows, a section per group, closing on a choice.
+    /// The track menu as a bottom sheet: iad's `Menu::sheet`, closing on a choice.
     pub fn track_sheet(&self, id: usize, album: bool) -> Element<'_> {
         let t = self.track(id);
-        let mut c = column![
-            container(column![
-                ty::heading(t.title.clone()),
-                ty::caption(t.artist.clone())
-            ])
-            .padding(iad::widget::surface::bar_padding())
-        ];
-        for section in Self::track_actions(id, album) {
-            for (icon, label, m) in section {
-                c = c.push(
-                    w::flat_button(
-                        row![ty::body(label), space::horizontal(), icon.view(18.0)]
-                            .spacing(12)
-                            .align_y(Alignment::Center),
-                    )
-                    .width(Length::Fill)
-                    .on_press(Message::SheetAction(Box::new(m))),
-                );
-            }
-        }
-        container(c).width(Length::Fill).into()
+        let menu = Self::track_menu_def(t.title.clone(), id, album, |m| {
+            Message::SheetAction(Box::new(m))
+        });
+        Menu::sheet(&menu, Some(t.artist.clone())).into()
     }
 
     // ---- rows and lists -----------------------------------------------------------------
@@ -323,11 +321,11 @@ impl App {
     // ---- grids ----------------------------------------------------------------------------
 
     /// Cards that fit the width, or (in compact mode) the same entries as a tight list: iad's
-    /// `CardGrid`, with the density decided once.
+    /// `FlowGrid`, with the density decided once.
     fn grid<'a>(&self, items: Vec<Element<'a>>, card_width: f32) -> Element<'a> {
         // Compact shrinks the cards into tight rows but they still flow as a grid, never as one
-        // vertical column (`CardGrid::compact` would be that).
-        w::CardGrid::new(items)
+        // vertical column (`FlowGrid::cols(1)` would be that).
+        w::FlowGrid::new(items)
             .max_width(if self.compact() { 220.0 } else { card_width })
             .spacing(if self.compact() { 8.0 } else { 12.0 })
             .into()
@@ -345,18 +343,32 @@ impl App {
     ) -> Element<'a> {
         // `row_layout`: the picture beside the text, always (playlists), not only when compact.
         let compact = self.compact();
-        let tile: Element<'a> = w::MediaCard::new(title)
-            .subtitle(subtitle)
-            .picture(picture(if compact { 36.0 } else { card_picture }))
-            .compact(compact || row_layout)
+        if row_layout && !compact {
+            // Playlists: a card surface of its own, with `as_button` adding the events, and the
+            // picture beside the text.
+            let text = column![
+                ty::heading(title),
+                ty::caption(subtitle).style(iad::style::text::dim)
+            ];
+            return w::as_button(card(
+                row![picture(card_picture), text.width(Length::Fill)]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+            ))
+            .width(Length::Fill)
             .on_press(on_press)
             .into();
-        // A row-shaped card keeps the card's surface, so it reads as a tile like its neighbours.
-        if row_layout && !compact {
-            card(tile)
-        } else {
-            tile
         }
+        w::ItemCard::new(title)
+            .subtitle(subtitle)
+            .picture(picture(if compact { 36.0 } else { card_picture }))
+            .density(if compact {
+                iad::config::Density::Compact
+            } else {
+                iad::config::Density::Comfort
+            })
+            .on_press(on_press)
+            .into()
     }
 
     fn album_card(&self, i: usize, show_artist: bool) -> Element<'_> {
@@ -535,7 +547,7 @@ impl App {
             130.0,
         );
         let link = |label: &'static str, icon: Element<'static>, to: Dest| -> Element<'_> {
-            w::card_button(
+            w::as_button(card(
                 row![
                     icon,
                     ty::heading(label),
@@ -545,12 +557,12 @@ impl App {
                 .spacing(10)
                 .align_y(Alignment::Center)
                 .width(Length::Fill),
-            )
+            ))
             .on_press(Message::Open(to))
             .width(Length::Fill)
             .into()
         };
-        let links = w::CardGrid::new(vec![
+        let links = w::FlowGrid::new(vec![
             link(
                 "All playlists",
                 Icon::Document.view(18.0).into(),
