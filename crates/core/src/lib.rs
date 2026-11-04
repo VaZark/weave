@@ -40,4 +40,4 @@ pub use slug::{album_slug, artist_slug, playlist_slug, slugify, track_slug};
 pub use tag::{
     ChildPolicy, EXACT_PREFIX, GENRE, Tag, TagName, metadata_tags, normalize_tag, parse_tag_ref,
 };
-pub use track::{Metadata, Page, ScannedTrack, SearchResult, Track, TrackId};
+pub use track::{Metadata, Page, PlayStat, ScannedTrack, SearchResult, Track, TrackId};

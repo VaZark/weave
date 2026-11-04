@@ -84,6 +84,10 @@ impl Library {
     fn commit_started(&mut self, queue: &mut Queue) -> Result<SessionView> {
         if queue.state.status != PlayStatus::Stopped && queue.state.current.is_some() {
             queue.mark_started(self.now_ms());
+            // A track that starts is a play: it goes into the listening history.
+            if let Some(track) = queue.current_track() {
+                self.storage.record_play(&track.0, self.now_ms() / 1000)?;
+            }
         }
         self.schedule_stop(queue)?;
         self.commit(queue)
@@ -1620,4 +1624,34 @@ mod tests {
         let v = lib.track_ended().unwrap();
         assert_eq!((v.state.status, v.tracks.len()), (PlayStatus::Stopped, 1));
     }
+
+    #[test]
+    fn every_track_that_starts_is_a_play_in_the_history() {
+        let (mut lib, clock) = library(3);
+        assert!(lib.play_history().unwrap().is_empty());
+        lib.play_track(&id(1)).unwrap();
+        clock.set(clock.get() + 10_000);
+        lib.queue_add(&[id(2), id(3)], None, false).unwrap();
+        // Adding to the queue is not a play; skipping to the next track is.
+        assert_eq!(lib.play_history().unwrap().len(), 1);
+        lib.next().unwrap();
+        clock.set(clock.get() + 10_000);
+        lib.next().unwrap();
+        // Pausing and resuming the same track is not a new play.
+        lib.pause().unwrap();
+        lib.resume().unwrap();
+        let h = lib.play_history().unwrap();
+        let by: std::collections::HashMap<_, _> = h.iter().map(|p| (p.track.as_str(), p)).collect();
+        assert_eq!(h.len(), 3);
+        assert!(by.values().all(|p| p.plays == 1));
+        // Most recent first, in unix seconds of the clock.
+        assert_eq!(h[0].track, id(3));
+        assert_eq!(h[0].last_played_at, (1_000_000 + 20_000) / 1000);
+        assert_eq!(by[id(1).as_str()].last_played_at, 1_000_000 / 1000);
+        // Playing a track again counts again.
+        lib.play_track(&id(1)).unwrap();
+        let h = lib.play_history().unwrap();
+        assert_eq!((h[0].track.as_str(), h[0].plays), (id(1).as_str(), 2));
+    }
+
 }

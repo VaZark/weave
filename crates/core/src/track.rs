@@ -77,3 +77,14 @@ pub struct SearchResult {
     pub total: usize,
     pub tracks: Vec<Track>,
 }
+
+/// How often, and when last, a track was played: the listening history of one track.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayStat {
+    /// The track's slug.
+    pub track: String,
+    /// Times it started playing.
+    pub plays: u32,
+    /// Unix seconds when it last started.
+    pub last_played_at: i64,
+}

@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weave_player_core::{
     AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, Dependent,
-    EntityKind, EntityRef, Error, FilterSpec, Instance, MergeStats, Page, Playlist, PlaylistKind,
-    Result, Rng, ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
+    EntityKind, EntityRef, Error, FilterSpec, Instance, MergeStats, Page, PlayStat, Playlist,
+    PlaylistKind, Result, Rng, ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
 };
 use weave_player_local::LocalFiles;
 use weave_player_storage::Storage;
@@ -342,6 +342,13 @@ impl Library {
             .storage
             .update_playlist(&p.id, p.description.as_deref(), &merged)?;
         Ok(p)
+    }
+
+    /// The listening history: every track that was played, how often and when last, most recent
+    /// first. A play is recorded each time a track starts, whoever started it (this handle, the
+    /// CLI, a remote client). Nothing is known about what was played before the history existed.
+    pub fn play_history(&self) -> Result<Vec<PlayStat>> {
+        self.storage.play_history()
     }
 
     /// Rename a playlist. Its ID stays; the new name must not belong to another playlist.

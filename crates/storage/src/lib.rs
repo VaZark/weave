@@ -4,6 +4,7 @@
 mod annotations;
 mod dedup;
 mod entities;
+mod history;
 mod migrations;
 mod playlists;
 mod query;
@@ -65,6 +66,7 @@ impl Storage {
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(db_err)?;
         migrations::run(&mut conn)?;
+        history::ensure(&conn)?;
         Ok(Self { conn })
     }
 
