@@ -18,12 +18,12 @@ use std::time::{Duration, Instant};
 use data::{Filter, Library, Playlist, Track};
 use iad::adaptive::{Adaptive, Layouts};
 use iad::breakpoints::WidthClass;
+use iad::layouts::virtualize::Viewport;
 use iad::primitives::history::History;
+use iad::primitives::reorder::{Event as ReorderEvent, ReorderState};
 use iad::primitives::sorting::{SortState, cmp_str};
 use iad::primitives::synced::{self, Line};
-use iad::primitives::virtualize::Viewport;
 use iad::transition::Event;
-use iad::widget::{ReorderEvent, ReorderState};
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
 use weaver::bulk::{self as bulk_tags, Change, Plan};
@@ -122,7 +122,7 @@ pub enum Message {
     Frame(Instant),
     Tick(Instant),
     Transition(Event<Layout>),
-    Window(iad::window::Action),
+    Window(iad::windows::Action),
     // Actions: every trigger fires one of these.
     /// Go to a top-level place: the history starts over.
     Go(Dest),
@@ -1284,7 +1284,7 @@ impl App {
         }
         self.lyric_line = line;
         if self.now_playing && self.show_lyrics {
-            iad::widget::follow_synced_text(LYRICS, line, self.lyrics.len())
+            iad::prelude::follow_synced_text(LYRICS, line, self.lyrics.len())
         } else {
             Task::none()
         }
@@ -1371,7 +1371,7 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(window_size().0, window_size().1),
-            ..iad::window::settings()
+            ..iad::windows::settings()
         })
         .settings(iced::Settings {
             default_text_size: 14.67.into(),

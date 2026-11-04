@@ -2,7 +2,7 @@
 //! playlist dialog, and the jam page.
 
 use iad::Icon;
-use iad::widget::{self as w, ToggleItem, typography as ty};
+use iad::prelude::{self as w, ToggleItem, typography as ty};
 use iced::widget::{column, container, row, scrollable, space, text_input};
 use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
@@ -10,8 +10,9 @@ use iced_adaptive_design as iad;
 use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
 use crate::{App, DensityPref, Element, Message, Mode3};
-use iad::widget::surface;
-use iad::widget::{ChipGroup, ChipOption, ChipSize, Histogram};
+use iad::prelude::surface;
+use iad::prelude::{ChipGroup, ChipOption, ChipSize};
+use iad::primitives::histogram::Histogram;
 
 impl App {
     /// The vocabulary as chip options: each tag's value as the label, with its own icon and colour.
@@ -272,7 +273,7 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(520.0))
-        .style(iad::style::container::popover)
+        .style(iad::styles::container::popover)
         .into()
     }
 
@@ -298,7 +299,7 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(520.0))
-        .style(iad::style::container::popover)
+        .style(iad::styles::container::popover)
         .into()
     }
 
@@ -326,7 +327,7 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(360.0))
-        .style(iad::style::container::popover)
+        .style(iad::styles::container::popover)
         .into()
     }
 
@@ -375,7 +376,7 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(460.0))
-        .style(iad::style::container::popover)
+        .style(iad::styles::container::popover)
         .into()
     }
 
@@ -452,7 +453,7 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(620.0))
-        .style(iad::style::container::popover)
+        .style(iad::styles::container::popover)
         .into()
     }
 }

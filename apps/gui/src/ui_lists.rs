@@ -2,9 +2,9 @@
 //! (playlist, artist, album) and Home.
 
 use iad::Icon;
-use iad::widget::{self as w, Menu, MenuItem, MenuPresentation, VirtualList, typography as ty};
+use iad::prelude::{self as w, Menu, MenuItem, MenuPresentation, VirtualList, typography as ty};
 use iced::alignment::Horizontal;
-use iced::widget::{column, container, row, scrollable, space};
+use iced::widget::{button, column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
@@ -14,7 +14,7 @@ use crate::icons::{cover, playlist_avatar};
 use crate::ui::card;
 use crate::{App, Col, Dest, Element, Message};
 use iad::color::{from_index, from_seed};
-use iad::widget::surface;
+use iad::prelude::surface;
 
 /// The album column of a wide track list; the title takes what the others leave.
 const ALBUM_WIDTH: f32 = 240.0;
@@ -344,17 +344,19 @@ impl App {
         // `row_layout`: the picture beside the text, always (playlists), not only when compact.
         let compact = self.compact();
         if row_layout && !compact {
-            // Playlists: a card surface of its own, with `as_button` adding the events, and the
+            // Playlists: a card surface of its own, with `button` adding the events, and the
             // picture beside the text.
             let text = column![
                 ty::heading(title),
-                ty::caption(subtitle).style(iad::style::text::dim)
+                ty::caption(subtitle).style(iad::styles::text::dim)
             ];
-            return w::as_button(card(
+            return button(card(
                 row![picture(card_picture), text.width(Length::Fill)]
                     .spacing(12)
                     .align_y(Alignment::Center),
             ))
+            .padding(0)
+            .style(iad::styles::button::events)
             .width(Length::Fill)
             .on_press(on_press)
             .into();
@@ -547,7 +549,7 @@ impl App {
             130.0,
         );
         let link = |label: &'static str, icon: Element<'static>, to: Dest| -> Element<'_> {
-            w::as_button(card(
+            button(card(
                 row![
                     icon,
                     ty::heading(label),
@@ -559,6 +561,8 @@ impl App {
                 .width(Length::Fill),
             ))
             .on_press(Message::Open(to))
+            .padding(0)
+            .style(iad::styles::button::events)
             .width(Length::Fill)
             .into()
         };

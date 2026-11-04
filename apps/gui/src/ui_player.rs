@@ -1,9 +1,9 @@
 //! The player: the bar (wide), the mini player (narrow), Now Playing and the queue sheet.
 
-use iad::widget::{
+use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
-use iad::{Icon, style};
+use iad::{Icon, styles as style};
 use iced::widget::{column, container, mouse_area, row, space};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
@@ -12,7 +12,7 @@ use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
 use crate::icons::cover;
 use crate::{App, Element, LYRICS, Message};
-use iad::widget::surface;
+use iad::prelude::surface;
 
 impl App {
     fn play_pause(&self, size: f32) -> Element<'_> {

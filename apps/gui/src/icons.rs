@@ -2,7 +2,7 @@
 //! a tag or a playlist stores) to an `Icon`.
 
 use iced_adaptive_design::color::from_index;
-use iced_adaptive_design::widget::{self as w, AvatarShape};
+use iced_adaptive_design::prelude::{self as w, AvatarShape};
 use iced_adaptive_design::{Element, Icon, IconSource};
 
 /// Albums stacked on a shelf: the library.

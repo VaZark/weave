@@ -3,7 +3,7 @@
 
 use iced::widget::{text, tooltip};
 use iced_adaptive_design::Element;
-use iced_adaptive_design::widget::{Chip, ChipSize};
+use iced_adaptive_design::prelude::{Chip, ChipSize};
 
 use crate::data::TagStyle;
 

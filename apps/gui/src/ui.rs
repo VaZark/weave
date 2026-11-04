@@ -4,9 +4,9 @@
 //! layouts; they differ in the player (a bar, or a mini player and tabs) and in a few details.
 
 use iad::adaptive::adaptive;
-use iad::widget::{self as w, typography as ty};
-use iad::window::{Chrome, State as WindowState};
-use iad::{Icon, style};
+use iad::prelude::{self as w, typography as ty};
+use iad::windows::{Chrome, State as WindowState};
+use iad::{Icon, styles as style};
 use iced::widget::{column, container, row, text, text_input};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;

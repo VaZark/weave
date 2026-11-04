@@ -14,8 +14,8 @@
 //! clipped: the title takes the room it needs and the subtitle what is left.
 
 use iad::Icon;
+use iad::prelude::typography as ty;
 use iad::primitives::sorting::{Direction, SortState};
-use iad::widget::typography as ty;
 use iced::alignment::Horizontal;
 use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, space, stack};
@@ -154,7 +154,7 @@ impl<K: Clone + PartialEq + 'static> MediaListLayout<K> {
                 Some(k) => button(cell)
                     .padding(0) // gutter-ok: the whole label is the button
                     .width(s.width)
-                    .style(iad::style::button::flat)
+                    .style(iad::styles::button::flat)
                     .on_press(on_sort(k.clone()))
                     .into(),
                 None => container(cell).width(s.width).into(),
@@ -251,7 +251,7 @@ impl<'a, K: Clone + PartialEq + 'static, M: Clone + 'a> From<MediaListRow<'a, K,
                 container(
                     ty::caption(sub)
                         .wrapping(Wrapping::None)
-                        .style(iad::style::text::dim)
+                        .style(iad::styles::text::dim)
                 )
                 .width(Length::Fill)
                 .clip(true),
@@ -296,7 +296,7 @@ impl<'a, K: Clone + PartialEq + 'static, M: Clone + 'a> From<MediaListRow<'a, K,
             .padding([0.0, INSET]) // gutter-ok: the row's inset inside its highlight
             .width(Length::Fill)
             .height(r.height)
-            .style(iad::style::button::flat);
+            .style(iad::styles::button::flat);
         if let Some(m) = r.on_press {
             pressable = pressable.on_press(m);
         }
