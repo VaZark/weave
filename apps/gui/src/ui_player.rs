@@ -4,7 +4,7 @@ use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
 use iad::{Icon, styles as style};
-use iced::widget::{column, container, mouse_area, row, space};
+use iced::widget::{button, column, container, mouse_area, row, space};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
@@ -26,11 +26,32 @@ impl App {
             .into()
     }
 
+    /// A skip button. Without a press (nothing to skip to) it is drawn faded and does nothing:
+    /// an icon does not follow its button's disabled state, so it is tinted here.
+    fn skip_button(&self, icon: Icon, press: Option<Message>) -> Element<'_> {
+        let Some(msg) = press else {
+            let m = iad::Metrics::desktop();
+            // The solid dim colour of the theme: an icon tint keeps no transparency.
+            let faded = self.theme().semantic.dim_solid();
+            return button(
+                container(icon.colored(m.icon_size, faded))
+                    .center(Length::Fixed(m.button_min_height)),
+            )
+            .padding(0)
+            .style(style::button::flat)
+            .into();
+        };
+        w::icon_button(icon).on_press(msg).into()
+    }
+
     fn controls(&self, size: f32) -> Element<'_> {
         row![
-            w::icon_button(Icon::SkipBackward).on_press(Message::Previous),
+            self.skip_button(
+                Icon::SkipBackward,
+                self.can_previous().then_some(Message::Previous)
+            ),
             self.play_pause(size),
-            w::icon_button(Icon::SkipForward).on_press(Message::Next),
+            self.skip_button(Icon::SkipForward, self.can_next().then_some(Message::Next)),
         ]
         .spacing(4)
         .align_y(Alignment::Center)

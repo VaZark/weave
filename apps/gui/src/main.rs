@@ -405,6 +405,9 @@ pub struct App {
 
 pub const LYRICS: &str = "lyrics";
 
+/// Seconds into a track after which Previous restarts it instead of going back.
+const PREVIOUS_RESTARTS_AFTER: f32 = 3.0;
+
 impl App {
     fn new() -> (Self, Task<Message>) {
         let (backend, lib) =
@@ -732,6 +735,21 @@ impl App {
 
     pub fn track(&self, id: usize) -> &Track {
         &self.lib.tracks[id]
+    }
+
+    /// Whether Next does anything: there is a track after the playing one, or the queue repeats.
+    pub fn can_next(&self) -> bool {
+        self.player.current.is_some_and(|c| {
+            c + 1 < self.player.queue.len() || (self.player.repeat && !self.player.queue.is_empty())
+        })
+    }
+
+    /// Whether Previous does anything: there is a track before the playing one, the queue
+    /// repeats, or the track is far enough in for Previous to restart it.
+    pub fn can_previous(&self) -> bool {
+        self.player.current.is_some_and(|c| {
+            c > 0 || self.player.repeat || self.player.pos > PREVIOUS_RESTARTS_AFTER
+        })
     }
 
     /// The track playing now.
@@ -1253,7 +1271,7 @@ impl App {
             }
             Message::Previous => {
                 // Past the first seconds, "previous" restarts the track.
-                let s = if self.player.pos > 3.0 {
+                let s = if self.player.pos > PREVIOUS_RESTARTS_AFTER {
                     self.backend.seek(0.0)
                 } else {
                     self.backend.previous()
@@ -1797,6 +1815,32 @@ mod tests {
         ))));
         assert!(a.sheet.is_none() && a.recent_order == RecentOrder::Played);
         assert_eq!(a.rows.first().map(|t| t.id), Some(oldest));
+    }
+
+    #[test]
+    fn next_and_previous_are_available_only_when_they_have_somewhere_to_go() {
+        let mut a = app();
+        // Nothing playing: neither.
+        assert!(!a.can_next() && !a.can_previous());
+        a.play(vec![5, 6, 7], 0);
+        // The first track, at its start: only Next.
+        assert!(a.can_next() && !a.can_previous());
+        let _ = a.update(Message::Next);
+        assert!(a.can_next() && a.can_previous(), "in the middle both");
+        let _ = a.update(Message::Next);
+        // The last track: only Previous.
+        assert!(!a.can_next() && a.can_previous());
+        // Repeating the queue loops it, so both work at either end.
+        let _ = a.update(Message::Repeat);
+        assert!(a.player.repeat && a.can_next() && a.can_previous());
+        let _ = a.update(Message::Repeat);
+        // Far enough into the first track, Previous restarts it.
+        a.play(vec![5, 6, 7], 0);
+        assert!(!a.can_previous());
+        let _ = a.update(Message::Seek(30.0));
+        assert!(a.can_previous());
+        // The controls build either way.
+        let _ = a.view();
     }
 
     #[test]
