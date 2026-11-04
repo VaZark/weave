@@ -44,9 +44,10 @@ pub struct Backend {
 pub enum Source {
     /// A database file: the library, or one given with `--db`.
     Db(PathBuf),
-    /// `--mock-db`: the separate dev database, seeded with mock data when empty. Debug builds.
+    /// `--mock-db [seeded|empty]`: a separate dev database, seeded with mock data or empty. Debug
+    /// builds.
     #[cfg(debug_assertions)]
-    Mock,
+    Mock(weave_player_lib::mock::Mock),
 }
 
 /// What the command line asks for: `--mock-db`, else `--db <path>`, else `$WEAVE_DB`, else the
@@ -56,8 +57,20 @@ pub fn source_from_args() -> Source {
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         #[cfg(debug_assertions)]
-        if a == "--mock-db" {
-            return Source::Mock;
+        {
+            use weave_player_lib::mock::Mock;
+            let kind = |v: &str| {
+                (v == "empty")
+                    .then_some(Mock::Empty)
+                    .unwrap_or(Mock::Seeded)
+            };
+            if a == "--mock-db" {
+                // `--mock-db` or `--mock-db empty` (the kind is optional).
+                let next = args.next();
+                return Source::Mock(kind(next.as_deref().and_then(|v| v.to_str()).unwrap_or("")));
+            } else if let Some(v) = a.to_str().and_then(|a| a.strip_prefix("--mock-db=")) {
+                return Source::Mock(kind(v));
+            }
         }
         if a == "--db" {
             db = args.next().map(PathBuf::from);
@@ -71,26 +84,27 @@ pub fn source_from_args() -> Source {
     )
 }
 
+/// The engine for a source, with the path of its database.
+fn open_engine(source: &Source) -> Result<(PathBuf, Engine), String> {
+    match source {
+        Source::Db(db) => {
+            if let Some(dir) = db.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            let engine = Engine::open(db).map_err(|e| format!("{}: {e}", db.display()))?;
+            Ok((db.clone(), engine))
+        }
+        #[cfg(debug_assertions)]
+        Source::Mock(kind) => weave_player_lib::mock::open_kind(*kind).map_err(|e| e.to_string()),
+    }
+}
+
 impl Backend {
     /// Opens (creating, if need be) the library and starts the sound player for it.
     pub fn open(source: &Source) -> Result<(Self, Library), String> {
-        let db = match source {
-            Source::Db(db) => db.clone(),
-            #[cfg(debug_assertions)]
-            Source::Mock => weave_player_lib::mock::db_path(),
-        };
+        let (db, engine) = open_engine(source)?;
         let db = db.as_path();
-        let engine = match source {
-            #[cfg(debug_assertions)]
-            Source::Mock => weave_player_lib::mock::open_at(db),
-            Source::Db(_) => {
-                if let Some(dir) = db.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                }
-                Engine::open(db)
-            }
-        }
-        .map_err(|e| format!("{}: {e}", db.display()))?;
+
         let mut b = Self::with(engine);
         b.db = Some(db.to_path_buf());
         #[cfg(feature = "audio")]

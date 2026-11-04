@@ -4,6 +4,7 @@
 //!
 //! ```no_run
 //! let mut library = weave_player_lib::mock::open()?; // the dev database, seeded when empty
+//! // or, with `Mock::Empty`, a fresh one with nothing in it (`open_kind`)
 //! # Ok::<(), weave_player_lib::core::Error>(())
 //! ```
 
@@ -19,9 +20,53 @@ pub const MAX_COUNT: usize = 100;
 /// How many tracks `open` seeds into an empty dev database.
 pub const DEFAULT_COUNT: usize = 60;
 
-/// The dev database, `weave/dev.db` next to the real library, so mock data never mixes with it.
-pub fn db_path() -> PathBuf {
-    crate::paths::data_dir().join("dev.db")
+/// Which dev database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mock {
+    /// `dev.db`: seeded with mock data when it has none, and kept between runs.
+    #[default]
+    Seeded,
+    /// `dev-empty.db`: wiped on every open, so a frontend's first-run state is one flag away.
+    Empty,
+}
+
+/// The dev database file, in the directory of the real library so mock data never mixes with it.
+pub fn db_path(kind: Mock) -> PathBuf {
+    crate::paths::data_dir().join(match kind {
+        Mock::Seeded => "dev.db",
+        Mock::Empty => "dev-empty.db",
+    })
+}
+
+/// Opens a dev database and returns it with its path: the seeded one (created and seeded when it
+/// holds no tracks), or a new empty one.
+pub fn open_kind(kind: Mock) -> Result<(PathBuf, Library)> {
+    let path = db_path(kind);
+    let lib = match kind {
+        Mock::Seeded => open_at(&path)?,
+        Mock::Empty => {
+            wipe(&path);
+            open_empty_at(&path)?
+        }
+    };
+    Ok((path, lib))
+}
+
+/// Removes a database and the files SQLite and the player keep beside it.
+fn wipe(path: &Path) {
+    for suffix in ["", "-wal", "-shm", ".host.lock"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(name));
+    }
+}
+
+fn open_empty_at(path: &Path) -> Result<Library> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| crate::core::Error::InvalidInput(format!("{}: {e}", dir.display())))?;
+    }
+    Library::open(path)
 }
 
 /// Opens the dev database at `path` (creating it), seeding it when it holds no tracks.
@@ -41,9 +86,9 @@ pub fn open_at(path: &Path) -> Result<Library> {
     Ok(lib)
 }
 
-/// Opens the dev database ([`db_path`]), seeded when empty.
+/// Opens the seeded dev database.
 pub fn open() -> Result<Library> {
-    open_at(&db_path())
+    open_at(&db_path(Mock::Seeded))
 }
 
 struct Artist {
@@ -596,8 +641,9 @@ mod tests {
         // Opening again adds nothing.
         assert_eq!(count(&open_at(&path).unwrap()), DEFAULT_COUNT);
         // It is its own file, beside the real library.
-        assert_eq!(db_path().file_name().unwrap(), "dev.db");
-        assert_ne!(db_path(), crate::paths::default_db());
+        assert_eq!(db_path(Mock::Seeded).file_name().unwrap(), "dev.db");
+        assert_eq!(db_path(Mock::Empty).file_name().unwrap(), "dev-empty.db");
+        assert_ne!(db_path(Mock::Seeded), crate::paths::default_db());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

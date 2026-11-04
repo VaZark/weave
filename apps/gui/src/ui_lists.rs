@@ -825,6 +825,22 @@ impl App {
 
     // ---- dispatch ---------------------------------------------------------------------------
 
+    /// Home with nothing in the library: a title and an Import button (it asks for a folder; the
+    /// menu also imports single files).
+    fn empty_library(&self) -> Element<'_> {
+        let dim = self.theme().semantic.dim_solid();
+        container(
+            w::status_page::<Message>()
+                .icon(Icon::MusicNote.colored(64.0, dim))
+                .title("No tracks yet")
+                .child(
+                    w::suggested_pill_button(ty::body("Import")).on_press(Message::Import(false)),
+                ),
+        )
+        .center(Length::Fill)
+        .into()
+    }
+
     /// The current page, without the layout around it.
     pub fn page(&self) -> Element<'_> {
         if self.jam_open {
@@ -834,6 +850,7 @@ impl App {
             return self.results_page();
         }
         match self.dest {
+            Dest::Home if self.lib.tracks.is_empty() => self.empty_library(),
             Dest::Home => self.home(),
             Dest::Explore => self.explore(),
             Dest::Recent | Dest::Tracks => self.track_page(),

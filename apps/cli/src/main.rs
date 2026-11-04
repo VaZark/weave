@@ -32,6 +32,14 @@ use output::{
 };
 
 /// Exit codes: 0 ok, 1 general failure, 2 usage, 3 not found, 4 invalid input/filter/state.
+/// Which dev database `--mock-db` opens.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum MockDb {
+    Seeded,
+    Empty,
+}
+
 #[derive(Parser)]
 #[command(
     name = "weave-player",
@@ -42,12 +50,21 @@ struct Cli {
     /// Library database path.
     #[arg(long, global = true, env = "WEAVE_DB")]
     db: Option<PathBuf>,
-    /// Use the separate dev database (`dev.db` next to the library), seeded with mock tracks,
-    /// tags and playlists when it is empty. Never touches the real library; wins over --db and
-    /// WEAVE_DB.
+    /// Use a separate dev database instead of the library (debug builds only): `seeded` (the
+    /// default) is `dev.db`, filled with mock tracks, tags and playlists when it is empty;
+    /// `empty` is a fresh `dev-empty.db`, wiped on every run. Never touches the real library;
+    /// wins over --db and WEAVE_DB.
     #[cfg(debug_assertions)]
-    #[arg(long, global = true)]
-    mock_db: bool,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "seeded",
+        value_name = "KIND"
+    )]
+    mock_db: Option<MockDb>,
     /// Emit structured JSON.
     #[arg(long, global = true)]
     json: bool,
@@ -815,8 +832,29 @@ fn default_db() -> PathBuf {
     weave_player_lib::paths::default_db()
 }
 
+/// `--mock-db empty` means `--mock-db=empty`: clap would otherwise take the next word as the
+/// kind of an optional value, and a bare `--mock-db list` would read `list` as the kind.
+fn mock_db_args(args: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    let mut args = args.peekable();
+    while let Some(a) = args.next() {
+        if cfg!(debug_assertions)
+            && a == "--mock-db"
+            && args.peek().is_some_and(|n| n == "empty" || n == "seeded")
+        {
+            let mut joined = a;
+            joined.push("=");
+            joined.push(args.next().unwrap_or_default());
+            out.push(joined);
+        } else {
+            out.push(a);
+        }
+    }
+    out
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(mock_db_args(std::env::args_os()));
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(f) => {
@@ -873,10 +911,12 @@ struct HostPolicy {
 /// the default.
 fn open_library(cli: &Cli) -> Result<(PathBuf, Library), Failure> {
     #[cfg(debug_assertions)]
-    if cli.mock_db {
-        let db = weave_player_lib::mock::db_path();
-        let lib = weave_player_lib::mock::open_at(&db)?;
-        return Ok((db, lib));
+    if let Some(kind) = cli.mock_db {
+        let kind = match kind {
+            MockDb::Seeded => weave_player_lib::mock::Mock::Seeded,
+            MockDb::Empty => weave_player_lib::mock::Mock::Empty,
+        };
+        return Ok(weave_player_lib::mock::open_kind(kind)?);
     }
     let db = cli.db.clone().unwrap_or_else(default_db);
     let lib = Library::open(&db)?;
