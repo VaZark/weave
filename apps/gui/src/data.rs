@@ -1,13 +1,18 @@
-//! The data the UI shows while the engine is not wired in yet: a deterministic fake library.
-//! Everything the views read goes through these types, so swapping in `weave-player-lib` later
-//! replaces this module and nothing else.
+//! The library the views read: a snapshot of the engine's database (`Library::load`), with the
+//! tracks addressed by their index in it. The slug (the engine's identity) is on each track, and
+//! `backend` turns indexes back into slugs for the engine. The engine records no listening history
+//! yet, so `plays` and `last_played_days` stay 0 and the history sections stay empty.
 
 use iced::Color;
 use iced_adaptive_design::primitives::tree::TreeNode;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    /// The index in `Library::tracks`.
     pub id: usize,
+    /// The engine's identity for the track.
+    pub slug: String,
+    pub year: Option<i32>,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -15,7 +20,7 @@ pub struct Track {
     pub bpm: f32,
     pub rating: u8,
     pub secs: u32,
-    /// Listening history (the engine will provide it: see docs/ui/home.md).
+    /// Listening history (the engine does not record it yet: see docs/ui/home.md).
     pub plays: u32,
     pub last_played_days: u32,
 }
@@ -31,29 +36,20 @@ pub fn clock(secs: f32) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// The tag vocabulary as a tree: `genre:bachata` has two children. Values are the tags' names.
-pub fn tag_tree() -> Vec<TreeNode> {
-    let leaf = |v: &str| TreeNode::new(v, v.split_once(':').map_or(v, |(_, x)| x));
-    let branch = |v: &str, kids: Vec<TreeNode>| {
-        TreeNode::branch(v, v.split_once(':').map_or(v, |(_, x)| x), kids)
-    };
-    vec![
-        branch(
-            "genre:bachata",
-            vec![
-                leaf("genre:bachata-sensual"),
-                leaf("genre:bachata-traditional"),
-            ],
-        ),
-        leaf("genre:zouk"),
-        leaf("genre:salsa"),
-        branch("mood:calm", vec![leaf("mood:late-night")]),
-        leaf("mood:romantic"),
-        leaf("mood:energetic"),
-        leaf("lang:spanish"),
-        leaf("lang:french"),
-        leaf("practice"),
-    ]
+/// The tags whose parent is `parent`, each with its children: the tag tree of the vocabulary.
+fn tag_nodes(all: &[weave_player_lib::core::Tag], parent: Option<&str>) -> Vec<TreeNode> {
+    all.iter()
+        .filter(|t| t.parent.as_deref() == parent)
+        .map(|t| {
+            let kids = tag_nodes(all, Some(&t.name));
+            let label = t.name.split_once(':').map_or(t.name.as_str(), |(_, v)| v);
+            if kids.is_empty() {
+                TreeNode::new(t.name.clone(), label)
+            } else {
+                TreeNode::branch(t.name.clone(), label, kids)
+            }
+        })
+        .collect()
 }
 
 /// `tag` and everything under it in `tree`.
@@ -97,7 +93,7 @@ impl Filter {
 
     /// All the chosen tags must be on the track (or one of their descendants).
     pub fn matches(&self, t: &Track, tree: &[TreeNode]) -> bool {
-        if t.bpm < self.bpm.0 || t.bpm > self.bpm.1 {
+        if self.bpm != BPM && (t.bpm < self.bpm.0 || t.bpm > self.bpm.1) {
             return false;
         }
         self.tags.iter().all(|want| {
@@ -163,118 +159,92 @@ pub struct Library {
 }
 
 impl Library {
-    pub fn fake() -> Self {
-        const ARTISTS: [&str; 8] = [
-            "Aventura",
-            "Kaysha",
-            "Romeo Santos",
-            "Celia Cruz",
-            "Dadju",
-            "Prince Royce",
-            "Grupo Extra",
-            "Sael",
-        ];
-        const WORDS: [&str; 12] = [
-            "Obsesión",
-            "Noche",
-            "Corazón",
-            "Bailar",
-            "Sombras",
-            "Lluvia",
-            "Fuego",
-            "Luna",
-            "Dime",
-            "Volver",
-            "Cielo",
-            "Besos",
-        ];
-        const TAGS: [&[&str]; 8] = [
-            &["genre:bachata-sensual", "mood:romantic", "lang:spanish"],
-            &["genre:zouk", "mood:calm", "lang:french"],
-            &["genre:bachata-traditional", "lang:spanish"],
-            &["genre:salsa", "mood:energetic", "lang:spanish"],
-            &["genre:zouk", "mood:late-night", "lang:french"],
-            &["genre:bachata-sensual", "mood:calm"],
-            &["genre:bachata", "practice"],
-            &["genre:zouk", "mood:romantic"],
-        ];
-        let tracks: Vec<Track> = (0..60)
-            .map(|i| {
-                let a = i % ARTISTS.len();
-                Track {
-                    id: i,
-                    title: format!(
-                        "{} {}",
-                        WORDS[(i * 5) % WORDS.len()],
-                        WORDS[(i * 7 + 3) % WORDS.len()]
-                    ),
-                    artist: ARTISTS[a].into(),
-                    album: format!("{} Vol. {}", WORDS[(a * 3) % WORDS.len()], i / 16 + 1),
-                    tags: TAGS[(i * 3 + a) % TAGS.len()]
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect(),
-                    bpm: 78.0 + ((i * 37) % 90) as f32,
-                    rating: ((i * 11) % 5) as u8 + 1,
-                    secs: 170 + ((i * 53) % 130) as u32,
-                    plays: ((i * 7919) % 41) as u32,
-                    last_played_days: ((i * 53) % 400) as u32,
+    /// Reads the whole library from the engine: tracks, the tag tree and the tags' looks, and the
+    /// playlists.
+    pub fn load(engine: &weave_player_lib::Library) -> weave_player_lib::core::Result<Self> {
+        use weave_player_lib::core::{FilterSpec, Page, PlaylistKind};
+        let found = engine.search(&FilterSpec::default(), Page::ALL)?;
+        let tracks: Vec<Track> = found
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Track {
+                id: i,
+                slug: t.id.0.clone(),
+                year: t.metadata.year,
+                title: t.metadata.title.clone(),
+                artist: t
+                    .metadata
+                    .artist
+                    .clone()
+                    .unwrap_or_else(|| "Unknown artist".into()),
+                album: t
+                    .metadata
+                    .album
+                    .clone()
+                    .unwrap_or_else(|| "Unknown album".into()),
+                tags: t.tags.clone(),
+                bpm: t.metadata.bpm.unwrap_or(0.0) as f32,
+                rating: t.rating.unwrap_or(0),
+                secs: (t.metadata.duration_ms.unwrap_or(0) / 1000) as u32,
+                plays: 0,
+                last_played_days: 0,
+            })
+            .collect();
+        let index: std::collections::HashMap<&str, usize> =
+            tracks.iter().map(|t| (t.slug.as_str(), t.id)).collect();
+
+        let all = engine.list_tags()?;
+        let styles = all
+            .iter()
+            .filter_map(|t| {
+                let color = t.color.as_deref().and_then(parse_hex);
+                match (t.icon.clone(), color) {
+                    (None, None) => None,
+                    (icon, color) => {
+                        let d = default_style(&t.name);
+                        Some((
+                            t.name.clone(),
+                            TagStyle {
+                                icon: icon.unwrap_or(d.icon),
+                                color: color.unwrap_or(d.color),
+                            },
+                        ))
+                    }
                 }
             })
             .collect();
-        let playlists = vec![
-            Playlist {
-                name: "Bachata 90s".into(),
-                icon: Some("heart"),
-                description: "Sensual and traditional bachata, slow to mid tempo.".into(),
-                filter: Some(Filter {
-                    tags: vec!["genre:bachata".into()],
-                    bpm: (60.0, 120.0),
-                }),
-                tracks: Vec::new(),
-            },
-            Playlist {
-                name: "Late night".into(),
-                icon: Some("moon"),
-                description: String::new(),
-                filter: Some(Filter {
-                    tags: vec!["mood:calm".into()],
-                    bpm: BPM,
-                }),
-                tracks: Vec::new(),
-            },
-            Playlist {
-                name: "Road trip".into(),
+        let tags = tag_nodes(&all, None);
+
+        let mut playlists = Vec::new();
+        for p in engine.playlists()? {
+            let (_, result) = engine.playlist_tracks(&p.id, Page::ALL)?;
+            let tracks = result
+                .tracks
+                .iter()
+                .filter_map(|t| index.get(t.id.0.as_str()).copied())
+                .collect();
+            let filter = (p.kind == PlaylistKind::Dynamic).then(|| Filter {
+                tags: p.filter.tag_all.clone(),
+                bpm: (
+                    p.filter.bpm_min.map_or(BPM.0, |v| v as f32),
+                    p.filter.bpm_max.map_or(BPM.1, |v| v as f32),
+                ),
+            });
+            playlists.push(Playlist {
+                name: p.name.clone(),
                 icon: None,
-                description: "For the long drive.".into(),
-                filter: None,
-                tracks: vec![3, 9, 14, 21, 22, 30, 41],
-            },
-        ];
-        // A few tags with a look of their own; every other tag falls back to the default of its
-        // key (`default_style`).
-        let styles = [
-            ("mood:romantic", "heart", "#ff6b9d"),
-            ("mood:late-night", "moon", "#3b4a7a"),
-            ("practice", "target", "#9a9996"),
-        ]
-        .into_iter()
-        .filter_map(|(n, i, c)| {
-            Some((
-                n.to_string(),
-                TagStyle {
-                    icon: i.into(),
-                    color: parse_hex(c)?,
-                },
-            ))
-        })
-        .collect();
-        Self {
+                description: p.description.clone().unwrap_or_default(),
+                filter,
+                tracks,
+            });
+        }
+        Ok(Self {
             tracks,
             styles,
-            tags: tag_tree(),
+            tags,
             playlists,
-        }
+        })
     }
 
     /// The look of a tag: its own, or the default of its key.
@@ -286,13 +256,22 @@ impl Library {
             .unwrap_or_else(|| default_style(tag))
     }
 
-    /// An album's year (fake: the engine will carry it).
-    pub fn album_year(album: &str, artist: &str) -> i32 {
-        let h = album
-            .bytes()
-            .chain(artist.bytes())
-            .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-        2000 + (h % 25) as i32
+    /// An album's year: the earliest among its tracks, 0 when none has one.
+    pub fn album_year(&self, album: &str, artist: &str) -> i32 {
+        self.tracks
+            .iter()
+            .filter(|t| t.album == album && t.artist == artist)
+            .filter_map(|t| t.year)
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// The year for display: `–` when no track of the album has one.
+    pub fn year_label(&self, album: &str, artist: &str) -> String {
+        match self.album_year(album, artist) {
+            0 => "–".into(),
+            y => y.to_string(),
+        }
     }
 
     /// The average rating of an artist's tracks, 0.0 when none is rated.
@@ -358,7 +337,7 @@ impl Library {
     pub fn latest_albums(&self, artist: &str, n: usize) -> Vec<usize> {
         let albums = self.albums();
         let mut v = self.albums_of(artist);
-        v.sort_by_key(|i| std::cmp::Reverse(Self::album_year(&albums[*i].0, &albums[*i].1)));
+        v.sort_by_key(|i| std::cmp::Reverse(self.album_year(&albums[*i].0, &albums[*i].1)));
         v.truncate(n);
         v
     }
@@ -380,6 +359,7 @@ impl Library {
                 )
             })
             .collect();
+        v.retain(|(_, plays)| *plays > 0);
         v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         v.truncate(n);
         v
@@ -387,7 +367,7 @@ impl Library {
 
     /// The tracks played most recently, newest first.
     pub fn recently_played(&self, n: usize) -> Vec<&Track> {
-        let mut v: Vec<&Track> = self.tracks.iter().collect();
+        let mut v: Vec<&Track> = self.tracks.iter().filter(|t| t.plays > 0).collect();
         v.sort_by(|a, b| {
             a.last_played_days
                 .cmp(&b.last_played_days)
@@ -416,7 +396,7 @@ impl Library {
     }
 
     pub fn most_listened_tracks(&self, n: usize) -> Vec<&Track> {
-        let mut v: Vec<&Track> = self.tracks.iter().collect();
+        let mut v: Vec<&Track> = self.tracks.iter().filter(|t| t.plays > 0).collect();
         v.sort_by(|a, b| b.plays.cmp(&a.plays).then(a.id.cmp(&b.id)));
         v.truncate(n);
         v
@@ -427,7 +407,7 @@ impl Library {
         let mut v: Vec<&Track> = self
             .tracks
             .iter()
-            .filter(|t| t.rating >= 4 && t.last_played_days > days)
+            .filter(|t| t.plays > 0 && t.rating >= 4 && t.last_played_days > days)
             .collect();
         v.sort_by(|a, b| {
             b.last_played_days
@@ -515,11 +495,10 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn been_a_while_is_highly_rated_and_not_played_for_the_given_days() {
-        let lib = Library::fake();
+        let lib = crate::backend::sample::backend().1;
         for days in [90, 180, 365] {
             let v = lib.been_a_while(days, 100);
             assert!(!v.is_empty() || days == 365);
@@ -531,7 +510,7 @@ mod tests {
 
     #[test]
     fn an_artist_has_an_aggregate_rating_and_albums_in_two_orders() {
-        let lib = Library::fake();
+        let lib = crate::backend::sample::backend().1;
         let (name, _) = lib.artists()[1].clone();
         let r = lib.artist_rating(&name);
         assert!((0.0..=5.0).contains(&r) && r > 0.0);
@@ -540,7 +519,7 @@ mod tests {
             .iter()
             .map(|i| {
                 let a = &lib.albums()[*i];
-                Library::album_year(&a.0, &a.1)
+                lib.album_year(&a.0, &a.1)
             })
             .collect();
         assert!(years.windows(2).all(|w| w[0] >= w[1]), "newest first");
@@ -549,7 +528,7 @@ mod tests {
 
     #[test]
     fn recent_artists_are_distinct_and_the_latest_played_comes_first() {
-        let lib = Library::fake();
+        let lib = crate::backend::sample::backend().1;
         let r = lib.recent_artists(5);
         assert_eq!(r.len(), 5);
         let mut d = r.clone();
@@ -563,7 +542,7 @@ mod tests {
 
     #[test]
     fn most_listened_is_ordered_by_plays() {
-        let lib = Library::fake();
+        let lib = crate::backend::sample::backend().1;
         let t = lib.most_listened_tracks(10);
         assert!(t.windows(2).all(|w| w[0].plays >= w[1].plays));
         let a = lib.most_listened_artists(10);

@@ -1,10 +1,11 @@
 //! Weave's GUI frontend: iced with iced-adaptive-design (`iad`). See `docs/ui`.
 //!
-//! The UI comes first: it runs on a fake library (`data.rs`) and a simulated player, so every
-//! view and both layouts can be judged before the engine is wired in. The application state
-//! (destination, search, jam, queue) lives here; the layouts in `ui.rs` only render it, so a
+//! The UI runs on the engine: `data.rs` is a snapshot of the library database and `backend.rs`
+//! drives the queue and transport. The application state (destination, search, jam, queue) lives
+//! here; the layouts in `ui.rs` only render it, so a
 //! window that crosses the breakpoint loses nothing.
 
+mod backend;
 mod components;
 mod data;
 mod icons;
@@ -121,6 +122,8 @@ pub enum Message {
     /// An animation frame (while a sheet or the queue slides).
     Frame(Instant),
     Tick(Instant),
+    /// The engine's session, read again.
+    Poll,
     Transition(Event<Layout>),
     Window(iad::windows::Action),
     // Actions: every trigger fires one of these.
@@ -133,13 +136,17 @@ pub enum Message {
     /// The jam is a page: this shows it, or goes back to the page you were on.
     ToggleJam,
     ToggleExplore,
-    OpenSettings,
+    /// The menu's Import items: choose files (`true`) or a folder in the system file chooser.
+    Import(bool),
+    /// What the file chooser returned (nothing when it was cancelled).
+    Picked(Vec<std::path::PathBuf>),
+    /// The import finished: what to tell the user.
+    Imported(Result<String, String>),
     /// The track menu's bottom sheet (narrow): the track and whether "View album" shows.
     TrackSheet(Option<(usize, bool)>),
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
-    CloseSettings,
     WhileDays(u32),
     ToggleFavorite(String),
     SleepTimer(Option<u32>),
@@ -335,6 +342,8 @@ pub struct Player {
 
 pub struct App {
     pub lib: Library,
+    /// The engine: the library database, the queue and the transport.
+    pub backend: backend::Backend,
     pub adaptive: Adaptive<Layout>,
     pub dest: Dest,
     pub searching: bool,
@@ -364,7 +373,8 @@ pub struct App {
     pub rate_track: Option<usize>,
     pub info_track: Option<usize>,
     /// One setting for every track list (and the jam's): rows without a picture, one line.
-    pub settings_open: bool,
+    /// A line shown for a moment (an import's result) and when it appeared.
+    pub notice: Option<(String, Instant)>,
     pub sheet: Option<(usize, bool)>,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
@@ -395,11 +405,20 @@ pub const LYRICS: &str = "lyrics";
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        let db = backend::db_from_args();
+        let (backend, lib) = backend::Backend::open(&db).unwrap_or_else(|e| {
+            eprintln!("weave: cannot open the library: {e}");
+            std::process::exit(1);
+        });
+        Self::with(backend, lib)
+    }
+
+    fn with(mut backend: backend::Backend, lib: Library) -> (Self, Task<Message>) {
         let dev = iad::dev::Switches::from_env();
         dev.apply();
-        let lib = Library::fake();
-        let queue: Vec<usize> = (0..lib.tracks.len()).collect();
+        let session = backend.snapshot();
         let mut app = Self {
+            backend,
             adaptive: Adaptive::new(
                 Layouts::new()
                     .layout(..WidthClass::Md, Layout::Narrow)
@@ -421,11 +440,11 @@ impl App {
             sort: SortState::new(),
             rows: Vec::new(),
             player: Player {
-                queue,
+                queue: Vec::new(),
                 up_next: editing_queue(Vec::new()),
-                current: Some(3),
+                current: None,
                 playing: false,
-                pos: 42.0,
+                pos: 0.0,
                 shuffle: false,
                 repeat: false,
             },
@@ -437,7 +456,7 @@ impl App {
             edit_track: None,
             rate_track: None,
             info_track: None,
-            settings_open: false,
+            notice: None,
             sheet: None,
             density: DensityPref::Desktop,
             while_days: 180,
@@ -459,7 +478,7 @@ impl App {
             app.descriptions
                 .insert(format!("playlist:{i}"), p.description.clone());
         }
-        app.player.sync_up_next();
+        app.apply(session);
         app.refresh();
         let cmds = app.adaptive.resize(window_size().0, Instant::now());
         let mut tasks = vec![app.dispatch(cmds)];
@@ -485,7 +504,6 @@ impl App {
                 "explore" => vec![Message::Go(Dest::Explore)],
                 "albums" => vec![Message::Go(Dest::Albums)],
                 "playing-queue" => vec![Message::NowPlaying(true), Message::ToggleQueue],
-                "settings" => vec![Message::OpenSettings],
                 "artists" => vec![Message::Go(Dest::Artists)],
                 "popover" => vec![Message::SearchOpen(true)],
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
@@ -569,17 +587,50 @@ impl App {
     /// Puts a track in the queue: right after the one playing, or at the end. With nothing
     /// queued it starts playing.
     fn enqueue(&mut self, id: usize, next: bool) {
-        let mut items = self.player.queue.clone();
-        let Some(cur) = self.player.current else {
-            return self.play(vec![id], 0);
-        };
-        let at = if next {
-            (cur + 1).min(items.len())
-        } else {
-            items.len()
-        };
-        items.insert(at, id);
-        self.player.queue = items;
+        let session = self.backend.enqueue(id, next);
+        self.apply(session);
+    }
+
+    /// Shows a line for a few seconds.
+    fn say(&mut self, text: impl Into<String>) {
+        self.notice = Some((text.into(), Instant::now()));
+    }
+
+    /// Reads the library again (after an import): the lists, and the queue by slug, since the
+    /// indexes shift when tracks are added.
+    fn reload(&mut self) {
+        match self.backend.load() {
+            Ok(lib) => {
+                self.lib = lib;
+                for (i, p) in self.lib.playlists.iter().enumerate() {
+                    self.descriptions
+                        .entry(format!("playlist:{i}"))
+                        .or_insert_with(|| p.description.clone());
+                }
+                // Pages are addressed by index, which may now mean something else.
+                if matches!(
+                    self.dest,
+                    Dest::Artist(_) | Dest::Album(_) | Dest::Playlist(_)
+                ) {
+                    self.dest = Dest::Home;
+                    self.history = History::new(Place::home());
+                }
+                let s = self.backend.snapshot();
+                self.apply(s);
+                self.refresh();
+            }
+            Err(e) => self.say(format!("Cannot read the library: {e}")),
+        }
+    }
+
+    /// Mirrors the engine's session into the UI's player state.
+    fn apply(&mut self, s: backend::Snapshot) {
+        self.player.queue = s.queue;
+        self.player.current = s.current;
+        self.player.playing = s.playing;
+        self.player.pos = s.pos;
+        self.player.shuffle = s.shuffle;
+        self.player.repeat = s.repeat;
         self.player.sync_up_next();
     }
 
@@ -666,35 +717,8 @@ impl App {
     }
 
     fn play(&mut self, ids: Vec<usize>, start: usize) {
-        self.player.queue = ids;
-        self.player.current = Some(start);
-        self.player.pos = 0.0;
-        self.player.playing = true;
-        self.player.sync_up_next();
-    }
-
-    fn step(&mut self, forward: bool) {
-        let n = self.player.queue.len();
-        let Some(cur) = self.player.current else {
-            return;
-        };
-        if n == 0 {
-            return;
-        }
-        let next = if forward {
-            cur + 1
-        } else {
-            cur.wrapping_sub(1)
-        };
-        self.player.pos = 0.0;
-        if next < n {
-            self.player.current = Some(next);
-        } else if forward && !self.player.repeat {
-            self.player.playing = false;
-        } else {
-            self.player.current = Some(if forward { 0 } else { n - 1 });
-        }
-        self.player.sync_up_next();
+        let session = self.backend.play(&ids, start);
+        self.apply(session);
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -779,12 +803,27 @@ impl App {
                 self.sheet = None;
                 return self.update(*m);
             }
-            Message::OpenSettings => {
-                self.settings_open = true;
-                Vec::new()
+            Message::Import(files) => {
+                return Task::perform(pick(files), Message::Picked);
             }
-            Message::CloseSettings => {
-                self.settings_open = false;
+            Message::Picked(paths) => {
+                let Some(db) = self.backend.db().map(|d| d.to_path_buf()) else {
+                    return Task::none();
+                };
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                self.say("Importing…");
+                return Task::perform(import(db, paths), Message::Imported);
+            }
+            Message::Imported(result) => {
+                match result {
+                    Ok(text) => {
+                        self.reload();
+                        self.say(text);
+                    }
+                    Err(e) => self.say(format!("Import failed: {e}")),
+                }
                 Vec::new()
             }
             Message::WhileDays(d) => {
@@ -835,9 +874,9 @@ impl App {
                 // `i` counts in the "Up next" list, which starts after the playing track.
                 let at = self.player.current.map_or(0, |c| c + 1) + i;
                 if at < self.player.queue.len() {
-                    self.player.queue.remove(at);
+                    let s = self.backend.remove(at);
+                    self.apply(s);
                 }
-                self.player.sync_up_next();
                 Vec::new()
             }
             Message::NowPlaying(on) => {
@@ -1151,46 +1190,50 @@ impl App {
                 Vec::new()
             }
             Message::TogglePlay => {
-                self.player.playing = !self.player.playing;
+                let s = self.backend.toggle(self.player.playing);
+                self.apply(s);
                 Vec::new()
             }
             Message::Next => {
-                self.step(true);
+                let s = self.backend.next();
+                self.apply(s);
                 Vec::new()
             }
             Message::Previous => {
-                if self.player.pos > 3.0 {
-                    self.player.pos = 0.0;
+                // Past the first seconds, "previous" restarts the track.
+                let s = if self.player.pos > 3.0 {
+                    self.backend.seek(0.0)
                 } else {
-                    self.step(false);
-                }
+                    self.backend.previous()
+                };
+                self.apply(s);
                 Vec::new()
             }
             Message::Seek(p) => {
-                self.player.pos = p;
+                let s = self.backend.seek(p);
+                self.apply(s);
                 Vec::new()
             }
             Message::Shuffle => {
-                self.player.shuffle = !self.player.shuffle;
+                let s = self.backend.shuffle(!self.player.shuffle);
+                self.apply(s);
                 Vec::new()
             }
             Message::Repeat => {
-                self.player.repeat = !self.player.repeat;
+                let s = self.backend.repeat(!self.player.repeat);
+                self.apply(s);
                 Vec::new()
             }
             Message::Queue(e) => {
-                // A live list: the drop is committed at once, into the queue after the playing
-                // track.
-                self.player.up_next.apply(e);
-                let keep = self
-                    .player
-                    .current
-                    .map_or(0, |c| c + 1)
-                    .min(self.player.queue.len());
-                self.player.queue.truncate(keep);
-                self.player
-                    .queue
-                    .extend_from_slice(self.player.up_next.items());
+                // A live list: a drop is committed at once, in the queue after the playing
+                // track. `from` and `to` count in "Up next".
+                if let ReorderEvent::Reorder { from, to } = e {
+                    let base = self.player.current.map_or(0, |c| c + 1);
+                    let s = self.backend.move_item(base + from, base + to);
+                    self.apply(s);
+                } else {
+                    self.player.up_next.apply(e);
+                }
                 Vec::new()
             }
             Message::Captured(_) => return iced::exit(),
@@ -1200,14 +1243,22 @@ impl App {
                     if *left <= 0.0 {
                         self.sleep_left = None;
                         self.sleep_choice = None;
-                        self.player.playing = false;
+                        let s = self.backend.pause();
+                        self.apply(s);
                     }
                 }
-                self.player.pos += 0.25;
-                if let Some(t) = self.now()
-                    && self.player.pos >= t.secs as f32
+                Vec::new()
+            }
+            Message::Poll => {
+                // The session as it is now: the position, and what another handle changed.
+                let s = self.backend.snapshot();
+                self.apply(s);
+                if self
+                    .notice
+                    .as_ref()
+                    .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(4))
                 {
-                    self.step(true);
+                    self.notice = None;
                 }
                 Vec::new()
             }
@@ -1298,6 +1349,9 @@ impl App {
         if self.animating() {
             subs.push(iced::window::frames().map(Message::Frame));
         }
+        // The position moves while playing; otherwise the session is only checked now and then.
+        let poll = if self.player.playing { 250 } else { 1000 };
+        subs.push(iced::time::every(Duration::from_millis(poll)).map(|_| Message::Poll));
         if self.player.playing {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Progress));
         }
@@ -1333,6 +1387,41 @@ fn toggle(tags: &mut Vec<String>, tag: String) {
 
 /// A long description to judge the clamp with (`WEAVE_GUI_START=long-desc`).
 const LONG: &str = "A long description that goes on about the music in this list: where it came from, why it is here, and what it is good for on a long drive. ";
+
+/// The system file chooser: files, or a folder. Empty when cancelled.
+async fn pick(files: bool) -> Vec<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(if files {
+        "Import files"
+    } else {
+        "Import a folder"
+    });
+    let picked = if files {
+        dialog
+            .add_filter(
+                "Audio",
+                &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav"],
+            )
+            .pick_files()
+            .await
+    } else {
+        dialog.pick_folders().await
+    };
+    picked
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| f.path().to_path_buf())
+        .collect()
+}
+
+/// Indexes `paths` on a thread of its own, so the window keeps drawing.
+async fn import(db: std::path::PathBuf, paths: Vec<std::path::PathBuf>) -> Result<String, String> {
+    let (tx, rx) = iced::futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(backend::import(&db, &paths));
+    });
+    rx.await
+        .unwrap_or_else(|_| Err("the import stopped".into()))
+}
 
 fn fake_lyrics(title: &str, secs: u32) -> Vec<Line> {
     const LINES: [&str; 8] = [
@@ -1386,7 +1475,8 @@ mod tests {
     use super::*;
 
     fn app() -> App {
-        App::new().0
+        let (backend, lib) = backend::sample::backend();
+        App::with(backend, lib).0
     }
 
     #[test]
@@ -1442,6 +1532,7 @@ mod tests {
     #[test]
     fn the_playing_track_is_not_in_up_next_and_the_rest_is_always_editable() {
         let mut a = app();
+        a.play((0..a.lib.tracks.len()).collect(), 3);
         let cur = a.player.current.unwrap();
         let playing = a.now().map(|t| t.id).unwrap();
         // Up next is what follows the playing track; the playing one is not in it.
@@ -1464,6 +1555,62 @@ mod tests {
         let _ = a.update(Message::QueueRemove(0));
         assert_eq!(a.now().map(|t| t.id), Some(playing));
         assert_eq!(a.player.queue[cur], playing);
+    }
+
+    #[test]
+    fn an_empty_library_opens_and_every_page_builds() {
+        let (backend, lib) = backend::sample::empty();
+        let mut a = App::with(backend, lib).0;
+        for dest in [
+            Dest::Home,
+            Dest::Tracks,
+            Dest::Recent,
+            Dest::Artists,
+            Dest::Albums,
+            Dest::Playlists,
+            Dest::Explore,
+        ] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+        }
+        let _ = a.update(Message::TogglePlay);
+        let _ = a.update(Message::Next);
+        assert!(a.player.queue.is_empty());
+    }
+
+    #[test]
+    fn the_player_mirrors_the_engine_session() {
+        let mut a = app();
+        assert!(a.player.queue.is_empty() && a.player.current.is_none() && !a.player.playing);
+        // Playing a list queues it in the engine and starts at the chosen track.
+        a.play(vec![5, 6, 7, 8], 1);
+        assert_eq!(a.player.queue, vec![5, 6, 7, 8]);
+        assert_eq!((a.player.current, a.player.playing), (Some(1), true));
+        assert_eq!(a.now().map(|t| t.id), Some(6));
+        // Transport goes through the engine and comes back.
+        let _ = a.update(Message::TogglePlay);
+        assert!(!a.player.playing);
+        let _ = a.update(Message::TogglePlay);
+        assert!(a.player.playing);
+        let _ = a.update(Message::Next);
+        assert_eq!(a.now().map(|t| t.id), Some(7));
+        let _ = a.update(Message::Seek(30.0));
+        assert!(a.player.pos >= 30.0);
+        let _ = a.update(Message::Shuffle);
+        assert!(a.player.shuffle);
+        let _ = a.update(Message::Repeat);
+        assert!(a.player.repeat);
+        // Queueing next puts a track right after the playing one.
+        let playing = a.now().map(|t| t.id).unwrap();
+        let _ = a.update(Message::PlayNext(20));
+        let at = a.player.queue.iter().position(|i| *i == playing).unwrap();
+        assert_eq!(a.player.queue[at + 1], 20);
+        // A drop in "Up next" reorders the engine queue and keeps the playing track.
+        let before: Vec<usize> = a.player.up_next.items().to_vec();
+        let _ = a.update(Message::Queue(ReorderEvent::Reorder { from: 0, to: 1 }));
+        let after: Vec<usize> = a.player.up_next.items().to_vec();
+        assert_eq!((after[0], after[1]), (before[1], before[0]));
+        assert_eq!(a.now().map(|t| t.id), Some(playing));
     }
 
     #[test]
@@ -1515,17 +1662,24 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_dialog_changes_the_global_settings() {
+    fn the_menu_switches_density_and_an_import_reloads_the_library() {
         let mut a = app();
-        let _ = a.update(Message::OpenSettings);
-        assert!(a.settings_open);
         let _ = a.update(Message::SetDensity(DensityPref::Compact));
-        let _ = a.update(Message::WhileDays(365));
         assert!(a.compact());
-        assert_eq!(a.while_days, 365);
-        let _ = a.update(Message::CloseSettings);
-        assert!(!a.settings_open);
-        assert_eq!(a.while_days, 365, "closing keeps what was set");
+        let _ = a.update(Message::SetDensity(DensityPref::Default));
+        assert!(!a.compact());
+        // A finished import shows its result and reads the library again; the queue keeps
+        // its tracks by slug.
+        a.play(vec![5, 6, 7], 1);
+        let playing = a.now().map(|t| t.slug.clone());
+        let _ = a.update(Message::Imported(Ok("Imported 2 tracks".into())));
+        assert_eq!(
+            a.notice.as_ref().map(|n| n.0.as_str()),
+            Some("Imported 2 tracks")
+        );
+        assert_eq!(a.now().map(|t| t.slug.clone()), playing);
+        let _ = a.update(Message::Imported(Err("boom".into())));
+        assert!(a.notice.as_ref().unwrap().0.contains("boom"));
     }
 
     #[test]

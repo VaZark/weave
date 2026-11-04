@@ -11,7 +11,7 @@ use iced::widget::{column, container, row, text, text_input};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
-use crate::{App, Dest, Element, Layout, Message};
+use crate::{App, DensityPref, Dest, Element, Layout, Message};
 
 const SEARCH_ID: &str = "search";
 
@@ -35,10 +35,14 @@ impl App {
             .layout(Layout::Wide, || self.wide());
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
-        // The settings dialog closes with its button or a click outside; the editing dialogs only
-        // with their own buttons.
-        let dismiss = self.settings_open.then_some(Message::CloseSettings);
-        w::present_dialog(framed, self.dialog(), dismiss, 0.0)
+        let dialog = w::present_dialog(framed, self.dialog(), None, 0.0);
+        // A line for a moment: what an import did.
+        w::toast_stack(
+            dialog,
+            self.notice
+                .iter()
+                .map(|(text, _)| w::Toast::new(text.clone())),
+        )
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
@@ -49,7 +53,6 @@ impl App {
             .or_else(|| self.bulk.as_ref().map(|b| self.bulk_dialog(b)))
             .or_else(|| self.rate_track.map(|id| self.rate_dialog(id)))
             .or_else(|| self.info_track.map(|id| self.info_dialog(id)))
-            .or_else(|| self.settings_open.then(|| self.settings_dialog()))
     }
 
     fn chrome(&self, left: bool, right: bool) -> Chrome {
@@ -105,7 +108,7 @@ impl App {
             h.title(self.page_title())
         };
         // The later a button is packed, the further from the window controls it sits.
-        h = h.pack_end(w::icon_button(Icon::Settings).on_press(Message::OpenSettings));
+        h = h.pack_end(self.main_menu());
         if !narrow {
             // Explore and Jam are tabs on narrow, so only desktop has them here.
             h = h
@@ -127,6 +130,26 @@ impl App {
                 );
         }
         h.into()
+    }
+
+    /// The main menu: the density switch, and importing files or a folder.
+    fn main_menu(&self) -> Element<'_> {
+        let compact = self.compact();
+        let menu = w::Menu::new("Menu")
+            .section([w::MenuItem::check(
+                "Compact",
+                compact,
+                Message::SetDensity(if compact {
+                    DensityPref::Default
+                } else {
+                    DensityPref::Compact
+                }),
+            )])
+            .section([
+                w::MenuItem::action("Import files…", Message::Import(true)).icon(Icon::Document),
+                w::MenuItem::action("Import folder…", Message::Import(false)).icon(Icon::Folder),
+            ]);
+        self.menu_button(Icon::OpenMenu, "Main menu", menu)
     }
 
     fn filter_badge(&self) -> Element<'_> {

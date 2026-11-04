@@ -375,7 +375,7 @@ impl App {
 
     fn album_card(&self, i: usize, show_artist: bool) -> Element<'_> {
         let (name, artist, n) = self.lib.albums()[i].clone();
-        let year = crate::data::Library::album_year(&name, &artist);
+        let year = self.lib.year_label(&name, &artist);
         let sub = if show_artist {
             format!("{artist} · {year}")
         } else {
@@ -735,7 +735,7 @@ impl App {
             }
             Dest::Album(i) => {
                 let (album, artist, _) = self.lib.albums()[i].clone();
-                let year = crate::data::Library::album_year(&album, &artist);
+                let year = self.lib.year_label(&album, &artist);
                 (
                     cover(i, big),
                     "Album".into(),

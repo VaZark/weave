@@ -26,7 +26,7 @@ A **jam** is a shuffled, filter-driven queue that keeps refilling. It is not the
 
 ## Status
 
-The first version is `apps/gui` (`cargo run -p weave-player-gui`). It runs on a fake library and a simulated player, so the UI can be judged before the engine is wired in: both layouts, Home, the track table, artists, albums, playlists, search with the filter popover, the jam sheet, Now Playing with synced lyrics and the queue. Development switches: `WEAVE_GUI_SIZE=420x760`, `WEAVE_GUI_START=jam|search|library|playing|queue|lyrics` and `WEAVE_GUI_SHOT=file.png` (screenshot and quit).
+The first version is `apps/gui` (`cargo run -p weave-player-gui`). It runs on the engine (`weave-player-lib`): the library, the queue and the transport come from the library database (`--db <path>`, `$WEAVE_DB`, or the CLI's default `~/.local/share/weave/library.db`), and sound comes from the embedded player (feature `audio`, on by default). `weave-player dev seed` fills a database with sample tracks. Both layouts, Home, the track table, artists, albums, playlists, search with the filter popover, the jam sheet, Now Playing with synced lyrics and the queue. Development switches: `WEAVE_GUI_SIZE=420x760`, `WEAVE_GUI_START=jam|search|library|playing|queue|lyrics` and `WEAVE_GUI_SHOT=file.png` (screenshot and quit).
 
 Our own widgets live in `apps/gui/src/components`, with their headless logic in `apps/gui/src/primitives`; generic ones (the synced lyrics list) carry no dependency on the app, so they can move upstream.
 

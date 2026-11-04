@@ -9,7 +9,7 @@ use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
-use crate::{App, DensityPref, Element, Message, Mode3};
+use crate::{App, Element, Message, Mode3};
 use iad::prelude::surface;
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
 use iad::primitives::histogram::Histogram;
@@ -210,48 +210,6 @@ impl App {
     }
 
     // ---- dialogs ------------------------------------------------------------------------
-
-    /// Settings: a preferences dialog (iad's `preferences_dialog`) of groups of rows.
-    pub fn settings_dialog(&self) -> Element<'_> {
-        let page = w::PreferencesPage::<Message>::new()
-            .push(
-                w::PreferencesGroup::new()
-                    .title("Density")
-                    .description("How every list looks: tracks (including the jam's), albums, artists and playlists.")
-                    .push(
-                        w::ComboRow::new(
-                            "Density",
-                            &DensityPref::ALL,
-                            Some(self.density),
-                            Message::SetDensity,
-                        )
-                        .subtitle(format!(
-                            "The desktop's setting is {} ([appearance] density)",
-                            if iad::config::current().density == iad::config::Density::Compact {
-                                "compact"
-                            } else {
-                                "default"
-                            }
-                        )),
-                    ),
-            )
-            .push(
-                w::PreferencesGroup::new()
-                    .title("Explore")
-                    .description("What comes back to you.")
-                    .push(
-                        w::SpinRow::new(
-                            "Resurface after (days)",
-                            f64::from(self.while_days),
-                            30.0..=730.0,
-                            30.0,
-                            |d| Message::WhileDays(d as u32),
-                        )
-                        .subtitle("Tracks you rated highly and have not played for this long"),
-                    ),
-            );
-        w::preferences_dialog("Settings", page, Message::CloseSettings)
-    }
 
     /// The rules of a dynamic playlist. Modal and not dismissable: Cancel or Save.
     pub fn filter_dialog<'a>(&'a self, draft: &'a Filter) -> Element<'a> {

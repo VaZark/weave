@@ -9,8 +9,16 @@ description = "Weave's GUI frontend: iced with iced-adaptive-design (see docs/ui
 name = "weave-player-gui"
 path = "src/main.rs"
 
+[features]
+# Sound through the engine's embedded player (needs the ALSA development files on Linux).
+default = ["audio"]
+audio = ["weave-player-lib/audio"]
+
 [dependencies]
 weaver.workspace = true
+weave-player-lib.workspace = true
+# The system file chooser (the desktop portal on Linux), to import files and folders.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Pinned: iced-adaptive-design has API churn. To develop both together, add a
 # `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
 iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "2f8eebc26fd27b1fc1d85870ef91584bccfbe608" }
