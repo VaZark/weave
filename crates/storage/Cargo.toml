@@ -1,5 +1,5 @@
 [package]
-name = "weave-storage"
+name = "weave-player-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,10 +7,11 @@ license.workspace = true
 [features]
 # Off by default: the system SQLite library (3.14.0 or newer) is linked.
 # Libraries leave the choice to the final binary; see apps/cli.
-sqlite-from-source = ["rusqlite/bundled"]
+sqlite-from-source = ["rusqlite/bundled", "weaver/bundled"]
 
 [dependencies]
 rusqlite = "0.37"
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
-weave-core.workspace = true
+weaver.workspace = true
+weave-player-core.workspace = true

@@ -13,9 +13,9 @@
 //! [`Player`] follows it.
 //!
 //! ```no_run
-//! use weave::{Library, Player, PlayerOptions};
+//! use weave_player_lib::{Library, Player, PlayerOptions};
 //!
-//! # fn main() -> weave::core::Result<()> {
+//! # fn main() -> weave_player_lib::core::Result<()> {
 //! let db = std::path::Path::new("library.db");
 //! let mut library = Library::open(db)?;
 //! library.import(std::path::Path::new("/home/me/Music"))?;
@@ -46,8 +46,8 @@
 mod player;
 
 /// The domain types: tracks, filters, playlists, the queue and its state, errors.
-pub use weave_core as core;
-pub use weave_engine::{ImportStats, Library, SessionView};
+pub use weave_player_core as core;
+pub use weave_player_engine::{ImportStats, Library, SessionView};
 
 pub use player::{
     Audio, DEFAULT_TICK, PlaybackFactory, Player, PlayerEvent, PlayerOptions, lock_path,

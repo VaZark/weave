@@ -15,7 +15,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
-use weave_core::{
+use weave_player_core::{
     EntityKind, Error, FilterSpec, Instance, Metadata, Page, Result, ScannedTrack, SearchResult,
     Track, TrackId, default_instance_name, metadata_tags, parse_credits, parse_instance_name,
     slugify, track_slug,

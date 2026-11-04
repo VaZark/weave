@@ -1,5 +1,7 @@
 use super::*;
-use weave_core::{EndOfQueue, PlayerState, PlaylistKind, Queue, RepeatMode, Rng, Sort, SortField};
+use weave_player_core::{
+    EndOfQueue, PlayerState, PlaylistKind, Queue, RepeatMode, Rng, Sort, SortField,
+};
 
 fn scanned(path: &str, title: &str, artist: &str, bpm: Option<f64>) -> ScannedTrack {
     ScannedTrack {
@@ -766,7 +768,7 @@ fn session_round_trips_queue_order_and_state() {
     q.replace(slugs.iter().map(|t| TrackId(t.clone())).collect(), &mut rng);
     q.append(vec![TrackId(slugs[0].clone())], &mut rng); // duplicates are fine
     q.set_sleep(
-        weave_core::SleepSetting::In {
+        weave_player_core::SleepSetting::In {
             delay: std::time::Duration::from_secs(90),
             stop_after: true,
         },

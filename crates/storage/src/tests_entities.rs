@@ -1,7 +1,7 @@
 //! Artists, albums, their profiles, tags on every kind of thing, and manual deduplication.
 
 use super::*;
-use weave_core::{ChildPolicy, Count, EntityKind, TagOp};
+use weave_player_core::{ChildPolicy, Count, EntityKind, TagOp};
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -456,7 +456,7 @@ fn tags_go_on_artists_albums_and_playlists_and_are_found_through_the_tree() {
     assert!(by(spec(&["=genre:latin"], &[])).is_empty());
     assert_eq!(by(spec(&[], &["genre:latin"])), ["Kaysha"]);
     let clause = FilterSpec {
-        tag_clauses: vec![weave_core::TagClause {
+        tag_clauses: vec![weave_player_core::TagClause {
             op: TagOp::Any,
             keys: s(&["genre"]),
             values: s(&["latin"]),

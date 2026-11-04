@@ -10,7 +10,7 @@ Read [goals.md](goals.md) for scope and CLI semantics and [agents.md](agents.md)
 - **ALSA development files** for audio output (`alsa-lib` on Arch, `libasound2-dev` on Debian/Ubuntu), unless you build without the `audio` feature.
 - Git. No database server or account is required.
 
-Weave is a library (`weave`) that other players embed, plus the `weave-player` CLI built on it. GUIs are separate projects.
+Weave is a library (`weave-player-lib`) that other players embed, plus the `weave-player` CLI built on it. GUIs are separate projects.
 
 ## Get the code and build
 
@@ -28,8 +28,8 @@ Without installing, run it with `cargo run -p weave-player -- <args>`.
 
 Two artifacts, built separately:
 
-- The library: `cargo build -p weave` (add `--features audio,media-controls`). It has no CLI code or dependencies. Try the embedding API with `cargo run -p weave --example embedded_player --features audio,media-controls -- ~/Music`.
-- The CLI: `cargo build -p weave-player`. It depends on `weave` only.
+- The library: `cargo build -p weave-player-lib` (add `--features audio,media-controls`). It has no CLI code or dependencies. Try the embedding API with `cargo run -p weave-player-lib --example embedded_player --features audio,media-controls -- ~/Music`.
+- The CLI: `cargo build -p weave-player`. It depends on `weave-player-lib` only.
 
 - Default: links the system SQLite (3.14.0 or newer, checked at startup).
 - `--features sqlite-from-source`: compiles SQLite and links it statically. Set it on the binary, e.g. `cargo build -p weave-player --features sqlite-from-source`.
@@ -104,7 +104,8 @@ crates/core/       types, FilterSpec, track slugs, instance identity
 crates/storage/    SQLite schema, migrations, query building
 crates/engine/     the single API frontends call
 crates/local/     file scanning, lyrics and playback (audio detected by content, not extension)
-apps/cli/          the `weave-player` binary, a frontend over `weave` only (src/dev.rs is debug-only)
+apps/gui/          the iced GUI (`weave-player-gui`): UI first on a fake library; its own widgets are in src/components (generic ones are meant for upstream into iced-adaptive-design), their logic in src/primitives
+apps/cli/          the `weave-player` binary, a frontend over `weave-player-lib` only (src/dev.rs is debug-only)
 ```
 
 Frontends call the library and never touch the database directly, and filtering, playback or playlist rules live in the library, never only in a frontend.

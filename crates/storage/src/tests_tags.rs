@@ -1,7 +1,7 @@
 //! Tag hierarchy, keyed tags, ranges, provenance.
 
 use super::*;
-use weave_core::{ChildPolicy, TagClause, TagOp};
+use weave_player_core::{ChildPolicy, TagClause, TagOp};
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -133,7 +133,7 @@ fn reparenting_changes_queries_not_assignments() {
 #[test]
 fn cycles_and_self_parenting_are_rejected() {
     let mut st = fixture();
-    let err = |r: Result<weave_core::Tag>| r.unwrap_err().to_string();
+    let err = |r: Result<weave_player_core::Tag>| r.unwrap_err().to_string();
     assert!(err(st.set_tag_parent("genre:bachata", Some("genre:bachata"))).contains("own parent"));
     assert!(
         err(st.set_tag_parent("genre:bachata", Some("genre:bachata-sensual"))).contains("cycle")
@@ -207,4 +207,19 @@ fn import_turns_the_genre_into_an_ordinary_tag() {
     st.add_tags(&i, &s(&["practice"])).unwrap();
     assert_eq!(st.import_tracks(&[t]).unwrap().added, 0);
     assert_eq!(st.tags(&i).unwrap(), ["genre:Bachata", "practice"]);
+}
+
+#[test]
+fn a_tag_can_have_an_icon_and_a_color() {
+    let mut st = Storage::open_in_memory().unwrap();
+    st.create_tag("mood:calm", None).unwrap();
+    let t = st
+        .set_tag_style("Mood:Calm", Some("moon"), Some("#4A90D9"))
+        .unwrap();
+    assert_eq!(
+        (t.icon.as_deref(), t.color.as_deref()),
+        (Some("moon"), Some("#4a90d9"))
+    );
+    assert!(st.set_tag_style("mood:calm", None, Some("blue")).is_err());
+    assert_eq!(st.list_tags().unwrap()[0].icon.as_deref(), Some("moon"));
 }

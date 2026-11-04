@@ -8,7 +8,7 @@ use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, OsMediaControls,
     Repeat, SeekDirection,
 };
-use weave_core::{PlayStatus, RepeatMode};
+use weave_player_core::{PlayStatus, RepeatMode};
 
 use super::{Remote, Snapshot, TrackInfo};
 

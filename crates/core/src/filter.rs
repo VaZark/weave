@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result, TagName, normalize_tag, parse_tag_ref};
+use crate::{Error, Result, normalize_tag};
+pub use weaver::{TagClause, TagFilter, TagOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,44 +34,6 @@ text_enum!(SortField {
 pub struct Sort {
     pub field: SortField,
     pub descending: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TagOp {
-    /// Every value is present.
-    All,
-    /// At least one value is present.
-    Any,
-    /// No value is present.
-    Exclude,
-}
-
-/// A keyed tag condition: the tags `key:value` for each key and value. A value counts as
-/// present when any of the keys has it, so `genre,style` + `bachata` means `genre:bachata`
-/// or `style:bachata`. Matches the tag and its descendants unless `exact`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TagClause {
-    pub op: TagOp,
-    pub keys: Vec<String>,
-    pub values: Vec<String>,
-    #[serde(default)]
-    pub exact: bool,
-}
-
-impl TagClause {
-    /// Normalized tag names, one list of alternative keys per value.
-    pub fn names(&self) -> Vec<Vec<String>> {
-        self.values
-            .iter()
-            .map(|v| {
-                self.keys
-                    .iter()
-                    .map(|k| normalize_tag(&format!("{k}:{v}")))
-                    .collect()
-            })
-            .collect()
-    }
 }
 
 /// Structured, serializable filter shared by the CLI, GUI and saved playlists.
@@ -110,21 +73,25 @@ pub struct FilterSpec {
 }
 
 impl FilterSpec {
+    /// The tag conditions, for `weaver`.
+    pub fn tag_filter(&self) -> TagFilter {
+        TagFilter {
+            all: self.tag_all.clone(),
+            any: self.tag_any.clone(),
+            exclude: self.tag_exclude.clone(),
+            clauses: self.tag_clauses.clone(),
+        }
+    }
+
     /// Trim, drop empties and duplicates (by normalized form, keeping first spelling).
     pub fn normalized(mut self) -> Self {
-        for list in [&mut self.tag_all, &mut self.tag_any, &mut self.tag_exclude] {
-            let mut seen: Vec<(bool, String)> = Vec::new();
-            list.retain_mut(|t| {
-                *t = t.trim().to_string();
-                let (exact, norm) = parse_tag_ref(t);
-                let key = (exact, norm);
-                if key.1.is_empty() || seen.contains(&key) {
-                    return false;
-                }
-                seen.push(key);
-                true
-            });
-        }
+        let tags = self.tag_filter().normalized();
+        (
+            self.tag_all,
+            self.tag_any,
+            self.tag_exclude,
+            self.tag_clauses,
+        ) = (tags.all, tags.any, tags.exclude, tags.clauses);
         let mut seen = Vec::new();
         self.sources.retain_mut(|p| {
             *p = p.trim().to_string();
@@ -135,25 +102,6 @@ impl FilterSpec {
             seen.push(key);
             true
         });
-        for c in &mut self.tag_clauses {
-            for list in [&mut c.keys, &mut c.values] {
-                let mut seen = Vec::new();
-                list.retain_mut(|t| {
-                    *t = t.trim().to_string();
-                    let norm = t.to_lowercase();
-                    if norm.is_empty() || seen.contains(&norm) {
-                        return false;
-                    }
-                    seen.push(norm);
-                    true
-                });
-            }
-            for k in &mut c.keys {
-                *k = k.to_lowercase();
-            }
-        }
-        self.tag_clauses
-            .retain(|c| !c.keys.is_empty() && !c.values.is_empty());
         for field in [&mut self.title, &mut self.artist, &mut self.album] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
@@ -163,13 +111,7 @@ impl FilterSpec {
     }
 
     pub fn validate(&self) -> Result<()> {
-        for c in &self.tag_clauses {
-            for k in &c.keys {
-                if TagName::parse_lossy(&format!("{k}:x")).key.as_deref() != Some(k.as_str()) {
-                    return Err(Error::InvalidFilter(format!("\"{k}\" is not a tag key")));
-                }
-            }
-        }
+        self.tag_filter().validate()?;
         for (name, v) in [("bpm-min", self.bpm_min), ("bpm-max", self.bpm_max)] {
             if let Some(v) = v
                 && (!v.is_finite() || v < 0.0)

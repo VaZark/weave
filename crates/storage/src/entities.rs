@@ -5,11 +5,12 @@
 use std::collections::HashMap;
 
 use rusqlite::{OptionalExtension, Transaction, params, types::Value};
-use weave_core::{
+use weave_player_core::{
     AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, Count, Credits, EntityKind, EntityRef,
     Error, FilterSpec, MergeStats, Result, Stats, album_slug, artist_slug, entity_norm, slugify,
 };
 
+use crate::tags::{ALBUM, ARTIST, TAGS};
 use crate::{Storage, db_err, query, unique_slug};
 
 /// Collapse whitespace; the display spelling of a stored name.
@@ -515,12 +516,7 @@ impl Storage {
                         params![twin, album],
                     )
                     .map_err(db_err)?;
-                    tx.execute(
-                        "INSERT OR IGNORE INTO album_tags (album_id, tag_id)
-                         SELECT ?1, tag_id FROM album_tags WHERE album_id = ?2",
-                        params![twin, album],
-                    )
-                    .map_err(db_err)?;
+                    TAGS.copy(&tx, &ALBUM, &album, &twin)?;
                     tx.execute("DELETE FROM albums WHERE id = ?1", [&album])
                         .map_err(db_err)?;
                 }
@@ -555,12 +551,7 @@ impl Storage {
             )
             .map_err(db_err)?;
 
-        tx.execute(
-            "INSERT OR IGNORE INTO artist_tags (artist_id, tag_id)
-             SELECT ?1, tag_id FROM artist_tags WHERE artist_id = ?2",
-            params![into_id, from_id],
-        )
-        .map_err(db_err)?;
+        TAGS.copy(&tx, &ARTIST, &from_id, &into_id)?;
         // Featured credits move too; a track can't feature its own primary artist.
         tx.execute(
             "UPDATE OR IGNORE track_featured SET artist_id = ?1 WHERE artist_id = ?2",

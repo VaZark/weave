@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use weave_core::{
+use weave_player_core::{
     Advance, AdvanceReason, EndOfQueue, Error, FilterSpec, Lyrics, Page, PlayStatus, Playback,
     PlayerState, Queue, RepeatMode, Result, SleepSetting, Track, TrackId,
 };
@@ -482,7 +482,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use weave_core::{FilterSpec, Metadata, ScannedTrack};
+    use weave_player_core::{FilterSpec, Metadata, ScannedTrack};
 
     use super::*;
 
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn session_survives_reopening_the_database() {
-        let dir = std::env::temp_dir().join(format!("weave-engine-{}", uuid_like()));
+        let dir = std::env::temp_dir().join(format!("weave-player-engine-{}", uuid_like()));
         let path = dir.join("lib.db");
         {
             let mut lib = Library::open(&path).unwrap();
@@ -643,8 +643,8 @@ mod tests {
             lib.set_rating(&id(i), Some(r)).unwrap();
         }
         let filter = FilterSpec {
-            sort: Some(weave_core::Sort {
-                field: weave_core::SortField::Rating,
+            sort: Some(weave_player_core::Sort {
+                field: weave_player_core::SortField::Rating,
                 descending: true,
             }),
             limit: Some(2),
@@ -1381,8 +1381,8 @@ mod tests {
     fn play_random_applies_the_filters_sort_and_limit_first() {
         let mut lib = library_with_tags(3);
         let filter = FilterSpec {
-            sort: Some(weave_core::Sort {
-                field: weave_core::SortField::Title,
+            sort: Some(weave_player_core::Sort {
+                field: weave_player_core::SortField::Title,
                 descending: true,
             }),
             limit: Some(2),
@@ -1530,8 +1530,8 @@ mod tests {
     fn a_dynamic_playlist_adds_whatever_it_matches_right_now_in_its_own_order() {
         let mut lib = library_with_tags(1);
         let filter = FilterSpec {
-            sort: Some(weave_core::Sort {
-                field: weave_core::SortField::Title,
+            sort: Some(weave_player_core::Sort {
+                field: weave_player_core::SortField::Title,
                 descending: true,
             }),
             limit: Some(2),

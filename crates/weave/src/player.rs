@@ -19,8 +19,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use weave_core::{Error, PlayStatus, Playback, Result};
-use weave_engine::Library;
+use weave_player_core::{Error, PlayStatus, Playback, Result};
+use weave_player_engine::Library;
 
 use host::Host;
 use lock::HostLock;

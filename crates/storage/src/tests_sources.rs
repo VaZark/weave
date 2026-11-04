@@ -1,7 +1,7 @@
 //! Dynamic playlists that draw on other playlists: OR across the sources, AND with the filter.
 
 use super::*;
-use weave_core::{Sort, SortField};
+use weave_player_core::{Sort, SortField};
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
@@ -281,8 +281,12 @@ fn an_ad_hoc_search_can_draw_on_playlists_by_name_and_a_deep_chain_is_refused() 
 fn deleting_a_playlist_others_draw_on_is_refused_until_it_may_detach() {
     let mut st = fixture();
     manual(&mut st, "Road trip", &["A", "B", "E"]);
-    st.add_tags_to(weave_core::EntityKind::Playlist, "road-trip", &s(&["trip"]))
-        .unwrap();
+    st.add_tags_to(
+        weave_player_core::EntityKind::Playlist,
+        "road-trip",
+        &s(&["trip"]),
+    )
+    .unwrap();
     st.create_playlist("Spanish", None, &from_and(&["road trip"], &["lang:es"]))
         .unwrap();
     st.create_manual_playlist("Other", None).unwrap();

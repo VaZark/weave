@@ -11,7 +11,7 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use walkdir::WalkDir;
-use weave_core::{Error, Lyrics, Metadata, Result, ScannedTrack};
+use weave_player_core::{Error, Lyrics, Metadata, Result, ScannedTrack};
 
 #[cfg(feature = "audio")]
 pub use playback::LocalPlayback;
@@ -142,8 +142,10 @@ mod tests {
     }
 
     fn temp_dir() -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("weave-local-{}", uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!(
+            "weave-player-local-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         dir
     }
@@ -242,7 +244,7 @@ mod tests {
     mod audio {
         use std::time::{Duration, Instant};
 
-        use weave_core::Playback;
+        use weave_player_core::Playback;
 
         use super::*;
 

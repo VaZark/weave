@@ -1,4 +1,4 @@
-//! The CLI's side of the playback host. The player itself lives in the `weave` library; this
+//! The CLI's side of the playback host. The player itself lives in the `weave-player-lib` library; this
 //! starts a detached `weave-player host` process when a command leaves the session playing, and
 //! runs the library's embedded `Player` in the foreground for `weave-player host`.
 
@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use weave::core::Error;
-use weave::{Audio, Player, PlayerEvent, PlayerOptions};
+use weave_player_lib::core::Error;
+use weave_player_lib::{Audio, Player, PlayerEvent, PlayerOptions};
 
 use crate::Failure;
 

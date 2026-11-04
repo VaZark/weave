@@ -1,4 +1,4 @@
-use weave_core::{PlayStatus, PlayerState};
+use weave_player_core::{PlayStatus, PlayerState};
 
 use super::*;
 
@@ -114,7 +114,7 @@ mod remote {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use weave_core::{Metadata, RepeatMode, ScannedTrack};
+    use weave_player_core::{Metadata, RepeatMode, ScannedTrack};
 
     use super::*;
     use crate::player::media::Remote;
@@ -268,7 +268,7 @@ mod fake_player {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
-    use weave_core::{RepeatMode, ScannedTrack, SleepSetting};
+    use weave_player_core::{RepeatMode, ScannedTrack, SleepSetting};
 
     use super::*;
 
@@ -283,7 +283,7 @@ mod fake_player {
     struct FakePlayback(Rc<RefCell<Fake>>);
 
     impl Playback for FakePlayback {
-        fn start(&mut self, source: &str, from: Duration) -> weave_core::Result<()> {
+        fn start(&mut self, source: &str, from: Duration) -> weave_player_core::Result<()> {
             let mut f = self.0.borrow_mut();
             if f.fail_start {
                 return Err(Error::Player("device went away".into()));
@@ -310,7 +310,7 @@ mod fake_player {
         fn stop(&mut self) {
             self.0.borrow_mut().calls.push("stop".into());
         }
-        fn seek(&mut self, to: Duration) -> weave_core::Result<()> {
+        fn seek(&mut self, to: Duration) -> weave_player_core::Result<()> {
             self.0
                 .borrow_mut()
                 .calls
@@ -546,7 +546,7 @@ mod fake_player {
     fn add_unplayable(r: &mut Rig, title: &str) -> String {
         let t = ScannedTrack {
             path: format!("{title}.ogg"),
-            metadata: weave_core::Metadata {
+            metadata: weave_player_core::Metadata {
                 title: title.into(),
                 ..Default::default()
             },

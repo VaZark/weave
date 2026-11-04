@@ -15,3 +15,15 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<weaver::Error> for Error {
+    fn from(e: weaver::Error) -> Self {
+        match e {
+            weaver::Error::InvalidFilter(m) => Self::InvalidFilter(m),
+            weaver::Error::NotFound(m) => Self::NotFound(m),
+            weaver::Error::AlreadyExists(m) => Self::AlreadyExists(m),
+            weaver::Error::InvalidInput(m) => Self::InvalidInput(m),
+            weaver::Error::Storage(m) => Self::Storage(m),
+        }
+    }
+}

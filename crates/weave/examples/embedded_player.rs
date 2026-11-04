@@ -1,6 +1,6 @@
-//! A tiny "player" that embeds weave: no CLI, no separate host process.
+//! A tiny "player" that embeds weave-player-lib: no CLI, no separate host process.
 //!
-//!     cargo run -p weave --example embedded_player --features audio,media-controls -- ~/Music
+//!     cargo run -p weave-player-lib --example embedded_player --features audio,media-controls -- ~/Music
 //!
 //! It indexes the folder, starts the embedded player in this process, plays everything in random
 //! order for a little while and prints what the player reports. Media keys work too (`media-controls`).
@@ -8,9 +8,9 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use weave::{Library, Player, PlayerOptions};
+use weave_player_lib::{Library, Player, PlayerOptions};
 
-fn main() -> weave::core::Result<()> {
+fn main() -> weave_player_lib::core::Result<()> {
     let music = std::env::args_os().nth(1).map(PathBuf::from);
     let db = std::env::temp_dir().join("weave-embedded-example.db");
 

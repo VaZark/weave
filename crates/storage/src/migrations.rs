@@ -1,5 +1,5 @@
 use rusqlite::Connection;
-use weave_core::{Error, Result};
+use weave_player_core::{Error, Result};
 
 /// Until 0.1 the schema is one squashed step that is edited in place, and pre-0.1
 /// databases are not migrated: delete and re-import. `PRAGMA user_version` therefore holds
@@ -8,7 +8,7 @@ use weave_core::{Error, Result};
 /// At 0.1 this becomes a list of append-only numbered migrations.
 const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          id       TEXT PRIMARY KEY,       -- opaque internal key, never shown to users
-         slug     TEXT NOT NULL UNIQUE,   -- public ID, see weave_core::track_slug
+         slug     TEXT NOT NULL UNIQUE,   -- public ID, see weave_player_core::track_slug
          added_at INTEGER NOT NULL,       -- unix seconds
          artist_id TEXT REFERENCES artists(id) ON DELETE SET NULL,
          album_id  TEXT REFERENCES albums(id) ON DELETE SET NULL
@@ -23,7 +23,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          id        TEXT PRIMARY KEY,       -- opaque internal key
          slug      TEXT NOT NULL UNIQUE,   -- public ID; the user may change it
          name      TEXT NOT NULL,
-         name_norm TEXT NOT NULL           -- weave_core::entity_norm
+         name_norm TEXT NOT NULL           -- weave_player_core::entity_norm
      );
      CREATE INDEX artists_name ON artists(name_norm);
      -- Featured artists of a track (`Song feat. Guest`); the primary artist is tracks.artist_id.
@@ -94,38 +94,6 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          playback INTEGER NOT NULL DEFAULT 1        -- 0 = remote-only, never plays audio
      );
      INSERT INTO instance (id) VALUES (1);
-     -- Tags: an optional key and a value (`genre:bachata`, `practice`), at most one parent.
-     -- Identity is independent of the parent; assignments are explicit and flat, and the tree
-     -- only widens queries. Cycles are rejected in code, in the same transaction as the change.
-     CREATE TABLE tags (
-         id              INTEGER PRIMARY KEY,
-         name            TEXT NOT NULL,            -- display spelling, `key:value`
-         normalized_name TEXT NOT NULL UNIQUE,     -- lookup identity
-         key             TEXT,                     -- lowercase; NULL for an unkeyed tag
-         value           TEXT NOT NULL,
-         parent_id       INTEGER REFERENCES tags(id)
-     );
-     CREATE INDEX tags_parent  ON tags(parent_id);
-     CREATE INDEX tags_key ON tags(key);
-     CREATE TABLE track_tags (
-         track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-         tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-         PRIMARY KEY (track_id, tag_id)
-     );
-     CREATE INDEX track_tags_tag ON track_tags(tag_id, track_id);
-     -- The same tags on artists, albums and playlists.
-     CREATE TABLE artist_tags (
-         artist_id TEXT NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
-         tag_id    INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-         PRIMARY KEY (artist_id, tag_id)
-     );
-     CREATE INDEX artist_tags_tag ON artist_tags(tag_id, artist_id);
-     CREATE TABLE album_tags (
-         album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
-         tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-         PRIMARY KEY (album_id, tag_id)
-     );
-     CREATE INDEX album_tags_tag ON album_tags(tag_id, album_id);
      CREATE TABLE playlists (
          id              TEXT PRIMARY KEY,   -- slug, the public ID
          name            TEXT NOT NULL,
@@ -141,13 +109,7 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
          PRIMARY KEY (playlist_id, track_id)
      );
      CREATE INDEX playlist_tracks_order ON playlist_tracks(playlist_id, play_order);
-     CREATE TABLE playlist_tags (
-         playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-         tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-         PRIMARY KEY (playlist_id, tag_id)
-     );
-     CREATE INDEX playlist_tags_tag ON playlist_tags(tag_id, playlist_id);
-     -- Playback session: a single queue and its state (see weave_core::Queue).
+     -- Playback session: a single queue and its state (see weave_player_core::Queue).
      CREATE TABLE queue_items (
          position  INTEGER PRIMARY KEY,                 -- list order, 0-based
          track_id  TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -175,10 +137,15 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE tracks (
           current_position, volume, position_ms, position_at, start_seq, seek_seq)
          VALUES (1, 'stopped', 'off', 0, 'stop', NULL, 0, 0, NULL, 1.0, 0, 0, 0, 0);"];
 
+/// The schema: the application's own tables, then the tag tables from `weaver`.
+fn schema() -> String {
+    format!("{}\n{}", MIGRATIONS[0], crate::tags::TAGS.schema_sql())
+}
+
 /// FNV-1a over the schema text, kept positive and non-zero (zero means "empty database").
 fn fingerprint() -> i64 {
     let mut hash: u32 = 0x811c_9dc5;
-    for byte in MIGRATIONS[0].bytes() {
+    for byte in schema().bytes() {
         hash ^= u32::from(byte);
         hash = hash.wrapping_mul(0x0100_0193);
     }
@@ -206,7 +173,7 @@ pub fn run(conn: &mut Connection) -> Result<()> {
         )));
     }
     let tx = conn.transaction().map_err(db)?;
-    tx.execute_batch(MIGRATIONS[0]).map_err(db)?;
+    tx.execute_batch(&schema()).map_err(db)?;
     tx.pragma_update(None, "user_version", expected)
         .map_err(db)?;
     tx.commit().map_err(db)
@@ -259,7 +226,7 @@ mod tests {
     fn the_fingerprint_changes_with_the_schema_text() {
         assert!(fingerprint() > 0);
         let mut h = 0x811c_9dc5u32;
-        for b in format!("{}x", MIGRATIONS[0]).bytes() {
+        for b in format!("{}x", schema()).bytes() {
             h ^= u32::from(b);
             h = h.wrapping_mul(0x0100_0193);
         }

@@ -3,7 +3,7 @@
 //! (MPRIS over D-Bus) only for now. Without the `media-controls` feature, or on another platform,
 //! `start` reports that it is unavailable.
 
-use weave_core::{PlayStatus, RepeatMode};
+use weave_player_core::{PlayStatus, RepeatMode};
 
 /// A request from the OS media controls. (Only the service constructs these.)
 #[cfg_attr(not(feature = "media-controls"), allow(dead_code))]

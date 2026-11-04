@@ -1,8 +1,8 @@
-//! Persistence of the playback session (see `weave_core::Queue`). The queue is small,
+//! Persistence of the playback session (see `weave_player_core::Queue`). The queue is small,
 //! so it is stored and loaded whole, inside one transaction.
 
 use rusqlite::params;
-use weave_core::{Error, PlayerState, Queue, Result, SleepTimer, TrackId};
+use weave_player_core::{Error, PlayerState, Queue, Result, SleepTimer, TrackId};
 
 use crate::{Storage, db_err};
 

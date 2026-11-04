@@ -8,11 +8,11 @@ Weave is meant to be the engine of other players (GUI frontends are separate pro
 
 ## Decision
 
-- **Two artifacts from one workspace.** The `weave` library crate (`cargo build -p weave`) and the `weave-player` CLI (`cargo build -p weave-player`). The library build contains no CLI code or dependencies.
-- **`weave` is a facade.** It re-exports `Library` and the domain types (`weave::core`) and owns the embedded `Player`. The internal crates (`core`, `engine`, `storage`, `local`) stay separate implementation details.
-- **The player lives in the library.** Following the session, driving audio, publishing the position, the sleep timer, the OS media controls (ADR 0003) and the one-player-per-library lock are in `weave`. A `Player` is a thread with its own database connection, started with `Player::start(db, options)`, reporting typed `PlayerEvent`s on a channel.
+- **Two artifacts from one workspace.** The `weave-player-lib` library crate (`cargo build -p weave-player-lib`) and the `weave-player` CLI (`cargo build -p weave-player`). The library build contains no CLI code or dependencies.
+- **`weave-player-lib` is a facade.** It re-exports `Library` and the domain types (`weave_player_lib::core`) and owns the embedded `Player`. The internal crates (`core`, `engine`, `storage`, `local`) stay separate implementation details.
+- **The player lives in the library.** Following the session, driving audio, publishing the position, the sleep timer, the OS media controls (ADR 0003) and the one-player-per-library lock are in `weave-player-lib`. A `Player` is a thread with its own database connection, started with `Player::start(db, options)`, reporting typed `PlayerEvent`s on a channel.
 - **Embedding works like the CLI host:** the app opens a `Library` and edits the session; the `Player` follows it through the database. The embedder can supply its own audio output (`Audio::Custom`).
-- **The CLI depends on `weave` only.** Its `host` command runs the library's `Player`; what stays in the CLI is starting a detached `weave-player host` process and printing.
+- **The CLI depends on `weave-player-lib` only.** Its `host` command runs the library's `Player`; what stays in the CLI is starting a detached `weave-player host` process and printing.
 - **No default features** on the library: embedders choose `audio`, `media-controls`, `sqlite-from-source`.
 
 ## Alternatives

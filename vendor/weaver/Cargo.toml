@@ -1,0 +1,15 @@
+[package]
+name = "weaver"
+description = "Keyed, hierarchical tags on SQLite: names, assignments, a tag tree and tag filters compiled to parameterized SQL."
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+
+[features]
+# Compile and statically link SQLite instead of using the system library.
+bundled = ["rusqlite/bundled"]
+
+[dependencies]
+rusqlite = "0.37"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
