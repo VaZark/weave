@@ -52,6 +52,18 @@ fn section_all<'a>(title: &'a str, all: Dest, body: impl Into<Element<'a>>) -> E
     .into()
 }
 
+/// The most characters of a playlist's name its tile shows: about two lines.
+const PLAYLIST_NAME_MAX: usize = 25;
+
+/// `text` cut to `max` characters, with `…` where it was cut.
+fn limit_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
 impl App {
     /// A menu button: iad's `Menu`, a dropdown on desktop and a full page on narrow. Its icons and
     /// checks sit at the end of each item (iad's default).
@@ -344,29 +356,32 @@ impl App {
         // `row_layout`: the picture beside the text, always (playlists), not only when compact.
         let compact = self.compact();
         if row_layout && !compact {
-            // Playlists: a card surface of its own, with `button` adding the events, and the
-            // picture beside the text.
-            // Text never leaves the card: what does not fit is clipped at its edge.
-            let clip = |t: iced::widget::Text<'a, iad::Theme>| -> Element<'a> {
-                container(t.wrapping(iced::widget::text::Wrapping::None))
+            // Playlists: a card surface of its own, with `button` adding the events: the picture
+            // at the left and the title beside it, centered on it, the name cut at
+            // `PLAYLIST_NAME_MAX` characters (about two lines). (The kind and the
+            // count are left out; compact rows still show them.) Text wraps at words
+            // (`heading` alone never wraps).
+            let wrap = iced::widget::text::Wrapping::WordOrGlyph;
+            let body = row![
+                picture(card_picture),
+                ty::heading(limit_chars(&title, PLAYLIST_NAME_MAX))
+                    .wrapping(wrap)
                     .width(Length::Fill)
-                    .clip(true)
-                    .into()
-            };
-            let text = column![
-                clip(ty::heading(title)),
-                clip(ty::caption(subtitle).style(iad::styles::text::dim))
-            ];
-            return button(card(
-                row![picture(card_picture), text.width(Length::Fill)]
-                    .spacing(12)
-                    .align_y(Alignment::Center),
-            ))
-            .padding(0)
-            .style(iad::styles::button::events)
-            .width(Length::Fill)
-            .on_press(on_press)
-            .into();
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center);
+            let surface = container(body)
+                .padding(12) // gutter-ok: the card's own padding
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(iad::styles::container::card);
+            return button(surface)
+                .padding(0)
+                .style(iad::styles::button::events)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .on_press(on_press)
+                .into();
         }
         w::ItemCard::new(title)
             .subtitle(subtitle)
@@ -859,5 +874,22 @@ impl App {
             Dest::Playlists => self.playlists(),
             Dest::Playlist(_) | Dest::Artist(_) | Dest::Album(_) => self.detail_page(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limit_chars;
+
+    #[test]
+    fn a_long_name_is_cut_with_an_ellipsis_and_a_short_one_is_kept() {
+        assert_eq!(limit_chars("Road trip", 50), "Road trip");
+        let fifty = "x".repeat(50);
+        assert_eq!(limit_chars(&fifty, 50), fifty, "exactly the limit is kept");
+        let long = format!("{} tail", "word ".repeat(20));
+        let cut = limit_chars(&long, 50);
+        assert!(cut.chars().count() <= 50 && cut.ends_with('…'), "{cut}");
+        // Characters, not bytes: accents do not shorten the allowance.
+        assert_eq!(limit_chars(&"é".repeat(60), 50).chars().count(), 50);
     }
 }
