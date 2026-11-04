@@ -600,14 +600,17 @@ impl App {
                 .collect(),
             130.0,
         );
+        let suggested: Vec<usize> = (0..self.lib.artists().len()).skip(2).take(6).collect();
+        let no_suggestions = suggested.is_empty();
         let might_like = self.grid(
-            (0..self.lib.artists().len())
-                .skip(2)
-                .take(6)
+            suggested
+                .into_iter()
                 .map(|i| self.artist_card(i, None))
                 .collect(),
             130.0,
         );
+        // The engine records no listening history yet: until it does, usage has nothing to show.
+        let has_history = self.lib.tracks.iter().any(|t| t.plays > 0);
         let link = |label: &'static str, icon: Element<'static>, to: Dest| -> Element<'_> {
             button(card(
                 row![
@@ -667,20 +670,26 @@ impl App {
             Some(self.days),
             Message::Days,
         );
-        let mut rediscover = column![].spacing(12);
-        if !while_tracks.is_empty() {
-            rediscover = rediscover.push(
-                column![
-                    ty::heading("It's been a while"),
-                    ty::caption(format!(
-                        "Rated highly, not played for more than {} days",
-                        self.while_days
-                    )),
+        let rediscover_head = column![
+            ty::heading("It's been a while"),
+            ty::caption(format!(
+                "Rated highly, not played for more than {} days",
+                self.while_days
+            )),
+        ]
+        .spacing(4);
+        let mut rediscover = column![
+            column![
+                rediscover_head,
+                or_note(
+                    while_tracks.is_empty(),
+                    "Tracks you rate highly and have not played in a while will show up here.",
                     self.short_list(&while_tracks),
-                ]
-                .spacing(4),
-            );
-        }
+                ),
+            ]
+            .spacing(4)
+        ]
+        .spacing(12);
         rediscover = rediscover
             .push(section(
                 "Your most listened artists",
@@ -698,15 +707,40 @@ impl App {
                     self.short_list(&top_tracks),
                 ),
             ));
+        let usage_block: Element<'_> = if has_history {
+            column![
+                row![ty::heading("Usage"), space::horizontal(), days].align_y(Alignment::Center),
+                usage,
+                ty::caption("Sample data: Explore needs play and jam history from the engine."),
+            ]
+            .spacing(20)
+            .into()
+        } else {
+            column![
+                ty::heading("Usage"),
+                or_note(
+                    true,
+                    "Play some music and your listening time, tracks played and top tags will show up here.",
+                    space::vertical().height(0),
+                ),
+            ]
+            .spacing(8)
+            .into()
+        };
         let page = column![
             links,
-            row![ty::heading("Usage"), space::horizontal(), days].align_y(Alignment::Center),
-            usage,
-            ty::caption("Sample data: Explore needs play and jam history from the engine."),
+            usage_block,
             ty::title_3("Rediscover"),
             rediscover,
             ty::title_3("Explore"),
-            section("You might like", might_like),
+            section(
+                "You might like",
+                or_note(
+                    no_suggestions,
+                    "Suggestions will show up here as your library grows.",
+                    might_like,
+                ),
+            ),
         ]
         .spacing(20);
         surface::scrolling(page)
@@ -927,20 +961,37 @@ impl App {
 
     // ---- dispatch ---------------------------------------------------------------------------
 
-    /// Home with nothing in the library: a title and an Import button (it asks for a folder; the
-    /// menu also imports single files).
-    fn empty_library(&self) -> Element<'_> {
+    /// A page with nothing to show: an icon, a title, a line saying what will appear and how, and
+    /// an optional action.
+    fn empty_page(
+        &self,
+        icon: Icon,
+        title: &'static str,
+        description: Option<&'static str>,
+        action: Option<(&'static str, Message)>,
+    ) -> Element<'_> {
         let dim = self.theme().semantic.dim_solid();
-        container(
-            w::status_page::<Message>()
-                .icon(Icon::MusicNote.colored(64.0, dim))
-                .title("No tracks yet")
-                .child(
-                    w::suggested_pill_button(ty::body("Import")).on_press(Message::Import(false)),
-                ),
+        let mut page = w::status_page::<Message>()
+            .icon(icon.colored(64.0, dim))
+            .title(title);
+        if let Some(d) = description {
+            page = page.description(d);
+        }
+        if let Some((label, m)) = action {
+            page = page.child(w::suggested_pill_button(ty::body(label)).on_press(m));
+        }
+        container(page).center(Length::Fill).into()
+    }
+
+    /// A library with nothing in it: a title and an Import button (it asks for a folder; the menu
+    /// also imports single files). Every page that lists the library shows this.
+    fn empty_library(&self, title: &'static str) -> Element<'_> {
+        self.empty_page(
+            Icon::MusicNote,
+            title,
+            None,
+            Some(("Import", Message::Import(false))),
         )
-        .center(Length::Fill)
-        .into()
     }
 
     /// The current page, without the layout around it.
@@ -951,8 +1002,20 @@ impl App {
         if self.searching {
             return self.results_page();
         }
+        let empty = self.lib.tracks.is_empty();
         match self.dest {
-            Dest::Home if self.lib.tracks.is_empty() => self.empty_library(),
+            Dest::Home | Dest::Explore | Dest::Tracks if empty => {
+                self.empty_library("No tracks yet")
+            }
+            Dest::Artists if empty => self.empty_library("No artists yet"),
+            Dest::Albums if empty => self.empty_library("No albums yet"),
+            Dest::Recent if empty => self.empty_library("No tracks yet"),
+            Dest::Playlists if self.lib.playlists.is_empty() => self.empty_page(
+                Icon::MusicNote,
+                "No playlists yet",
+                Some("Save a jam as a playlist and it will show up here."),
+                Some(("Open Jam", Message::ToggleJam)),
+            ),
             Dest::Home => self.home(),
             Dest::Explore => self.explore(),
             Dest::Recent | Dest::Tracks => self.track_page(),

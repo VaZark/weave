@@ -501,6 +501,8 @@ impl App {
                 "albums" => vec![Message::Go(Dest::Albums)],
                 "playing-queue" => vec![Message::NowPlaying(true), Message::ToggleQueue],
                 "artists" => vec![Message::Go(Dest::Artists)],
+                "playlists" => vec![Message::Go(Dest::Playlists)],
+                "recent" => vec![Message::Go(Dest::Recent)],
                 "popover" => vec![Message::SearchOpen(true)],
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
                 "playlist-in" => vec![Message::Open(Dest::Playlist(0))],
@@ -1700,6 +1702,30 @@ mod tests {
         let _ = a.update(Message::TogglePlay);
         let _ = a.update(Message::Next);
         assert!(a.player.queue.is_empty());
+    }
+
+    #[test]
+    fn list_pages_show_an_empty_page_instead_of_a_blank_one() {
+        // A library with tracks but no playlists and no listening history.
+        let (backend, mut lib) = backend::sample::backend();
+        for t in &mut lib.tracks {
+            t.plays = 0;
+        }
+        let mut a = App::with(backend, lib).0;
+        assert!(a.lib.playlists.is_empty() && a.lib.recently_played(1).is_empty());
+        for dest in [
+            Dest::Playlists,
+            Dest::Recent,
+            Dest::Explore,
+            Dest::Artists,
+            Dest::Albums,
+        ] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+        }
+        // Without a history Recent tracks falls back to what was added last, so it is not blank.
+        let _ = a.update(Message::Open(Dest::Recent));
+        assert!(!a.rows.is_empty());
     }
 
     #[test]
