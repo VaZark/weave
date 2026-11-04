@@ -7,7 +7,7 @@ use iad::adaptive::adaptive;
 use iad::widget::{self as w, typography as ty};
 use iad::window::{Chrome, State as WindowState};
 use iad::{Icon, style};
-use iced::widget::{column, container, mouse_area, row, space, stack, text, text_input};
+use iced::widget::{column, container, row, text, text_input};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
@@ -21,102 +21,9 @@ pub const BAR_H: f32 = 65.0;
 pub const TAB_H: f32 = 56.0;
 pub const MINI_H: f32 = 60.0;
 
-/// The one place the page gutter exists. A page is built only from these: nothing else in the app
-/// may hard-code a gutter (a test fails if a page file does), so every page, in either density,
-/// keeps the same distance from the window edge. The base is iad's `Container`.
-pub(crate) mod surface {
-    use super::*;
-
-    /// The gutter: headings, cards and the edges of lists keep this far from the window edge.
-    const GUTTER: f32 = 16.0;
-    /// Breathing room above and below a toolbar band.
-    const BAND: f32 = 8.0;
-
-    fn sides() -> iced::Padding {
-        iced::Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: GUTTER,
-            right: GUTTER,
-        }
-    }
-
-    fn base<'a>(content: impl Into<Element<'a>>, padding: iced::Padding) -> Element<'a> {
-        w::Container::new(content)
-            .fluid(true)
-            .padding(padding)
-            .into()
-    }
-
-    /// A page that scrolls. The surface is inside the scrollable, so the scroll bar stays at the
-    /// window edge while the content keeps the gutter on every side.
-    pub fn scrolling<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-        iced::widget::scrollable(base(content, iced::Padding::from(GUTTER)))
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// A page that does not scroll as a whole (a jam, a sheet's body): the gutter on every side.
-    pub fn full<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-        container(base(content, iced::Padding::from(GUTTER)))
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// A band inside a page (a section, a heading, a list header): the side gutter only.
-    pub fn band<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-        base(content, sides())
-    }
-
-    /// A toolbar band (the play row, a search entry): the side gutter and a little air.
-    pub fn toolbar<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-        base(
-            content,
-            iced::Padding {
-                top: BAND,
-                bottom: BAND,
-                ..sides()
-            },
-        )
-    }
-
-    /// A row of a flat list: inset so its hover surface starts on the gutter.
-    pub fn row<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-        container(base(content, sides()))
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// The padding of a bar (the player bar): the gutter at the sides.
-    pub fn bar_padding() -> iced::Padding {
-        iced::Padding {
-            top: BAND,
-            bottom: BAND,
-            ..sides()
-        }
-    }
-}
-
-/// Shows `content` through a window of `height`, translating it instead of squeezing it: a
-/// scrollable that does not scroll gives its content unbounded room. `from_bottom` pins the
-/// content's bottom to the window's bottom (it is pushed up as the window shrinks).
-fn clip<'a>(content: Element<'a>, height: f32, from_bottom: bool) -> Element<'a> {
-    let s = iced::widget::scrollable(content)
-        .direction(iced::widget::scrollable::Direction::Vertical(
-            iced::widget::scrollable::Scrollbar::hidden(),
-        ))
-        .width(Length::Fill)
-        .height(Length::Fixed(height));
-    if from_bottom {
-        s.anchor_bottom().into()
-    } else {
-        s.into()
-    }
-}
-
 pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
     container(content)
-        .padding(12)
+        .padding(12) // gutter-ok: a component's own padding, not a page gutter
         .style(style::container::card)
         .into()
 }
@@ -246,7 +153,7 @@ impl App {
             Message::Bpm,
             Some(Message::ClearFilter),
         ))
-        .padding(12)
+        .padding(12) // gutter-ok: a component's own padding, not a page gutter
         .style(style::container::popover);
         w::Popover::new(self.filter_badge(), surface)
             .popover_width(420.0)
@@ -275,38 +182,15 @@ impl App {
 
     // ---- sheets -----------------------------------------------------------------------
 
-    /// The height of the page area (or, on narrow, the whole body): how far Now Playing travels.
-    pub fn region_h(&self) -> f32 {
-        let h = (self.win_h - 2.0).max(200.0);
-        if self.is_narrow() {
-            h
-        } else {
-            (h - HEADER_H - BAR_H).max(200.0)
-        }
-    }
-
-    /// Now Playing slides up over `base` and slides back down when it closes: it stays mounted
-    /// while it moves. (The queue is not a sheet: it is page content that slides in.)
-    fn sheets<'a>(&'a self, base: Element<'a>) -> Element<'a> {
-        if !self.np_slide.mounted() {
-            return base;
-        }
-        let e = self.np_slide.eased();
-        let layer: Element<'a> = if e >= 0.999 {
-            self.now_playing_view()
-        } else {
-            let h = self.region_h();
-            container(column![
-                space::vertical().height(Length::Fixed((1.0 - e) * h)),
-                container(self.now_playing_view()).height(Length::Fixed(h)),
-            ])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .clip(true)
+    /// Now Playing is a bottom sheet over `base`: iad's `Dock` (full size, overlay) shows and hides
+    /// it with its slide, in both directions.
+    fn np_dock<'a>(&'a self, base: Element<'a>) -> Element<'a> {
+        w::Dock::new(base, self.now_playing_view())
+            .open(self.now_playing)
+            .size(w::DockSize::FullScreen)
+            .mode(w::DockMode::Overlay)
+            .scrim(false)
             .into()
-        };
-        // The layer sits over the page: it swallows presses so they do not reach what is below.
-        stack![base, mouse_area(layer).on_press(Message::Noop)].into()
     }
 
     // ---- layouts ----------------------------------------------------------------------
@@ -317,38 +201,32 @@ impl App {
     }
 
     /// The queue opening or closing: the same final layout, only animated. The now-playing bar
-    /// rises from the bottom to the top with the page (or Now Playing, if it is open) pushed up
-    /// ahead of it, and the space it leaves below becomes the queue; closing runs it backwards.
-    /// Nothing about the layouts at either end changes.
+    /// rises from the bottom to the top with the page pushed up ahead of it, and the space it
+    /// leaves below becomes the queue; closing runs it backwards. Nothing about the layouts at
+    /// either end changes. Both halves are iad `ClipWindow`s: the content is translated, never
+    /// squeezed.
     fn queue_stage(&self) -> Element<'_> {
         let narrow = self.is_narrow();
-        let e = self.queue_slide.eased();
+        let e = self.queue_slide.shown();
         let bar_h = if narrow { MINI_H } else { BAR_H };
         // The page area: what is left of the window under the header (and above the tabs) after
         // the bar.
         let p = (self.win_h - 2.0 - HEADER_H - if narrow { TAB_H } else { 0.0 } - bar_h).max(120.0);
-        // Above the bar: Now Playing if it is open, else the page, pinned to the bottom of a
-        // shrinking clip, so the rising bar pushes it up and out.
-        let top: Element<'_> = if self.np_slide.mounted() {
-            container(self.now_playing_view())
-                .height(Length::Fixed(p))
-                .into()
-        } else {
-            container(self.content()).height(Length::Fixed(p)).into()
-        };
-        let above = clip(top, (1.0 - e) * p, true);
+        // Above the bar: the page, pinned to the bottom of a shrinking window, so the rising bar
+        // pushes it up and out.
+        let above = w::ClipWindow::new(container(self.content()).height(Length::Fixed(p)))
+            .height((1.0 - e) * p)
+            .anchor(w::ClipAnchor::Bottom);
         // Below the bar: the queue, revealed from the bar down.
-        let below = clip(
-            container(self.queue_body()).height(Length::Fixed(p)).into(),
-            e * p,
-            false,
-        );
+        let below = w::ClipWindow::new(container(self.queue_body()).height(Length::Fixed(p)))
+            .height(e * p)
+            .anchor(w::ClipAnchor::Top);
         column![above, self.now_bar(), below].into()
     }
 
     /// The page area when the queue is (or is becoming) the page.
     fn queue_area(&self) -> Element<'_> {
-        if self.queue_slide.shown >= 1.0 {
+        if self.queue_slide.shown() >= 1.0 {
             container(self.queue_page()).height(Length::Fill).into()
         } else {
             self.queue_stage()
@@ -361,7 +239,7 @@ impl App {
         }
         column![
             self.header(),
-            container(self.sheets(self.content())).height(Length::Fill),
+            container(self.np_dock(self.content())).height(Length::Fill),
             self.player_bar(),
         ]
         .into()
@@ -422,7 +300,7 @@ impl App {
                     Message::ToggleJam
                 ),
             ]
-            .padding(4),
+            .padding(4), // gutter-ok: a component's own padding, not a page gutter
         )
         .style(style::container::headerbar)
         .into()
@@ -440,10 +318,6 @@ impl App {
                 self.tab_bar(),
             ]
         };
-        if self.queue_slide.mounted() {
-            // The queue's own animation carries Now Playing with it.
-            return body.into();
-        }
-        self.sheets(body.into())
+        self.np_dock(body.into())
     }
 }

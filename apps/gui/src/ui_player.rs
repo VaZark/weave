@@ -11,8 +11,8 @@ use iced_adaptive_design as iad;
 use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
 use crate::icons::cover;
-use crate::ui::surface;
 use crate::{App, Element, LYRICS, Message};
+use iad::widget::surface;
 
 impl App {
     fn play_pause(&self, size: f32) -> Element<'_> {
@@ -124,7 +124,7 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center)
-            .padding([6, 12]),
+            .padding([6, 12]), // gutter-ok: a component's own padding, not a page gutter
         ])
         .style(style::container::headerbar)
         .into()
@@ -178,6 +178,18 @@ impl App {
         };
         let list = ReorderableList::of(&self.player.up_next, |id: &usize| {
             let t = &self.lib.tracks[*id];
+            row![
+                column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
+                    .width(Length::Fill),
+                ty::caption(t.duration()),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .padding([4, 8]) // gutter-ok: a component's own padding, not a page gutter
+            .into()
+        })
+        // The delete button, before the drag handle.
+        .row_action(|id: &usize| {
             let at = self
                 .player
                 .up_next
@@ -185,18 +197,10 @@ impl App {
                 .iter()
                 .position(|x| x == id)
                 .unwrap_or(0);
-            row![
-                column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
-                    .width(Length::Fill),
-                ty::caption(t.duration()),
-                w::icon_button(Icon::Delete).on_press(Message::QueueRemove(at)),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .padding([4, 8])
-            .into()
+            w::icon_button(Icon::Delete)
+                .on_press(Message::QueueRemove(at))
+                .into()
         })
-        .controls(false)
         .on_event(Message::Queue);
         let mut controls = row![
             w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue),

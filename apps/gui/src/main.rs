@@ -120,8 +120,6 @@ pub enum Message {
     Resized(f32, f32),
     /// An animation frame (while a sheet or the queue slides).
     Frame(Instant),
-    /// Swallows a press (the sliding layers sit over the page and must not pass clicks through).
-    Noop,
     Tick(Instant),
     Transition(Event<Layout>),
     Window(iad::window::Action),
@@ -135,9 +133,8 @@ pub enum Message {
     /// The jam is a page: this shows it, or goes back to the page you were on.
     ToggleJam,
     ToggleExplore,
-    ToggleCompact,
-    SetCompact(bool),
     OpenSettings,
+    SetDensity(DensityPref),
     CloseSettings,
     WhileDays(u32),
     ToggleFavorite(String),
@@ -203,10 +200,9 @@ pub enum Message {
     Repeat,
     Queue(ReorderEvent),
     Progress,
-    // Development: `WEAVE_GUI_SHOT=file.png` saves a screenshot of the window and quits;
+    // Development: `ICED_ADAPTIVE_DESIGN_SCREENSHOT=file.png` saves a screenshot and quits;
     // `WEAVE_GUI_START=jam|search|library|artists|popover|playlist|dialog|artist|album|playing|queue|lyrics` opens that state first.
-    Shoot,
-    Shot(iced::window::Screenshot),
+    Captured(Result<std::path::PathBuf, String>),
 }
 
 /// The track whose tags are being edited in the dialog.
@@ -250,42 +246,74 @@ impl Player {
     }
 }
 
-/// How far a sliding layer is: 0 hidden, 1 shown. It moves toward its target at a fixed speed
-/// and is eased when drawn, so opening and closing both animate (iad's own sheet entrance only
-/// animates in).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Slide {
-    pub shown: f32,
+/// How dense the app's lists are: the desktop's setting (`[appearance] density`) unless the user
+/// chooses one here. This is the app's own preference, not the desktop config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DensityPref {
+    #[default]
+    Desktop,
+    Default,
+    Compact,
 }
 
-/// How long a slide takes, end to end.
-const SLIDE_SECS: f32 = 0.28;
+impl DensityPref {
+    pub const ALL: [DensityPref; 3] = [
+        DensityPref::Desktop,
+        DensityPref::Default,
+        DensityPref::Compact,
+    ];
+}
+
+impl std::fmt::Display for DensityPref {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DensityPref::Desktop => "Follow the desktop",
+            DensityPref::Default => "Default",
+            DensityPref::Compact => "Compact",
+        })
+    }
+}
+
+/// The queue's opening animation: iad's `Progress`, driven each frame, so iad's dev switch that
+/// holds animations holds this one too. `shown` is 0 (closed) to 1 (open), already eased.
+#[derive(Debug, Clone)]
+pub struct Slide {
+    progress: iad::animation::Progress,
+}
+
+impl Default for Slide {
+    fn default() -> Self {
+        Self {
+            progress: iad::animation::Progress::new(0.0),
+        }
+    }
+}
 
 impl Slide {
-    /// Moves toward open or closed by `dt` seconds; `true` while still moving.
-    pub fn step(&mut self, open: bool, dt: f32) -> bool {
-        let target = if open { 1.0 } else { 0.0 };
-        if !iad::animation::enabled() {
-            self.shown = target;
-            return false;
-        }
-        let d = dt / SLIDE_SECS;
-        self.shown = if open {
-            (self.shown + d).min(1.0)
-        } else {
-            (self.shown - d).max(0.0)
-        };
-        self.shown != target
+    pub fn shown(&self) -> f32 {
+        self.progress.shown
     }
 
-    /// Ease-out: fast at first, settling at the end.
-    pub fn eased(self) -> f32 {
-        1.0 - (1.0 - self.shown).powi(3)
+    /// Moves toward open or closed as of `now`; `true` while it is still moving.
+    pub fn drive(&mut self, open: bool, now: Instant) -> bool {
+        let spec = if iad::animation::enabled() {
+            iad::animation::Spec::Timed(
+                Duration::from_millis(280),
+                iad::animation::Easing::EaseOutCubic,
+            )
+        } else {
+            iad::animation::Spec::Instant
+        };
+        self.progress.drive(if open { 1.0 } else { 0.0 }, now, spec)
     }
 
     /// Whether it is on screen at all (opening, open or closing).
-    pub fn mounted(self) -> bool {
-        self.shown > 0.0
+    pub fn mounted(&self) -> bool {
+        self.progress.shown > 0.0
+    }
+
+    pub fn is_open_at(&self, open: bool) -> bool {
+        self.progress.shown == if open { 1.0 } else { 0.0 }
     }
 }
 
@@ -313,11 +341,7 @@ pub struct App {
     pub jam_open: bool,
     pub now_playing: bool,
     pub queue_open: bool,
-    pub np_slide: Slide,
     pub queue_slide: Slide,
-    last_frame: Option<Instant>,
-    /// Development: freeze the animations where they are (`WEAVE_GUI_HOLD`).
-    hold: bool,
     /// The window's height, for how far a sheet travels.
     pub win_h: f32,
     pub show_lyrics: bool,
@@ -336,8 +360,9 @@ pub struct App {
     pub rate_track: Option<usize>,
     pub info_track: Option<usize>,
     /// One setting for every track list (and the jam's): rows without a picture, one line.
-    pub compact: bool,
     pub settings_open: bool,
+    /// The user's density choice (the desktop's by default).
+    pub density: DensityPref,
     /// "It's been a while" on Home: rated highly, not played for this many days.
     pub while_days: u32,
     pub favorites: std::collections::HashSet<String>,
@@ -365,6 +390,8 @@ pub const LYRICS: &str = "lyrics";
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        let dev = iad::dev::Switches::from_env();
+        dev.apply();
         let lib = Library::fake();
         let queue: Vec<usize> = (0..lib.tracks.len()).collect();
         let mut app = Self {
@@ -382,10 +409,7 @@ impl App {
             jam_open: false,
             now_playing: false,
             queue_open: false,
-            np_slide: Slide::default(),
             queue_slide: Slide::default(),
-            last_frame: None,
-            hold: false,
             win_h: window_size().1,
             show_lyrics: false,
             history: History::new(Place::home()),
@@ -408,8 +432,8 @@ impl App {
             edit_track: None,
             rate_track: None,
             info_track: None,
-            compact: false,
             settings_open: false,
+            density: DensityPref::Desktop,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
             sleep_left: None,
@@ -439,27 +463,15 @@ impl App {
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
                 "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
                 "library" => vec![Message::Go(Dest::Tracks)],
+                "compact-home" => vec![Message::SetDensity(DensityPref::Compact)],
                 "home-end" => vec![
                     Message::Go(Dest::Home),
                     Message::ListScroll(Viewport::new(480.0)),
                 ],
                 "explore" => vec![Message::Go(Dest::Explore)],
-                "compact-home" => vec![Message::SetCompact(true)],
-                "compact-albums" => vec![Message::SetCompact(true), Message::Go(Dest::Albums)],
-                "compact-artist" => vec![Message::SetCompact(true), Message::Go(Dest::Artist(1))],
-                "queue-mid" | "playing-queue-mid" => {
-                    // Freeze the queue's opening animation halfway (with Now Playing open, or not).
-                    app.hold = true;
-                    app.queue_open = true;
-                    // eased(0.2063) is one half
-                    app.queue_slide.shown = 0.2063;
-                    if start == "playing-queue-mid" {
-                        app.np_slide.shown = 1.0;
-                    }
-                    vec![]
-                }
+                "albums" => vec![Message::Go(Dest::Albums)],
+                "playing-queue" => vec![Message::NowPlaying(true), Message::ToggleQueue],
                 "settings" => vec![Message::OpenSettings],
-                "compact" => vec![Message::Go(Dest::Tracks), Message::ToggleCompact],
                 "artists" => vec![Message::Go(Dest::Artists)],
                 "popover" => vec![Message::SearchOpen(true)],
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
@@ -487,16 +499,13 @@ impl App {
                 tasks.push(Task::done(m));
             }
         }
-        if std::env::var_os("WEAVE_GUI_SHOT").is_some() {
-            tasks.push(Task::perform(
-                tokio::time::sleep(Duration::from_millis(
-                    std::env::var("WEAVE_GUI_DELAY")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(2500),
-                )),
-                |_| Message::Shoot,
-            ));
+        // Development switches (screenshot, holding animations) are iad's, from the environment.
+        if dev.screenshot.is_some() {
+            tasks.push(
+                iced::window::oldest()
+                    .and_then(move |id| dev.capture(id).unwrap_or_else(Task::none))
+                    .map(Message::Captured),
+            );
         }
         (app, Task::batch(tasks))
     }
@@ -681,28 +690,8 @@ impl App {
                 self.win_h = h;
                 self.adaptive.resize(w, now)
             }
-            Message::Noop => Vec::new(),
-            Message::Frame(_) if self.hold => Vec::new(),
             Message::Frame(t) => {
-                let dt = self
-                    .last_frame
-                    .map_or(1.0 / 60.0, |p| t.saturating_duration_since(p).as_secs_f32())
-                    .min(0.1);
-                self.last_frame = Some(t);
-                let (np, q) = (self.now_playing, self.queue_open);
-                self.queue_slide.step(q, dt);
-                if q && self.np_slide.mounted() {
-                    // Now Playing was open when the queue was chosen: it is held while the queue's
-                    // push animation carries it up, then gone.
-                    if self.queue_slide.shown >= 1.0 {
-                        self.np_slide.shown = 0.0;
-                    }
-                } else {
-                    self.np_slide.step(np, dt);
-                }
-                if !self.animating() {
-                    self.last_frame = None;
-                }
+                self.queue_slide.drive(self.queue_open, t);
                 Vec::new()
             }
             Message::Tick(t) => self.adaptive.tick(t),
@@ -764,8 +753,8 @@ impl App {
                 }
                 return self.update(Message::Go(Dest::Explore));
             }
-            Message::SetCompact(on) => {
-                self.compact = on;
+            Message::SetDensity(d) => {
+                self.density = d;
                 Vec::new()
             }
             Message::OpenSettings => {
@@ -774,10 +763,6 @@ impl App {
             }
             Message::CloseSettings => {
                 self.settings_open = false;
-                Vec::new()
-            }
-            Message::ToggleCompact => {
-                self.compact = !self.compact;
                 Vec::new()
             }
             Message::WhileDays(d) => {
@@ -1172,11 +1157,9 @@ impl App {
                 Vec::new()
             }
             Message::Queue(e) => {
+                // A live list: the drop is committed at once, into the queue after the playing
+                // track.
                 self.player.up_next.apply(e);
-                // The list is always being edited: a drop is committed at once, into the queue
-                // after the playing track.
-                self.player.up_next.submit();
-                self.player.up_next.edit();
                 let keep = self
                     .player
                     .current
@@ -1188,22 +1171,7 @@ impl App {
                     .extend_from_slice(self.player.up_next.items());
                 Vec::new()
             }
-            Message::Shoot => {
-                return iced::window::oldest()
-                    .and_then(iced::window::screenshot)
-                    .map(Message::Shot);
-            }
-            Message::Shot(shot) => {
-                if let Some(path) = std::env::var_os("WEAVE_GUI_SHOT") {
-                    let size = shot.size;
-                    if let Some(img) =
-                        image::RgbaImage::from_raw(size.width, size.height, shot.rgba.to_vec())
-                    {
-                        let _ = img.save(path);
-                    }
-                }
-                return iced::exit();
-            }
+            Message::Captured(_) => return iced::exit(),
             Message::Progress => {
                 if let Some(left) = &mut self.sleep_left {
                     *left -= 0.25;
@@ -1261,13 +1229,21 @@ impl App {
 
     /// Whether a sheet or the queue is still sliding.
     pub fn animating(&self) -> bool {
-        (self.np_slide.shown != if self.now_playing { 1.0 } else { 0.0 })
-            || (self.queue_slide.shown != if self.queue_open { 1.0 } else { 0.0 })
+        !self.queue_slide.is_open_at(self.queue_open)
+    }
+
+    /// Compact lists: the user's choice, or else the desktop's density.
+    pub fn compact(&self) -> bool {
+        match self.density {
+            DensityPref::Compact => true,
+            DensityPref::Default => false,
+            DensityPref::Desktop => iad::config::current().density == iad::config::Density::Compact,
+        }
     }
 
     /// The height of a row in every track list.
     pub fn row_h(&self) -> f32 {
-        if self.compact { ROW_COMPACT } else { ROW }
+        if self.compact() { ROW_COMPACT } else { ROW }
     }
 
     /// Keeps the lyrics of the playing track and the line to highlight; scrolls when it moves.
@@ -1318,11 +1294,9 @@ impl App {
     }
 }
 
-/// A queue that is always in edit mode: its rows can be dragged and removed at any time.
+/// A queue that is always editable: a live list commits every drop at once.
 fn editing_queue(items: Vec<usize>) -> ReorderState<usize> {
-    let mut q = ReorderState::new(items);
-    q.edit();
-    q
+    ReorderState::live(items)
 }
 
 /// Adds `tag` to the list, or removes it when it is there.
@@ -1426,17 +1400,21 @@ mod tests {
     }
 
     #[test]
-    fn compact_is_one_setting_for_every_list() {
+    fn density_is_the_users_choice_or_the_desktops_for_every_list() {
         let mut a = app();
-        let normal = a.row_h();
-        let _ = a.update(Message::ToggleCompact);
-        assert!(a.row_h() < normal);
+        let desktop = iad::config::current().density == iad::config::Density::Compact;
+        assert_eq!(a.compact(), desktop, "follows the desktop by default");
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
+        assert!(a.compact());
+        assert_eq!(a.row_h(), ROW_COMPACT);
         // the jam's list uses the same height
         let _ = a.update(Message::ToggleJam);
-        assert!(a.jam_open);
         assert_eq!(a.row_h(), ROW_COMPACT);
         let _ = a.update(Message::ToggleJam);
         assert!(!a.jam_open, "the jam button toggles the page");
+        let _ = a.update(Message::SetDensity(DensityPref::Default));
+        assert!(!a.compact());
+        assert_eq!(a.row_h(), ROW);
     }
 
     #[test]
@@ -1450,7 +1428,6 @@ mod tests {
             a.player.queue.len() - cur - 1
         );
         assert!(!a.player.up_next.items().contains(&playing));
-        assert!(a.player.up_next.is_editing());
         // removing the last upcoming row
         let n = a.player.queue.len();
         let last = a.player.up_next.items().len() - 1;
@@ -1461,7 +1438,6 @@ mod tests {
             Some(playing),
             "the playing track is untouched"
         );
-        assert!(a.player.up_next.is_editing());
         // removing the first upcoming row never touches the playing track either
         let _ = a.update(Message::QueueRemove(0));
         assert_eq!(a.now().map(|t| t.id), Some(playing));
@@ -1521,13 +1497,13 @@ mod tests {
         let mut a = app();
         let _ = a.update(Message::OpenSettings);
         assert!(a.settings_open);
-        let _ = a.update(Message::SetCompact(true));
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
         let _ = a.update(Message::WhileDays(365));
-        assert!(a.compact);
+        assert!(a.compact());
         assert_eq!(a.while_days, 365);
         let _ = a.update(Message::CloseSettings);
         assert!(!a.settings_open);
-        assert!(a.compact, "closing keeps what was set");
+        assert_eq!(a.while_days, 365, "closing keeps what was set");
     }
 
     #[test]
@@ -1554,108 +1530,47 @@ mod tests {
     }
 
     #[test]
-    fn a_slide_opens_and_closes_toward_its_target_and_is_mounted_while_it_moves() {
+    fn the_queue_slide_opens_and_closes_toward_its_target() {
         let mut sl = Slide::default();
         assert!(!sl.mounted());
-        // opening: never goes backwards, ends fully shown
+        let t0 = Instant::now();
         let mut last = 0.0;
-        for _ in 0..40 {
-            sl.step(true, 1.0 / 60.0);
-            assert!(sl.shown >= last);
-            last = sl.shown;
+        for i in 0..80u32 {
+            sl.drive(true, t0 + Duration::from_millis(16) * i);
+            assert!(sl.shown() >= last - 1e-6, "opening never goes backwards");
+            last = sl.shown();
         }
-        assert_eq!(sl.shown, 1.0);
-        assert!((sl.eased() - 1.0).abs() < 1e-6);
+        assert_eq!(sl.shown(), 1.0);
         // closing: still mounted partway, gone at the end
+        let t1 = t0 + Duration::from_millis(16) * 80;
+        sl.drive(false, t1);
+        sl.drive(false, t1 + Duration::from_millis(40));
         if iad::animation::enabled() {
-            sl.step(false, 0.05);
-            assert!(sl.mounted() && sl.shown < 1.0, "mounted while it closes");
+            assert!(sl.mounted() && sl.shown() < 1.0, "mounted while it closes");
         }
-        for _ in 0..40 {
-            sl.step(false, 1.0 / 60.0);
+        for i in 0..80u32 {
+            sl.drive(false, t1 + Duration::from_millis(16) * (i + 3));
         }
-        assert_eq!(sl.shown, 0.0);
+        assert_eq!(sl.shown(), 0.0);
         assert!(!sl.mounted());
     }
 
     #[test]
-    fn the_app_animates_only_while_a_layer_is_between_states() {
+    fn the_app_animates_only_while_the_queue_is_between_states() {
         let mut a = app();
         assert!(!a.animating());
-        let _ = a.update(Message::NowPlaying(true));
+        let _ = a.update(Message::ToggleQueue);
         assert!(
             a.animating(),
             "opening: the target moved, the slide has not caught up"
         );
         let t0 = Instant::now();
-        for i in 0..60u32 {
+        for i in 0..80u32 {
             let _ = a.update(Message::Frame(t0 + Duration::from_millis(16) * i));
         }
         assert!(!a.animating());
-        assert!(a.np_slide.mounted());
-        let _ = a.update(Message::NowPlaying(false));
-        assert!(
-            a.np_slide.mounted(),
-            "stays mounted while it slides back down"
-        );
-    }
-
-    /// The page gutter exists in one place (`ui::surface`). A page file that sets its own
-    /// gutter, or reaches for the constant, would drift from the rest: fail instead.
-    #[test]
-    fn pages_get_their_gutter_only_from_the_surface() {
-        let files = [
-            ("ui_lists.rs", include_str!("ui_lists.rs")),
-            ("ui_dialogs.rs", include_str!("ui_dialogs.rs")),
-            ("ui_player.rs", include_str!("ui_player.rs")),
-        ];
-        for (name, src) in files {
-            assert!(
-                !src.contains("GUTTER"),
-                "{name} must not use the gutter constant"
-            );
-            // a `.padding(..)` call that mentions 16 (the gutter) in its arguments
-            for (i, _) in src.match_indices(".padding(") {
-                let rest = &src[i + ".padding(".len()..];
-                let args = &rest[..rest.find(')').unwrap_or(rest.len())];
-                let has_16 = args
-                    .split(|c: char| !(c.is_ascii_digit() || c == '.'))
-                    .any(|t| t == "16" || t == "16.0");
-                assert!(
-                    !has_16,
-                    "{name}: `.padding({args})` hard-codes the gutter; use ui::surface"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn choosing_the_queue_carries_now_playing_up_with_it() {
-        let mut a = app();
-        let t0 = Instant::now();
-        let mut at = 0u32;
-        let mut run = |a: &mut App, n: u32| {
-            for _ in 0..n {
-                at += 1;
-                let _ = a.update(Message::Frame(t0 + Duration::from_millis(16) * at));
-            }
-        };
-        let _ = a.update(Message::NowPlaying(true));
-        run(&mut a, 40);
-        assert_eq!(a.np_slide.shown, 1.0);
+        assert_eq!(a.queue_slide.shown(), 1.0);
         let _ = a.update(Message::ToggleQueue);
-        assert!(a.queue_open && !a.now_playing);
-        run(&mut a, 3);
-        assert!(
-            a.np_slide.mounted() && a.queue_slide.shown < 1.0,
-            "Now Playing is held while the queue's push is under way"
-        );
-        run(&mut a, 40);
-        assert_eq!(a.queue_slide.shown, 1.0);
-        assert_eq!(
-            a.np_slide.shown, 0.0,
-            "Now Playing is gone once the queue has settled"
-        );
-        assert!(!a.animating());
+        assert!(a.animating());
     }
 }

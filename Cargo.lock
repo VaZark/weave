@@ -1735,6 +1735,7 @@ name = "iced-adaptive-design"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "image",
 ]
 
 [[package]]
@@ -4925,8 +4926,6 @@ version = "0.0.1"
 dependencies = [
  "iced",
  "iced-adaptive-design",
- "image",
- "tokio",
  "weaver",
 ]
 

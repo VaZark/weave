@@ -8,11 +8,17 @@ use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
+use crate::components::media_list::MediaListLayout;
 use crate::data::{Filter, Track};
 use crate::icons::{cover, playlist_avatar};
-use crate::ui::{card, surface};
+use crate::ui::card;
 use crate::{App, Col, Dest, Element, Message};
 use iad::color::{from_index, from_seed};
+use iad::widget::surface;
+
+/// The album column of a wide track list; the title takes what the others leave.
+const ALBUM_WIDTH: f32 = 240.0;
+const TIME_WIDTH: f32 = 56.0;
 
 /// What a track row shows besides the title and its artist subtitle and the duration.
 #[derive(Clone, Copy)]
@@ -96,31 +102,31 @@ impl App {
 
     // ---- rows and lists -----------------------------------------------------------------
 
-    /// A flat row: the picture (not when compact), the title with its artist beneath it, the
-    /// album, the tempo where asked for, the duration and the menu. The whole row is the
-    /// button, so it lights up as one.
     /// The columns of a track list, written once for the header and the rows: the picture (not
     /// in compact mode), the title with its artist, the album where there is room, the tempo
     /// where asked for, the time, and the menu.
-    fn media_columns(&self, o: RowOpts) -> w::MediaColumns<Col> {
-        let mut c = w::MediaColumns::new()
-            .picture(true)
-            .compact(self.compact)
+    fn media_columns(&self, o: RowOpts) -> MediaListLayout<Col> {
+        let mut c = MediaListLayout::new(self.compact())
             .title(Col::Title, "Title")
             .subtitle(Col::Artist, "Artist");
         if o.album && !self.is_narrow() {
-            c = c.column(Col::Album, "Album", Length::FillPortion(2));
+            c = c.column(
+                Col::Album,
+                "Album",
+                Length::Fixed(ALBUM_WIDTH),
+                Horizontal::Left,
+            );
         }
         if o.bpm {
-            c = c.label("BPM", Length::Fixed(40.0)).align(Horizontal::Right);
+            c = c.plain_column("BPM", Length::Fixed(40.0), Horizontal::Right);
         }
-        c = c
-            .column(Col::Duration, "Time", Length::Fixed(w::TIME_WIDTH))
-            .align(Horizontal::Right);
-        if o.menu {
-            c = c.suffix(true);
-        }
-        c
+        c.column(
+            Col::Duration,
+            "Time",
+            Length::Fixed(TIME_WIDTH),
+            Horizontal::Right,
+        )
+        .menu(o.menu)
     }
 
     pub fn track_row<'a>(&'a self, t: &Track, o: RowOpts, on_press: Message) -> Element<'a> {
@@ -130,7 +136,7 @@ impl App {
             .subtitle(t.artist.clone())
             .height(Length::Fill)
             .on_press(on_press);
-        if !self.compact {
+        if !self.compact() {
             r = r.picture(cover(t.id, 40.0));
         }
         if o.album && !self.is_narrow() {
@@ -141,7 +147,7 @@ impl App {
         }
         r = r.cell(ty::caption(t.duration()));
         if o.menu {
-            r = r.suffix(self.track_menu(t.id, o.album));
+            r = r.menu(self.track_menu(t.id, o.album));
         }
         r.into()
     }
@@ -165,7 +171,6 @@ impl App {
             menu: true,
         })
         .header(&self.sort, Message::Sort)
-        .into()
     }
 
     /// The page's tracks as a virtualised list: only the rows in view are built.
@@ -212,7 +217,8 @@ impl App {
 
     fn play_all(&self) -> Element<'_> {
         let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
-        w::suggested_circular_button(Icon::Play.view(16.0))
+        w::suggested_circular_button(Icon::Play.view(20.0))
+            .size(44.0)
             .on_press_maybe((!ids.is_empty()).then_some(Message::PlayAll(ids)))
             .into()
     }
@@ -258,28 +264,41 @@ impl App {
 
     // ---- grids ----------------------------------------------------------------------------
 
-    /// Cards that fit the width; in compact mode (as in a music app's compact library) the same
-    /// entries are tight rows, several to a line, with a small picture and the name beside it.
+    /// Cards that fit the width, or (in compact mode) the same entries as a tight list: iad's
+    /// `CardGrid`, with the density decided once.
     fn grid<'a>(&self, items: Vec<Element<'a>>, card_width: f32) -> Element<'a> {
+        // Compact shrinks the cards into tight rows but they still flow as a grid, never as one
+        // vertical column (`CardGrid::compact` would be that).
         w::CardGrid::new(items)
-            .max_width(if self.compact { 280.0 } else { card_width })
-            .spacing(12.0)
+            .max_width(if self.compact() { 220.0 } else { card_width })
+            .spacing(if self.compact() { 8.0 } else { 12.0 })
             .into()
     }
 
-    /// One compact entry: a small picture, the name, and a line of detail.
-    fn compact_entry<'a>(
+    /// An album, an artist or a playlist: a card, or a compact row (the picture shrinks with it).
+    fn media_card<'a>(
         &self,
-        picture: Element<'a>,
-        name: String,
-        sub: String,
+        title: String,
+        subtitle: String,
+        picture: impl Fn(f32) -> Element<'a>,
+        card_picture: f32,
+        row_layout: bool,
         on_press: Message,
     ) -> Element<'a> {
-        w::MediaRow::new(name)
-            .subtitle(sub)
-            .picture(picture)
+        // `row_layout`: the picture beside the text, always (playlists), not only when compact.
+        let compact = self.compact();
+        let tile: Element<'a> = w::MediaCard::new(title)
+            .subtitle(subtitle)
+            .picture(picture(if compact { 36.0 } else { card_picture }))
+            .compact(compact || row_layout)
             .on_press(on_press)
-            .into()
+            .into();
+        // A row-shaped card keeps the card's surface, so it reads as a tile like its neighbours.
+        if row_layout && !compact {
+            card(tile)
+        } else {
+            tile
+        }
     }
 
     fn album_card(&self, i: usize, show_artist: bool) -> Element<'_> {
@@ -290,21 +309,14 @@ impl App {
         } else {
             format!("{year} · {n} tracks")
         };
-        if self.compact {
-            return self.compact_entry(cover(i, 36.0), name, sub, Message::Open(Dest::Album(i)));
-        }
-        w::card_button(
-            column![
-                container(cover(i, 88.0)).center_x(Length::Fill),
-                ty::heading(name),
-                ty::caption(sub)
-            ]
-            .spacing(4)
-            .width(Length::Fill),
+        self.media_card(
+            name,
+            sub,
+            |s| cover(i, s),
+            88.0,
+            false,
+            Message::Open(Dest::Album(i)),
         )
-        .on_press(Message::Open(Dest::Album(i)))
-        .width(Length::Fill)
-        .into()
     }
 
     fn playlist_card(&self, i: usize) -> Element<'_> {
@@ -315,37 +327,14 @@ impl App {
         } else {
             "manual"
         };
-        if self.compact {
-            return self.compact_entry(
-                playlist_avatar(&p.name, p.icon, 36.0),
-                p.name.clone(),
-                format!("{kind} · {n} tracks"),
-                Message::Open(Dest::Playlist(i)),
-            );
-        }
-        w::card_button(
-            row![
-                playlist_avatar(&p.name, p.icon, 40.0),
-                column![
-                    ty::heading(p.name.clone()),
-                    ty::caption(format!(
-                        "{} · {n} tracks",
-                        if p.filter.is_some() {
-                            "dynamic"
-                        } else {
-                            "manual"
-                        }
-                    )),
-                ]
-                .spacing(2),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .width(Length::Fill),
+        self.media_card(
+            p.name.clone(),
+            format!("{kind} · {n} tracks"),
+            |s| playlist_avatar(&p.name, p.icon, s),
+            40.0,
+            true,
+            Message::Open(Dest::Playlist(i)),
         )
-        .on_press(Message::Open(Dest::Playlist(i)))
-        .width(Length::Fill)
-        .into()
     }
 
     fn artist_card(&self, i: usize, with_plays: Option<u32>) -> Element<'_> {
@@ -354,23 +343,14 @@ impl App {
             Some(p) => format!("{p} plays"),
             None => format!("{} tracks", self.lib.artists()[i].1),
         };
-        if self.compact {
-            return self.compact_entry(
-                w::avatar(36.0, a.clone()).into(),
-                a,
-                sub,
-                Message::Open(Dest::Artist(i)),
-            );
-        }
-        w::flat_button(
-            column![w::avatar(56.0, a.clone()), ty::heading(a), ty::caption(sub)]
-                .spacing(4)
-                .align_x(Alignment::Center)
-                .width(Length::Fill),
+        self.media_card(
+            a.clone(),
+            sub,
+            |s| w::avatar(s, a.clone()).into(),
+            56.0,
+            false,
+            Message::Open(Dest::Artist(i)),
         )
-        .on_press(Message::Open(Dest::Artist(i)))
-        .width(Length::Fill)
-        .into()
     }
 
     fn artists(&self) -> Element<'_> {
@@ -603,20 +583,6 @@ impl App {
         )
     }
 
-    /// "List" at the far end: the same compact setting as the global one.
-    fn view_menu(&self) -> Element<'_> {
-        self.menu_button(
-            Icon::OpenMenu,
-            "View",
-            Menu::new("View")
-                .check_style(w::MenuCheckStyle::Mark)
-                .section([
-                    MenuItem::check("List", !self.compact, Message::ToggleCompact),
-                    MenuItem::check("Compact", self.compact, Message::ToggleCompact),
-                ]),
-        )
-    }
-
     fn detail_page(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let big = 200.0;
@@ -713,7 +679,6 @@ impl App {
             .description(description)
             .facts(facts)
             .primary(self.play_all())
-            .end(self.view_menu())
             .tint(tint)
             .narrow(narrow);
         for a in actions {

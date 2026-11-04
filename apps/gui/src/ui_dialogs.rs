@@ -9,8 +9,8 @@ use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
-use crate::ui::surface;
-use crate::{App, Element, Message, Mode3};
+use crate::{App, DensityPref, Element, Message, Mode3};
+use iad::widget::surface;
 use iad::widget::{ChipGroup, ChipOption, ChipSize, Histogram};
 
 impl App {
@@ -176,7 +176,8 @@ impl App {
         let play = column![
             space::vertical().height(Length::Fixed(14.0)),
             row![
-                w::suggested_circular_button(Icon::Play.view(16.0))
+                w::suggested_circular_button(Icon::Play.view(20.0))
+                    .size(44.0)
                     .on_press_maybe((n > 0).then_some(Message::StartJam)),
                 ty::caption(format!("{n} matches")),
                 space::horizontal(),
@@ -217,8 +218,20 @@ impl App {
                     .title("Density")
                     .description("How every list looks: tracks (including the jam's), albums, artists and playlists.")
                     .push(
-                        w::SwitchRow::new("Compact mode", self.compact, Message::SetCompact)
-                            .subtitle("Tracks on one line without pictures; albums, artists and playlists as tight rows with a small picture"),
+                        w::ComboRow::new(
+                            "Density",
+                            &DensityPref::ALL,
+                            Some(self.density),
+                            Message::SetDensity,
+                        )
+                        .subtitle(format!(
+                            "The desktop's setting is {} ([appearance] density)",
+                            if iad::config::current().density == iad::config::Density::Compact {
+                                "compact"
+                            } else {
+                                "default"
+                            }
+                        )),
                     ),
             )
             .push(
@@ -257,7 +270,7 @@ impl App {
             ]
             .spacing(12),
         )
-        .padding(20)
+        .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(520.0))
         .style(iad::style::container::popover)
         .into()
@@ -283,7 +296,7 @@ impl App {
             ]
             .spacing(10),
         )
-        .padding(20)
+        .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(520.0))
         .style(iad::style::container::popover)
         .into()
@@ -311,7 +324,7 @@ impl App {
             .spacing(10)
             .align_x(Alignment::Center),
         )
-        .padding(20)
+        .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(360.0))
         .style(iad::style::container::popover)
         .into()
@@ -360,7 +373,7 @@ impl App {
             ]
             .spacing(8),
         )
-        .padding(20)
+        .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(460.0))
         .style(iad::style::container::popover)
         .into()
@@ -425,10 +438,7 @@ impl App {
                             .on_color(Color::WHITE),
                     ]
                     .spacing(10)
-                    .padding(iced::Padding {
-                        right: 12.0,
-                        ..iced::Padding::ZERO
-                    }),
+                    .padding(iced::Padding::ZERO.right(12.0)) // gutter-ok: a component's own padding,
                 )
                 .height(Length::Fixed(340.0)),
                 row![
@@ -440,7 +450,7 @@ impl App {
             ]
             .spacing(10),
         )
-        .padding(20)
+        .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(620.0))
         .style(iad::style::container::popover)
         .into()

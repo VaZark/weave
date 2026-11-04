@@ -15,5 +15,3 @@ weaver.workspace = true
 # `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
 iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "faeed55" }
 iced = { version = "0.14", features = ["advanced", "svg", "image", "tokio", "canvas"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-tokio = { version = "1", features = ["time"] }
