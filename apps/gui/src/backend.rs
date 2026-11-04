@@ -18,8 +18,12 @@ use crate::data::Library;
 /// What the UI shows of the session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
-    /// The whole queue as library indexes; `current` indexes it.
+    /// The whole queue as library indexes, **in the order it plays**: the list order, or when
+    /// shuffle is on the shuffled order (the list itself is not reordered). `current` indexes it.
     pub queue: Vec<usize>,
+    /// For each entry of `queue`, its position in the engine's list: what the engine is asked
+    /// about when an entry is removed, moved or played.
+    pub list_at: Vec<usize>,
     pub current: Option<usize>,
     pub playing: bool,
     /// Seconds into the current track.
@@ -29,6 +33,19 @@ pub struct Snapshot {
     /// Counts the tracks started (the engine's `start_seq`): it changes when a track starts or
     /// restarts, which is when the listening history grows.
     pub started: u64,
+}
+
+/// Where `id` is in the queue: the first entry at or after the playing one, else the first
+/// anywhere.
+fn nearest(s: &Snapshot, id: usize) -> Option<usize> {
+    let from = s.current.unwrap_or(0);
+    let after = s
+        .queue
+        .iter()
+        .skip(from)
+        .position(|q| *q == id)
+        .map(|i| i + from);
+    after.or_else(|| s.queue.iter().position(|q| *q == id))
 }
 
 pub struct Backend {
@@ -160,20 +177,25 @@ impl Backend {
     }
 
     fn snapshot_of(&self, v: &SessionView) -> Snapshot {
-        // Tracks the loaded library does not know (added since) are left out; `current` is
+        // The queue as it plays: through the play order, which is the shuffled one when shuffle is
+        // on. Tracks the loaded library does not know (added since) are left out; `current` is
         // recounted over the ones kept.
         let mut queue = Vec::with_capacity(v.tracks.len());
+        let mut list_at = Vec::with_capacity(v.tracks.len());
         let mut current = None;
-        for (at, t) in v.tracks.iter().enumerate() {
+        for &at in &v.order {
+            let Some(t) = v.tracks.get(at) else { continue };
             if let Some(i) = self.index.get(&t.id.0) {
                 if v.state.current == Some(at) {
                     current = Some(queue.len());
                 }
                 queue.push(*i);
+                list_at.push(at);
             }
         }
         Snapshot {
             queue,
+            list_at,
             current,
             playing: v.state.status == PlayStatus::Playing,
             pos: v.position.as_secs_f32(),
@@ -225,6 +247,28 @@ impl Backend {
         })
     }
 
+    /// Plays a track without touching the queue: if it is queued, the highlight moves to it (the
+    /// nearest entry at or after the playing one, else the first); if not, it is added right after
+    /// the playing track (or at the end when nothing plays) and the highlight moves there.
+    pub fn play_in_queue(&mut self, id: usize) -> Snapshot {
+        let Some(slug) = self.slugs.get(id).cloned() else {
+            return self.snapshot();
+        };
+        let mut snap = self.snapshot();
+        if nearest(&snap, id).is_none() {
+            let next = snap.current.is_some();
+            let queued = self.run(|e| {
+                e.queue_add(&[slug], None, next)?;
+                e.session()
+            });
+            snap = queued;
+        }
+        match nearest(&snap, id).and_then(|at| snap.list_at.get(at).copied()) {
+            Some(list) => self.run(|e| e.queue_jump(list + 1)),
+            None => snap,
+        }
+    }
+
     /// Adds a track right after the playing one, or at the end. With nothing playing it starts.
     pub fn enqueue(&mut self, id: usize, next: bool) -> Snapshot {
         let Some(slug) = self.slugs.get(id).cloned() else {
@@ -272,12 +316,21 @@ impl Backend {
 
     /// Removes the track at `at` (0-based) of the queue.
     pub fn remove(&mut self, at: usize) -> Snapshot {
-        self.run(|e| e.queue_remove(&[at + 1]))
+        let Some(list) = self.snapshot().list_at.get(at).copied() else {
+            return self.snapshot();
+        };
+        self.run(|e| e.queue_remove(&[list + 1]))
     }
 
-    /// Moves the track at `from` to `to` (0-based) of the queue.
+    /// Moves the track at `from` to `to` (0-based) of the queue as it is shown.
+    /// With shuffle on the queue shown is the play order, so the move is made there and the
+    /// list stays as it is; otherwise the play order is the list.
     pub fn move_item(&mut self, from: usize, to: usize) -> Snapshot {
-        self.run(|e| e.queue_move(from + 1, to + 1))
+        if self.snapshot().shuffle {
+            self.run(|e| e.queue_move_in_play_order(from + 1, to + 1))
+        } else {
+            self.run(|e| e.queue_move(from + 1, to + 1))
+        }
     }
 
     /// Saves a playlist's description (empty clears it). The filter stays as it is.

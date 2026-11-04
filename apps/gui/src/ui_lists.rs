@@ -277,7 +277,7 @@ impl App {
         let rows: Vec<&Track> = self.lib.filtered(&self.filter);
         VirtualList::new(rows.len(), self.row_h(), &self.jam_vp, move |i| {
             let t = rows[i];
-            self.track_row(t, o, Message::PlayAll(vec![t.id]))
+            self.track_row(t, o, Message::PlayOne(t.id))
         })
         .on_scroll(Message::JamScroll)
         .overscan(4)
@@ -514,7 +514,7 @@ impl App {
         };
         let h = self.row_h();
         column(tracks.iter().map(|t| {
-            container(self.track_row(t, o, Message::PlayAll(vec![t.id])))
+            container(self.track_row(t, o, Message::PlayOne(t.id)))
                 .height(Length::Fixed(h))
                 .into()
         }))

@@ -171,7 +171,11 @@ pub enum Message {
     // Library.
     Sort(Col),
     /// Plays the rows of the page from this track.
+    /// A track of the page's list: the queue stays, and the highlight moves to it (the page's
+    /// list becomes the queue only when nothing is queued).
     PlayTrack(usize),
+    /// A single track from a short list: the same, with nothing else to queue.
+    PlayOne(usize),
     PlayAll(Vec<usize>),
     /// Stores the jam's filters as a dynamic playlist.
     SaveJamAsPlaylist,
@@ -837,6 +841,18 @@ impl App {
         self.rng
     }
 
+    /// Plays a track picked in a list. Nothing is cleared: with a queue, the highlight moves to the
+    /// track (queued first if it was not there). Only when the queue is empty does the list
+    /// become the queue, so Next has somewhere to go.
+    fn play_from_list(&mut self, ids: Vec<usize>, start: usize, id: usize) {
+        if self.player.queue.is_empty() {
+            self.play(ids, start);
+        } else {
+            let s = self.backend.play_in_queue(id);
+            self.apply(s);
+        }
+    }
+
     fn play(&mut self, ids: Vec<usize>, start: usize) {
         let session = self.backend.play(&ids, start);
         self.apply(session);
@@ -1090,7 +1106,11 @@ impl App {
             Message::PlayTrack(id) => {
                 let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
                 let start = ids.iter().position(|i| *i == id).unwrap_or(0);
-                self.play(ids, start);
+                self.play_from_list(ids, start, id);
+                Vec::new()
+            }
+            Message::PlayOne(id) => {
+                self.play_from_list(vec![id], 0, id);
                 Vec::new()
             }
             Message::PlayAll(ids) => {
@@ -1841,6 +1861,79 @@ mod tests {
         assert!(a.can_previous());
         // The controls build either way.
         let _ = a.view();
+    }
+
+    #[test]
+    fn playing_a_track_moves_the_highlight_in_the_queue_and_never_clears_it() {
+        let mut a = app();
+        // Nothing queued: the page's list becomes the queue, so Next has somewhere to go.
+        let _ = a.update(Message::PlayTrack(10));
+        assert_eq!(a.player.queue.len(), a.lib.tracks.len());
+        assert_eq!(a.now().map(|t| t.id), Some(10));
+        // From here on the queue stays whatever is played.
+        a.play(vec![5, 6, 7, 8], 1);
+        // A queued track: the highlight moves to it, down the queue...
+        let _ = a.update(Message::PlayTrack(8));
+        assert_eq!(a.player.queue, vec![5, 6, 7, 8]);
+        assert_eq!(a.player.current, Some(3));
+        // ...a track that is not queued is added after the playing one, and the highlight goes there...
+        let _ = a.update(Message::PlayOne(20));
+        assert_eq!(a.player.queue, vec![5, 6, 7, 8, 20]);
+        assert_eq!(a.player.current, Some(4));
+        // ...and back up the queue to an earlier one.
+        let _ = a.update(Message::PlayOne(5));
+        assert_eq!(a.player.queue, vec![5, 6, 7, 8, 20]);
+        assert_eq!(a.player.current, Some(0));
+        assert!(a.player.playing);
+        // The play button of a page still plays the whole list.
+        let _ = a.update(Message::PlayAll(vec![30, 31]));
+        assert_eq!(a.player.queue, vec![30, 31]);
+    }
+
+    #[test]
+    fn with_shuffle_the_queue_shows_the_play_order_and_does_not_end_early() {
+        let mut a = app();
+        let ids: Vec<usize> = (5..=14).collect();
+        a.play(ids.clone(), 0);
+        assert_eq!(a.player.queue, ids, "list order without shuffle");
+        let _ = a.update(Message::Shuffle);
+        assert!(a.player.shuffle);
+        // The queue now lists the play order: the same tracks, the playing one first, the rest
+        // in a new order (the list itself is not reordered).
+        let mut sorted = a.player.queue.clone();
+        sorted.sort();
+        assert_eq!(sorted, ids);
+        assert_eq!(a.player.current, Some(0));
+        assert_eq!(a.player.queue[0], 5);
+        assert_ne!(a.player.queue, ids, "shuffled");
+        // Playing a track that is further down the list sets a new order from there; the
+        // tracks before it in the list are not lost.
+        let _ = a.update(Message::PlayOne(14));
+        assert_eq!(a.now().map(|t| t.id), Some(14));
+        assert_eq!(a.player.current, Some(0));
+        // Next walks the whole play order, whatever the list order was, and then ends.
+        let mut seen = vec![14];
+        while a.can_next() {
+            let _ = a.update(Message::Next);
+            seen.push(a.now().unwrap().id);
+        }
+        seen.sort();
+        assert_eq!(seen, ids, "every track had its turn before the end");
+        assert!(!a.can_next());
+        // Dragging in "Up next" moves entries of the play order.
+        let _ = a.update(Message::PlayOne(14));
+        let upcoming: Vec<usize> = a.player.up_next.items().to_vec();
+        let _ = a.update(Message::Queue(ReorderEvent::Reorder { from: 0, to: 2 }));
+        let after: Vec<usize> = a.player.up_next.items().to_vec();
+        assert_eq!((after[1], after[2]), (upcoming[2], upcoming[0]));
+        assert_eq!(a.now().map(|t| t.id), Some(14));
+        // Turning shuffle off lists the queue in list order again.
+        let _ = a.update(Message::Shuffle);
+        let mut list = a.player.queue.clone();
+        assert_eq!(list.len(), ids.len());
+        list.sort();
+        assert_eq!(list, ids);
+        assert_eq!(a.player.queue, ids);
     }
 
     #[test]
