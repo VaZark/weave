@@ -145,6 +145,8 @@ pub enum Message {
     OpenSheet(Option<Sheet>),
     /// How Recent tracks is ordered: by play or by when added.
     SetRecentOrder(RecentOrder),
+    /// How the open playlist or album is played: shuffled, in order, or as the player says.
+    SetShufflePref(Option<bool>),
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
@@ -507,6 +509,10 @@ impl App {
                     Message::Go(Dest::Tracks),
                     Message::OpenSheet(Some(Sheet::Track(3, true))),
                 ],
+                "shuffle-on" => vec![
+                    Message::Go(Dest::Album(2)),
+                    Message::SetShufflePref(Some(true)),
+                ],
                 "options-sheet" => vec![
                     Message::Go(Dest::Playlist(0)),
                     Message::OpenSheet(Some(Sheet::Options(true))),
@@ -846,10 +852,44 @@ impl App {
     /// become the queue, so Next has somewhere to go.
     fn play_from_list(&mut self, ids: Vec<usize>, start: usize, id: usize) {
         if self.player.queue.is_empty() {
+            self.apply_page_shuffle();
             self.play(ids, start);
         } else {
             let s = self.backend.play_in_queue(id);
             self.apply(s);
+        }
+    }
+
+    /// Whether the open playlist or album plays shuffled: `None` for a page that has no such
+    /// setting, else its shuffle toggle (off until it is switched on).
+    pub fn page_shuffle(&self) -> Option<bool> {
+        match self.dest {
+            Dest::Playlist(i) => self
+                .lib
+                .playlists
+                .get(i)
+                .map(|p| p.shuffle.unwrap_or(false)),
+            Dest::Album(i) => self.lib.albums().get(i).map(|(album, artist, _)| {
+                self.lib
+                    .album_shuffle
+                    .get(&(album.clone(), artist.clone()))
+                    .copied()
+                    .unwrap_or(false)
+            }),
+            _ => None,
+        }
+    }
+
+    /// Before the open page's list is played: the player's shuffle is set as the page's toggle
+    /// says (a page without one leaves it). Returns whether the page plays shuffled.
+    fn apply_page_shuffle(&mut self) -> bool {
+        match self.page_shuffle() {
+            Some(on) => {
+                let s = self.backend.shuffle(on);
+                self.apply(s);
+                on
+            }
+            None => false,
         }
     }
 
@@ -930,6 +970,47 @@ impl App {
             }
             Message::SetDensity(d) => {
                 self.density = d;
+                Vec::new()
+            }
+            Message::SetShufflePref(pref) => {
+                match self.dest {
+                    Dest::Playlist(i) => {
+                        if let Some(name) = self.lib.playlists.get(i).map(|p| p.name.clone()) {
+                            match self.backend.set_playlist_shuffle(&name, pref) {
+                                Ok(()) => self.lib.playlists[i].shuffle = pref,
+                                Err(e) => self.say(format!("Cannot save the setting: {e}")),
+                            }
+                        }
+                    }
+                    Dest::Album(i) => {
+                        let key = self
+                            .lib
+                            .albums()
+                            .get(i)
+                            .map(|(album, artist, _)| (album.clone(), artist.clone()));
+                        let slug = key.as_ref().and_then(|(album, artist)| {
+                            self.lib
+                                .tracks
+                                .iter()
+                                .find(|t| t.album == *album && t.artist == *artist)
+                                .map(|t| t.slug.clone())
+                        });
+                        if let (Some(key), Some(slug)) = (key, slug) {
+                            match self.backend.set_album_shuffle(&slug, pref) {
+                                Ok(()) => match pref {
+                                    Some(on) => {
+                                        self.lib.album_shuffle.insert(key, on);
+                                    }
+                                    None => {
+                                        self.lib.album_shuffle.remove(&key);
+                                    }
+                                },
+                                Err(e) => self.say(format!("Cannot save the setting: {e}")),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 Vec::new()
             }
             Message::SetRecentOrder(order) => {
@@ -1115,7 +1196,13 @@ impl App {
             }
             Message::PlayAll(ids) => {
                 if !ids.is_empty() {
-                    self.play(ids, 0);
+                    // A page set to shuffle opens on a random track, as shuffling a playlist does.
+                    let start = if self.apply_page_shuffle() && ids.len() > 1 {
+                        (self.roll() % ids.len() as u64) as usize
+                    } else {
+                        0
+                    };
+                    self.play(ids, start);
                 }
                 Vec::new()
             }
@@ -1129,6 +1216,7 @@ impl App {
                         description: String::new(),
                         filter: Some(self.filter.clone()),
                         tracks: Vec::new(),
+                        shuffle: None,
                     });
                     let i = self.lib.playlists.len() - 1;
                     self.descriptions
@@ -1934,6 +2022,68 @@ mod tests {
         list.sort();
         assert_eq!(list, ids);
         assert_eq!(a.player.queue, ids);
+    }
+
+    #[test]
+    fn a_playlist_or_album_has_a_shuffle_toggle_that_decides_how_play_starts_it() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::playlist(&mut backend, "Road trip", "");
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        let ids: Vec<usize> = (0..10).collect();
+        // Something else is queued, and the player itself is shuffling.
+        a.play(vec![40, 41, 42], 0);
+        let _ = a.update(Message::Shuffle);
+        let _ = a.update(Message::Open(Dest::Playlist(0)));
+        assert_eq!(a.page_shuffle(), Some(false), "off until it is switched on");
+        // Off: Play starts the playlist in order, with shuffle off, replacing the queue.
+        let _ = a.update(Message::PlayAll(ids.clone()));
+        assert!(!a.player.shuffle);
+        assert_eq!(a.player.queue, ids);
+        assert_eq!(a.player.current, Some(0));
+        // On: it starts shuffled (from a random track), replacing the queue.
+        let _ = a.update(Message::SetShufflePref(Some(true)));
+        assert_eq!(a.page_shuffle(), Some(true));
+        a.play(vec![40, 41, 42], 0);
+        let _ = a.update(Message::PlayAll(ids.clone()));
+        assert!(a.player.shuffle);
+        let mut queued = a.player.queue.clone();
+        queued.sort();
+        assert_eq!(queued, ids, "just the playlist is queued");
+        // The toggle is kept in the engine: reading the library again keeps it.
+        let _ = a.update(Message::Imported(Ok(String::new())));
+        let i = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Road trip")
+            .unwrap();
+        assert_eq!(a.lib.playlists[i].shuffle, Some(true));
+        let _ = a.update(Message::Open(Dest::Playlist(i)));
+        let _ = a.update(Message::SetShufflePref(None));
+        assert_eq!(a.page_shuffle(), Some(false));
+        // An album has the same toggle, found again through its tracks.
+        let _ = a.update(Message::Open(Dest::Album(0)));
+        assert_eq!(a.page_shuffle(), Some(false));
+        let _ = a.update(Message::SetShufflePref(Some(true)));
+        let _ = a.update(Message::Imported(Ok(String::new())));
+        let _ = a.update(Message::Open(Dest::Album(0)));
+        assert_eq!(a.page_shuffle(), Some(true));
+        let album: Vec<usize> = a.rows.iter().map(|t| t.id).collect();
+        a.play(vec![40, 41, 42], 0);
+        let _ = a.update(Message::PlayAll(album.clone()));
+        assert!(a.player.shuffle);
+        assert_eq!(a.player.queue.len(), album.len());
+        // The artist page has none, and the pages build in both layouts.
+        let _ = a.update(Message::Open(Dest::Artist(0)));
+        assert_eq!(a.page_shuffle(), None);
+        for dest in [Dest::Playlist(i), Dest::Album(0), Dest::Artist(0)] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+            let _ = a.update(Message::Resized(400.0, 800.0));
+            let _ = a.view();
+            let _ = a.update(Message::Resized(1100.0, 800.0));
+        }
     }
 
     #[test]

@@ -121,6 +121,8 @@ pub struct Playlist {
     /// A dynamic playlist is a filter; a manual one an ordered list.
     pub filter: Option<Filter>,
     pub tracks: Vec<usize>,
+    /// Play it shuffled (`Some(true)`), in order (`Some(false)`), or as the player says (`None`).
+    pub shuffle: Option<bool>,
 }
 
 /// How a tag is drawn: an icon key and a colour (the engine's `Tag::icon` and `Tag::color`).
@@ -179,13 +181,15 @@ pub struct Library {
     pub styles: Vec<(String, TagStyle)>,
     pub tags: Vec<TreeNode>,
     pub playlists: Vec<Playlist>,
+    /// The albums set to always shuffle or always play in order, by (album, artist).
+    pub album_shuffle: std::collections::HashMap<(String, String), bool>,
 }
 
 impl Library {
     /// Reads the whole library from the engine: tracks, the tag tree and the tags' looks, and the
     /// playlists.
     pub fn load(engine: &weave_player_lib::Library) -> weave_player_lib::core::Result<Self> {
-        use weave_player_lib::core::{FilterSpec, Page, PlaylistKind, Sort, SortField};
+        use weave_player_lib::core::{EntityKind, FilterSpec, Page, PlaylistKind, Sort, SortField};
         let found = engine.search(&FilterSpec::default(), Page::ALL)?;
         // The order tracks were added in, newest first, as a rank for each.
         let by_added = engine.search(
@@ -258,6 +262,13 @@ impl Library {
             .collect();
         let tags = tag_nodes(&all, None);
 
+        let prefs = engine.shuffle_prefs()?;
+        let pref_of = |kind: EntityKind, id: &str| {
+            prefs
+                .iter()
+                .find(|p| p.kind == kind && p.id == id)
+                .map(|p| p.shuffle)
+        };
         let mut playlists = Vec::new();
         for p in engine.playlists()? {
             let (_, result) = engine.playlist_tracks(&p.id, Page::ALL)?;
@@ -279,13 +290,29 @@ impl Library {
                 description: p.description.clone().unwrap_or_default(),
                 filter,
                 tracks,
+                shuffle: pref_of(EntityKind::Playlist, &p.id),
             });
+        }
+        // An album's preference is found through its first track: the app's albums are the
+        // (album, artist) pairs of the tracks.
+        let mut album_shuffle = std::collections::HashMap::new();
+        for p in prefs.iter().filter(|p| p.kind == EntityKind::Album) {
+            let first = engine
+                .album(&p.id)
+                .ok()
+                .and_then(|a| a.tracks.first().map(|t| t.id.0.clone()))
+                .and_then(|slug| index.get(slug.as_str()).copied());
+            if let Some(i) = first {
+                let t = &tracks[i];
+                album_shuffle.insert((t.album.clone(), t.artist.clone()), p.shuffle);
+            }
         }
         let mut lib = Self {
             tracks,
             styles,
             tags,
             playlists,
+            album_shuffle,
         };
         lib.apply_history(&engine.play_history()?, unix_now());
         Ok(lib)

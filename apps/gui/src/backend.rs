@@ -355,6 +355,36 @@ impl Backend {
         self.engine.play_history().unwrap_or_default()
     }
 
+    /// Sets how a playlist is played: shuffled, in order, or (`None`) as the player says.
+    pub fn set_playlist_shuffle(
+        &mut self,
+        name: &str,
+        shuffle: Option<bool>,
+    ) -> Result<(), String> {
+        use weave_player_lib::core::EntityKind;
+        self.engine
+            .set_shuffle_pref(EntityKind::Playlist, name, shuffle)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Sets how an album is played. The album is the one of the track with this slug.
+    pub fn set_album_shuffle(
+        &mut self,
+        track_slug: &str,
+        shuffle: Option<bool>,
+    ) -> Result<(), String> {
+        use weave_player_lib::core::EntityKind;
+        let album = self
+            .engine
+            .track_detail(track_slug)
+            .map_err(|e| e.to_string())?
+            .album
+            .ok_or_else(|| "the track has no album".to_string())?;
+        self.engine
+            .set_shuffle_pref(EntityKind::Album, &album.id, shuffle)
+            .map_err(|e| e.to_string())
+    }
+
     /// The sleep timer ran out: stop where it is.
     pub fn pause(&mut self) -> Snapshot {
         self.run(|e| e.pause())

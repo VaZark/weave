@@ -783,6 +783,16 @@ impl App {
         Menu::new(title).section(items)
     }
 
+    /// The shuffle toggle of a playlist or an album page, beside its ⋮: on, Play shuffles it (from
+    /// a random track); off, Play plays it in order. It is kept with the playlist or the album.
+    fn shuffle_toggle(&self) -> Element<'_> {
+        w::IconToggleButton::new(Icon::Shuffle, self.page_shuffle().unwrap_or(false))
+            .size(20.0)
+            .tooltip("Shuffle")
+            .on_toggle(|on| Message::SetShufflePref(on.then_some(true)))
+            .into()
+    }
+
     /// The options of a detail page: a dropdown on desktop, a button that opens the bottom sheet
     /// on narrow.
     fn options_menu(&self, dynamic: bool) -> Element<'_> {
@@ -887,7 +897,7 @@ impl App {
                     .into(),
                     p.name.to_string(),
                     self.facts(extra),
-                    vec![self.options_menu(p.filter.is_some())],
+                    vec![self.shuffle_toggle(), self.options_menu(p.filter.is_some())],
                     from_seed(&p.name),
                 )
             }
@@ -933,7 +943,7 @@ impl App {
                     "Album".into(),
                     album,
                     self.facts(Some(format!("{artist} · {year}"))),
-                    vec![self.options_menu(false)],
+                    vec![self.shuffle_toggle(), self.options_menu(false)],
                     from_index(i),
                 )
             }
