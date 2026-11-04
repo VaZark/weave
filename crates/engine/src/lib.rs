@@ -9,7 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use weave_player_core::{
     AlbumEntry, AlbumProfile, ArtistEntry, ArtistProfile, ChildPolicy, DedupMark, Dependent,
     EntityKind, EntityRef, Error, FilterSpec, Instance, MergeStats, Page, PlayStat, Playlist,
-    PlaylistKind, Result, Rng, ScannedTrack, SearchResult, SimilarPair, Tag, Track, TrackDetail,
+    PlaylistKind, Result, Rng, ScannedTrack, SearchResult, ShufflePref, SimilarPair, Tag, Track,
+    TrackDetail,
 };
 use weave_player_local::LocalFiles;
 use weave_player_storage::Storage;
@@ -351,6 +352,34 @@ impl Library {
         self.storage.play_history()
     }
 
+    /// Set how an album, an artist or a playlist is played: `Some(true)` always shuffled,
+    /// `Some(false)` always in order, `None` as the player's shuffle setting says. `id` is a slug
+    /// (a playlist may be given by name). Only the preference is stored: whoever starts the
+    /// playback applies it (a frontend's Play button, `play_playlist`'s `shuffle`).
+    pub fn set_shuffle_pref(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        shuffle: Option<bool>,
+    ) -> Result<()> {
+        let id = match kind {
+            EntityKind::Playlist => self.storage.playlist(id)?.id,
+            EntityKind::Album => self.storage.album(id)?.id,
+            EntityKind::Artist => self.storage.artist(id)?.id,
+            EntityKind::Track => {
+                return Err(Error::InvalidInput(
+                    "shuffle is set for an album, an artist or a playlist".into(),
+                ));
+            }
+        };
+        self.storage.set_shuffle_pref(kind, &id, shuffle)
+    }
+
+    /// Every shuffle preference that is set.
+    pub fn shuffle_prefs(&self) -> Result<Vec<ShufflePref>> {
+        self.storage.shuffle_prefs()
+    }
+
     /// Rename a playlist. Its ID stays; the new name must not belong to another playlist.
     pub fn rename_playlist(&mut self, name: &str, new_name: &str) -> Result<Playlist> {
         self.storage.rename_playlist(name, new_name)
@@ -365,7 +394,12 @@ impl Library {
     /// which removes it from their sources (a playlist left with none draws on the whole
     /// library). Returns the playlists it was removed from.
     pub fn delete_playlist(&mut self, name: &str, detach: bool) -> Result<Vec<EntityRef>> {
-        self.storage.delete_playlist(name, detach)
+        let id = self.storage.playlist(name)?.id;
+        let dependents = self.storage.delete_playlist(name, detach)?;
+        // Its shuffle preference goes with it.
+        self.storage
+            .set_shuffle_pref(EntityKind::Playlist, &id, None)?;
+        Ok(dependents)
     }
 
     /// Make a dynamic playlist draw on the whole library again.

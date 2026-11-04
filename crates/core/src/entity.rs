@@ -204,3 +204,15 @@ mod tests {
         assert_ne!(loose_key("Theory"), loose_key("ory"));
     }
 }
+
+/// How an album, an artist or a playlist is played with respect to shuffle: always shuffled, or
+/// always in order. Without one the player's own shuffle setting applies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShufflePref {
+    /// `Album`, `Artist` or `Playlist`.
+    pub kind: EntityKind,
+    /// Its slug.
+    pub id: String,
+    /// `true`: play it shuffled. `false`: play it in order.
+    pub shuffle: bool,
+}

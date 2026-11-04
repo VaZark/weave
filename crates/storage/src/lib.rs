@@ -7,6 +7,7 @@ mod entities;
 mod history;
 mod migrations;
 mod playlists;
+mod prefs;
 mod query;
 mod session;
 mod tags;
@@ -67,6 +68,7 @@ impl Storage {
             .map_err(db_err)?;
         migrations::run(&mut conn)?;
         history::ensure(&conn)?;
+        prefs::ensure(&conn)?;
         Ok(Self { conn })
     }
 

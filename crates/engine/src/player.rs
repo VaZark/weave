@@ -1705,4 +1705,65 @@ mod tests {
         assert_eq!(titles(&v), list);
     }
 
+    #[test]
+    fn an_album_or_playlist_can_be_set_to_always_shuffle_or_always_play_in_order() {
+        use weave_player_core::EntityKind;
+        let (mut lib, _) = library(2);
+        lib.create_manual_playlist("Road trip", None).unwrap();
+        lib.import_scanned(&[ScannedTrack {
+            path: "with-album".into(),
+            metadata: Metadata {
+                title: "Song".into(),
+                artist: Some("x".into()),
+                album: Some("Record".into()),
+                ..Default::default()
+            },
+        }])
+        .unwrap();
+        let song = lib
+            .search(
+                &FilterSpec {
+                    title: Some("Song".into()),
+                    ..Default::default()
+                },
+                weave_player_core::Page::ALL,
+            )
+            .unwrap()
+            .tracks
+            .remove(0);
+        let album = lib.track_detail(&song.id.0).unwrap().album;
+        let album = album.expect("a track with an album has an album entity").id;
+        // A playlist by name, an album by slug; stored under their slugs.
+        lib.set_shuffle_pref(EntityKind::Playlist, "road trip", Some(true))
+            .unwrap();
+        lib.set_shuffle_pref(EntityKind::Album, &album, Some(false))
+            .unwrap();
+        let prefs = lib.shuffle_prefs().unwrap();
+        assert_eq!(prefs.len(), 2);
+        assert!(
+            prefs
+                .iter()
+                .any(|p| p.kind == EntityKind::Playlist && p.id == "road-trip" && p.shuffle)
+        );
+        assert!(
+            prefs
+                .iter()
+                .any(|p| p.kind == EntityKind::Album && p.id == album && !p.shuffle)
+        );
+        // `None` follows the player again; a track, or something that is not there, is refused.
+        lib.set_shuffle_pref(EntityKind::Album, &album, None)
+            .unwrap();
+        assert_eq!(lib.shuffle_prefs().unwrap().len(), 1);
+        assert!(
+            lib.set_shuffle_pref(EntityKind::Track, &id(1), Some(true))
+                .is_err()
+        );
+        assert!(
+            lib.set_shuffle_pref(EntityKind::Playlist, "nothing", Some(true))
+                .is_err()
+        );
+        // Deleting the playlist takes its preference with it.
+        lib.delete_playlist("road trip", false).unwrap();
+        assert!(lib.shuffle_prefs().unwrap().is_empty());
+    }
 }
