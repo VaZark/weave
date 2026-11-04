@@ -346,9 +346,16 @@ impl App {
         if row_layout && !compact {
             // Playlists: a card surface of its own, with `button` adding the events, and the
             // picture beside the text.
+            // Text never leaves the card: what does not fit is clipped at its edge.
+            let clip = |t: iced::widget::Text<'a, iad::Theme>| -> Element<'a> {
+                container(t.wrapping(iced::widget::text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true)
+                    .into()
+            };
             let text = column![
-                ty::heading(title),
-                ty::caption(subtitle).style(iad::styles::text::dim)
+                clip(ty::heading(title)),
+                clip(ty::caption(subtitle).style(iad::styles::text::dim))
             ];
             return button(card(
                 row![picture(card_picture), text.width(Length::Fill)]

@@ -39,39 +39,58 @@ pub struct Backend {
     sound: Option<weave_player_lib::Player>,
 }
 
-/// The default database, as the CLI finds it: `$XDG_DATA_HOME/weave/library.db`.
-pub fn default_db() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("weave").join("library.db")
+/// Which library to open.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    /// A database file: the library, or one given with `--db`.
+    Db(PathBuf),
+    /// `--mock-db`: the separate dev database, seeded with mock data when empty. Debug builds.
+    #[cfg(debug_assertions)]
+    Mock,
 }
 
-/// The database to open: `--db <path>`, else `$WEAVE_DB`, else the default.
-pub fn db_from_args() -> PathBuf {
+/// What the command line asks for: `--mock-db`, else `--db <path>`, else `$WEAVE_DB`, else the
+/// default library (the CLI's).
+pub fn source_from_args() -> Source {
+    let mut db = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
+        #[cfg(debug_assertions)]
+        if a == "--mock-db" {
+            return Source::Mock;
+        }
         if a == "--db" {
-            if let Some(p) = args.next() {
-                return PathBuf::from(p);
-            }
+            db = args.next().map(PathBuf::from);
         } else if let Some(p) = a.to_str().and_then(|a| a.strip_prefix("--db=")) {
-            return PathBuf::from(p);
+            db = Some(PathBuf::from(p));
         }
     }
-    std::env::var_os("WEAVE_DB")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_db)
+    Source::Db(
+        db.or_else(|| std::env::var_os("WEAVE_DB").map(PathBuf::from))
+            .unwrap_or_else(weave_player_lib::paths::default_db),
+    )
 }
 
 impl Backend {
-    /// Opens (creating, if need be) the library at `db` and starts the sound player for it.
-    pub fn open(db: &Path) -> Result<(Self, Library), String> {
-        if let Some(dir) = db.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    /// Opens (creating, if need be) the library and starts the sound player for it.
+    pub fn open(source: &Source) -> Result<(Self, Library), String> {
+        let db = match source {
+            Source::Db(db) => db.clone(),
+            #[cfg(debug_assertions)]
+            Source::Mock => weave_player_lib::mock::db_path(),
+        };
+        let db = db.as_path();
+        let engine = match source {
+            #[cfg(debug_assertions)]
+            Source::Mock => weave_player_lib::mock::open_at(db),
+            Source::Db(_) => {
+                if let Some(dir) = db.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                }
+                Engine::open(db)
+            }
         }
-        let engine = Engine::open(db).map_err(|e| format!("{}: {e}", db.display()))?;
+        .map_err(|e| format!("{}: {e}", db.display()))?;
         let mut b = Self::with(engine);
         b.db = Some(db.to_path_buf());
         #[cfg(feature = "audio")]

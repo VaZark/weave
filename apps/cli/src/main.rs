@@ -10,8 +10,6 @@ macro_rules! outln {
 
 mod ask;
 mod dedup;
-#[cfg(debug_assertions)]
-mod dev;
 mod host;
 mod lyrics;
 mod output;
@@ -44,6 +42,12 @@ struct Cli {
     /// Library database path.
     #[arg(long, global = true, env = "WEAVE_DB")]
     db: Option<PathBuf>,
+    /// Use the separate dev database (`dev.db` next to the library), seeded with mock tracks,
+    /// tags and playlists when it is empty. Never touches the real library; wins over --db and
+    /// WEAVE_DB.
+    #[cfg(debug_assertions)]
+    #[arg(long, global = true)]
+    mock_db: bool,
     /// Emit structured JSON.
     #[arg(long, global = true)]
     json: bool,
@@ -357,7 +361,7 @@ enum DevCmd {
     /// Fill the library with fake tracks, tags, ratings and playlists (idempotent; no files are read).
     Seed {
         /// Number of tracks to generate.
-        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=dev::MAX_COUNT as i64))]
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=weave_player_lib::mock::MAX_COUNT as i64))]
         count: u32,
     },
     /// Simulate the current track finishing by itself (what a playback backend will report).
@@ -808,11 +812,7 @@ fn review_similar(
 }
 
 fn default_db() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("weave").join("library.db")
+    weave_player_lib::paths::default_db()
 }
 
 fn main() -> ExitCode {
@@ -869,11 +869,24 @@ struct HostPolicy {
     remote_only: bool,
 }
 
+/// The library to work on: `--mock-db`'s seeded dev database (debug builds), else `--db`, else
+/// the default.
+fn open_library(cli: &Cli) -> Result<(PathBuf, Library), Failure> {
+    #[cfg(debug_assertions)]
+    if cli.mock_db {
+        let db = weave_player_lib::mock::db_path();
+        let lib = weave_player_lib::mock::open_at(&db)?;
+        return Ok((db, lib));
+    }
+    let db = cli.db.clone().unwrap_or_else(default_db);
+    let lib = Library::open(&db)?;
+    Ok((db, lib))
+}
+
 fn run(cli: Cli) -> Result<(), Failure> {
     let json = cli.json;
     let show_ids = cli.show_ids;
-    let db = cli.db.unwrap_or_else(default_db);
-    let mut lib = Library::open(&db)?;
+    let (db, mut lib) = open_library(&cli)?;
     let policy = HostPolicy {
         no_host: cli.no_host,
         json,
@@ -1370,7 +1383,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
 
         #[cfg(debug_assertions)]
         Cmd::Dev(DevCmd::Seed { count }) => {
-            let s = dev::seed(&mut lib, count as usize)?;
+            let s = weave_player_lib::mock::seed(&mut lib, count as usize)?;
             out(
                 json,
                 &serde_json::json!({

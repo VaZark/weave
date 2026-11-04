@@ -1,12 +1,50 @@
-//! Debug-build-only helpers. Compiled out of release builds.
+//! A mock library for developing frontends: fake tracks (no files), tags, ratings and playlists,
+//! and a separate dev database to hold them. Debug builds only (`cfg(debug_assertions)`), so it never ships;
+//! the CLI and the GUI use it for their `--mock-db` flag, the CLI also for `dev seed`.
+//!
+//! ```no_run
+//! let mut library = weave_player_lib::mock::open()?; // the dev database, seeded when empty
+//! # Ok::<(), weave_player_lib::core::Error>(())
+//! ```
 
-use weave_player_lib::Library;
-use weave_player_lib::core::{
-    EntityKind, FilterSpec, Metadata, Result, ScannedTrack, Sort, SortField, TagClause, TagOp,
-    parse_credits, track_slug,
+use std::path::{Path, PathBuf};
+
+use crate::Library;
+use crate::core::{
+    EntityKind, FilterSpec, Metadata, Page, Result, ScannedTrack, Sort, SortField, TagClause,
+    TagOp, parse_credits, track_slug,
 };
 
 pub const MAX_COUNT: usize = 100;
+/// How many tracks `open` seeds into an empty dev database.
+pub const DEFAULT_COUNT: usize = 60;
+
+/// The dev database, `weave/dev.db` next to the real library, so mock data never mixes with it.
+pub fn db_path() -> PathBuf {
+    crate::paths::data_dir().join("dev.db")
+}
+
+/// Opens the dev database at `path` (creating it), seeding it when it holds no tracks.
+pub fn open_at(path: &Path) -> Result<Library> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| crate::core::Error::InvalidInput(format!("{}: {e}", dir.display())))?;
+    }
+    let mut lib = Library::open(path)?;
+    if lib
+        .search(&FilterSpec::default(), Page::ALL)?
+        .tracks
+        .is_empty()
+    {
+        seed(&mut lib, DEFAULT_COUNT)?;
+    }
+    Ok(lib)
+}
+
+/// Opens the dev database ([`db_path`]), seeded when empty.
+pub fn open() -> Result<Library> {
+    open_at(&db_path())
+}
 
 struct Artist {
     name: &'static str,
@@ -171,7 +209,7 @@ fn ensure_tree(lib: &mut Library) -> Result<()> {
                 lib.set_tag_parent(name, *parent)?;
             }
             Ok(_) => {}
-            Err(weave_player_lib::core::Error::NotFound(_)) => {
+            Err(crate::core::Error::NotFound(_)) => {
                 lib.create_tag(name, *parent)?;
             }
             Err(e) => return Err(e),
@@ -260,9 +298,9 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 
     tagged += tag_entities(lib)?;
 
-    let created = |r: weave_player_lib::core::Result<weave_player_lib::core::Playlist>| match r {
+    let created = |r: crate::core::Result<crate::core::Playlist>| match r {
         Ok(_) => Ok(1),
-        Err(weave_player_lib::core::Error::AlreadyExists(_)) => Ok(0),
+        Err(crate::core::Error::AlreadyExists(_)) => Ok(0),
         Err(e) => Err(e),
     };
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -411,7 +449,7 @@ pub fn seed(lib: &mut Library, count: usize) -> Result<Seeded> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use weave_player_lib::core::Page;
+    use crate::core::Page;
 
     #[test]
     fn seed_is_idempotent_and_populates_everything() {
@@ -538,5 +576,28 @@ mod tests {
         slugs.dedup();
         // the three second copies share a slug base with their originals
         assert_eq!(slugs.len(), MAX_COUNT - 3);
+    }
+
+    #[test]
+    fn the_dev_database_is_seeded_once_and_kept_apart_from_the_library() {
+        let dir = std::env::temp_dir().join(format!("weave-mock-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("dev.db");
+        let count = |lib: &Library| {
+            lib.search(&FilterSpec::default(), Page::ALL)
+                .unwrap()
+                .tracks
+                .len()
+        };
+        let lib = open_at(&path).unwrap();
+        assert_eq!(count(&lib), DEFAULT_COUNT);
+        assert!(!lib.playlists().unwrap().is_empty());
+        drop(lib);
+        // Opening again adds nothing.
+        assert_eq!(count(&open_at(&path).unwrap()), DEFAULT_COUNT);
+        // It is its own file, beside the real library.
+        assert_eq!(db_path().file_name().unwrap(), "dev.db");
+        assert_ne!(db_path(), crate::paths::default_db());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

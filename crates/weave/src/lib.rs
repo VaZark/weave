@@ -45,6 +45,11 @@
 
 mod player;
 
+/// A mock library for frontend work. Debug builds only: it is not in release builds.
+#[cfg(debug_assertions)]
+pub mod mock;
+pub mod paths;
+
 /// The domain types: tracks, filters, playlists, the queue and its state, errors.
 pub use weave_player_core as core;
 pub use weave_player_engine::{ImportStats, Library, SessionView};

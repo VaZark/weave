@@ -21,5 +21,5 @@ weave-player-lib.workspace = true
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Pinned: iced-adaptive-design has API churn. To develop both together, add a
 # `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
-iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "2f8eebc26fd27b1fc1d85870ef91584bccfbe608" }
+iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "f0101a5fd61134bd25de034e3e0b3e08c897e2c2" }
 iced = { version = "0.14", features = ["advanced", "svg", "image", "tokio", "canvas"] }

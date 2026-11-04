@@ -405,11 +405,11 @@ pub const LYRICS: &str = "lyrics";
 
 impl App {
     fn new() -> (Self, Task<Message>) {
-        let db = backend::db_from_args();
-        let (backend, lib) = backend::Backend::open(&db).unwrap_or_else(|e| {
-            eprintln!("weave: cannot open the library: {e}");
-            std::process::exit(1);
-        });
+        let (backend, lib) =
+            backend::Backend::open(&backend::source_from_args()).unwrap_or_else(|e| {
+                eprintln!("weave: cannot open the library: {e}");
+                std::process::exit(1);
+            });
         Self::with(backend, lib)
     }
 
