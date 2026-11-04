@@ -276,6 +276,23 @@ impl Backend {
         self.run(|e| e.queue_move(from + 1, to + 1))
     }
 
+    /// Saves a playlist's description (empty clears it). The filter stays as it is.
+    pub fn set_playlist_description(&mut self, name: &str, text: &str) -> Result<(), String> {
+        use weave_player_lib::core::FilterSpec;
+        self.engine
+            .update_playlist(name, Some(text), FilterSpec::default())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Renames a playlist. Its ID stays; another playlist's name is refused.
+    pub fn rename_playlist(&mut self, name: &str, new_name: &str) -> Result<(), String> {
+        self.engine
+            .rename_playlist(name, new_name)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// The sleep timer ran out: stop where it is.
     pub fn pause(&mut self) -> Snapshot {
         self.run(|e| e.pause())
@@ -309,6 +326,13 @@ pub fn import(db: &Path, paths: &[PathBuf]) -> Result<String, String> {
 pub mod sample {
     use super::*;
     use weave_player_lib::core::{FilterSpec, Metadata, ScannedTrack};
+
+    /// Adds a manual playlist to the engine behind `b` (the UI's copy is read again with `load`).
+    pub fn playlist(b: &mut Backend, name: &str, description: &str) {
+        b.engine
+            .create_manual_playlist(name, Some(description))
+            .unwrap();
+    }
 
     /// A library with nothing in it.
     pub fn empty() -> (Backend, Library) {

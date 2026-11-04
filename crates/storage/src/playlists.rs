@@ -199,6 +199,38 @@ impl Storage {
         Ok(filter)
     }
 
+    /// Change a playlist's name. Its ID (the slug) stays as it was: it is assigned once, and
+    /// other playlists that draw on this one, and everything else that refers to it, keep
+    /// working. The new name must be new (case-insensitively) and not empty.
+    pub fn rename_playlist(&mut self, name: &str, new_name: &str) -> Result<Playlist> {
+        let mut p = self.playlist(name)?;
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err(Error::InvalidInput("playlist name cannot be empty".into()));
+        }
+        let taken = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM playlists WHERE normalized_name = ?1 AND id != ?2",
+                params![normalize_tag(new_name), p.id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(db_err)?
+            .is_some();
+        if taken {
+            return Err(Error::AlreadyExists(format!("playlist \"{new_name}\"")));
+        }
+        self.conn
+            .execute(
+                "UPDATE playlists SET name = ?1, normalized_name = ?2 WHERE id = ?3",
+                params![new_name, normalize_tag(new_name), p.id],
+            )
+            .map_err(db_err)?;
+        p.name = new_name.into();
+        Ok(p)
+    }
+
     /// The dynamic playlists that draw on this playlist.
     pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
         let p = self.playlist(name)?;

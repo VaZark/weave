@@ -45,14 +45,26 @@ impl App {
         )
     }
 
+    /// Whether a dialog (not a sheet) is showing: for the tests.
+    #[cfg(test)]
+    pub fn dialog_open_for_test(&self) -> bool {
+        self.dialog().is_some()
+    }
+
     fn dialog(&self) -> Option<Element<'_>> {
         self.draft
             .as_ref()
             .map(|f| self.filter_dialog(f))
             .or_else(|| self.edit_track.as_ref().map(|e| self.track_dialog(e)))
-            .or_else(|| self.bulk.as_ref().map(|b| self.bulk_dialog(b)))
             .or_else(|| self.rate_track.map(|id| self.rate_dialog(id)))
             .or_else(|| self.info_track.map(|id| self.info_dialog(id)))
+            // On narrow, Edit details is a bottom sheet (see `narrow`), not a dialog.
+            .or_else(|| {
+                self.edit
+                    .as_ref()
+                    .filter(|_| !self.is_narrow())
+                    .map(|d| self.details_dialog(d))
+            })
     }
 
     fn chrome(&self, left: bool, right: bool) -> Chrome {
@@ -342,11 +354,20 @@ impl App {
             ]
         };
         let base = self.np_dock(body.into());
-        match self.sheet {
-            Some((id, album)) => w::Dock::new(base, self.track_sheet(id, album))
+        let base = match self.sheet {
+            Some(sheet) => w::Dock::new(base, self.sheet_view(sheet))
                 .scope(w::DockScope::Window)
                 .mode(w::DockMode::Overlay)
-                .on_outside(Message::TrackSheet(None))
+                .on_outside(Message::OpenSheet(None))
+                .into(),
+            None => base,
+        };
+        // Edit details: a bottom sheet over everything, with the page behind it.
+        match &self.edit {
+            Some(draft) => w::Dock::new(base, self.details_sheet(draft))
+                .scope(w::DockScope::Window)
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::CancelDetails)
                 .into(),
             None => base,
         }

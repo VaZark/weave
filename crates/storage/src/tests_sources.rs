@@ -382,3 +382,52 @@ fn from_and(names: &[&str], tags: &[&str]) -> FilterSpec {
         ..Default::default()
     }
 }
+
+#[test]
+fn renaming_a_playlist_keeps_its_id_and_the_playlists_that_draw_on_it() {
+    let mut st = Storage::open_in_memory().unwrap();
+    st.create_manual_playlist("Road trip", Some("For the drive"))
+        .unwrap();
+    st.create_manual_playlist("Other", None).unwrap();
+    st.create_playlist("Mix", None, &from(&["Road trip"]))
+        .unwrap();
+
+    let p = st.rename_playlist("road trip", "  Long drive ").unwrap();
+    assert_eq!(
+        (p.id.as_str(), p.name.as_str()),
+        ("road-trip", "Long drive")
+    );
+    // Found by the new name (any case) and by the same ID; the old name is gone.
+    assert_eq!(st.playlist("LONG DRIVE").unwrap().id, "road-trip");
+    assert_eq!(st.playlist("road-trip").unwrap().name, "Long drive");
+    assert_eq!(
+        st.playlist("road trip").unwrap().id,
+        "road-trip",
+        "the old name still resolves through the unchanged slug"
+    );
+    // The description is untouched, and the dynamic playlist still draws on it.
+    assert_eq!(
+        st.playlist("long drive").unwrap().description.as_deref(),
+        Some("For the drive")
+    );
+    assert_eq!(
+        st.playlist("mix").unwrap().filter.sources,
+        s(&["road-trip"])
+    );
+
+    // A name of another playlist, or an empty one, is refused and changes nothing.
+    assert!(matches!(
+        st.rename_playlist("long drive", "OTHER"),
+        Err(Error::AlreadyExists(_))
+    ));
+    assert!(matches!(
+        st.rename_playlist("long drive", "  "),
+        Err(Error::InvalidInput(_))
+    ));
+    assert_eq!(st.playlist("road-trip").unwrap().name, "Long drive");
+    // Renaming to itself, or only changing the case, is fine.
+    assert_eq!(
+        st.rename_playlist("long drive", "LONG DRIVE").unwrap().name,
+        "LONG DRIVE"
+    );
+}

@@ -344,6 +344,11 @@ impl Library {
         Ok(p)
     }
 
+    /// Rename a playlist. Its ID stays; the new name must not belong to another playlist.
+    pub fn rename_playlist(&mut self, name: &str, new_name: &str) -> Result<Playlist> {
+        self.storage.rename_playlist(name, new_name)
+    }
+
     /// The dynamic playlists that draw on this playlist.
     pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
         self.storage.playlist_dependents(name)

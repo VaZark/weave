@@ -12,7 +12,7 @@ use crate::components::media_list::MediaListLayout;
 use crate::data::{Filter, Track};
 use crate::icons::{cover, playlist_avatar};
 use crate::ui::card;
-use crate::{App, Col, Dest, Element, Message};
+use crate::{App, Col, Dest, Element, Message, Sheet};
 use iad::color::{from_index, from_seed};
 use iad::prelude::surface;
 
@@ -50,6 +50,17 @@ fn section_all<'a>(title: &'a str, all: Dest, body: impl Into<Element<'a>>) -> E
     .spacing(8)
     .width(Length::Fill)
     .into()
+}
+
+/// `body`, or when there is nothing to show a dimmed line saying what will appear here and how.
+fn or_note<'a>(empty: bool, note: &'static str, body: impl Into<Element<'a>>) -> Element<'a> {
+    if empty {
+        container(ty::caption(note).style(iad::styles::text::dim))
+            .padding([8, 4])
+            .into()
+    } else {
+        body.into()
+    }
 }
 
 /// The most characters of a playlist's name its tile shows: about two lines.
@@ -146,7 +157,7 @@ impl App {
     fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
         if self.is_narrow() {
             return w::icon_button(Icon::ViewMore)
-                .on_press(Message::TrackSheet(Some((id, album))))
+                .on_press(Message::OpenSheet(Some(Sheet::Track(id, album))))
                 .into();
         }
         self.menu_button(
@@ -510,9 +521,11 @@ impl App {
                 .collect(),
             260.0,
         );
+        let recent_artists = self.lib.recent_artists(8);
+        let no_artists = recent_artists.is_empty();
+        let no_playlists = self.lib.playlists.is_empty();
         let artists = self.grid(
-            self.lib
-                .recent_artists(8)
+            recent_artists
                 .into_iter()
                 .map(|i| self.artist_card(i, None))
                 .collect(),
@@ -528,10 +541,34 @@ impl App {
             130.0,
         );
         let page = column![
-            section_all("Recent playlists", Dest::Playlists, playlists),
-            section_all("Recently played", Dest::Recent, self.short_list(&recent)),
+            section_all(
+                "Recent playlists",
+                Dest::Playlists,
+                or_note(
+                    no_playlists,
+                    "No playlists yet. Save a jam to make one.",
+                    playlists
+                )
+            ),
+            section_all(
+                "Recently played",
+                Dest::Recent,
+                or_note(
+                    recent.is_empty(),
+                    "Nothing played yet. Let's start listening: press play on any track.",
+                    self.short_list(&recent)
+                )
+            ),
             section_all("Recent albums", Dest::Albums, albums),
-            section_all("Recent artists", Dest::Artists, artists),
+            section_all(
+                "Recent artists",
+                Dest::Artists,
+                or_note(
+                    no_artists,
+                    "The artists you listen to will show up here.",
+                    artists
+                )
+            ),
         ]
         .spacing(20);
         surface::scrolling(page)
@@ -554,9 +591,10 @@ impl App {
             .into_iter()
             .cloned()
             .collect();
+        let most_listened = self.lib.most_listened_artists(6);
+        let no_top_artists = most_listened.is_empty();
         let top_artists = self.grid(
-            self.lib
-                .most_listened_artists(6)
+            most_listened
                 .into_iter()
                 .map(|(i, plays)| self.artist_card(i, Some(plays)))
                 .collect(),
@@ -635,7 +673,7 @@ impl App {
                 column![
                     ty::heading("It's been a while"),
                     ty::caption(format!(
-                        "Rated highly, not played for more than {} days (change it in Settings)",
+                        "Rated highly, not played for more than {} days",
                         self.while_days
                     )),
                     self.short_list(&while_tracks),
@@ -644,10 +682,21 @@ impl App {
             );
         }
         rediscover = rediscover
-            .push(section("Your most listened artists", top_artists))
+            .push(section(
+                "Your most listened artists",
+                or_note(
+                    no_top_artists,
+                    "Play something and your most listened artists will show up here.",
+                    top_artists,
+                ),
+            ))
             .push(section(
                 "Your most listened tracks",
-                self.short_list(&top_tracks),
+                or_note(
+                    top_tracks.is_empty(),
+                    "Play something and your most listened tracks will show up here.",
+                    self.short_list(&top_tracks),
+                ),
             ));
         let page = column![
             links,
@@ -665,37 +714,71 @@ impl App {
 
     // ---- detail pages -----------------------------------------------------------------------
 
-    /// Options of a detail page: the playlist's filter (if dynamic) and the tags of all its tracks.
-    fn options_menu(&self, dynamic: bool) -> Element<'_> {
-        let mut items = Vec::new();
+    /// The options of a detail page as an iad `Menu`, each message passed through `wrap`: edit its
+    /// details, and a dynamic playlist's filter.
+    fn options_menu_def(
+        title: String,
+        dynamic: bool,
+        wrap: impl Fn(Message) -> Message,
+    ) -> Menu<Message> {
+        let mut items =
+            vec![MenuItem::action("Edit details", wrap(Message::EditDetails)).icon(Icon::Edit)];
         if dynamic {
-            items.push(MenuItem::action("Edit filter", Message::EditFilter).icon(Icon::Filter));
+            items.push(
+                MenuItem::action("Edit filter", wrap(Message::EditFilter)).icon(Icon::Filter),
+            );
         }
-        items.push(MenuItem::action("Edit tags of all tracks", Message::BulkOpen).icon(Icon::Edit));
+        Menu::new(title).section(items)
+    }
+
+    /// The options of a detail page: a dropdown on desktop, a button that opens the bottom sheet
+    /// on narrow.
+    fn options_menu(&self, dynamic: bool) -> Element<'_> {
+        if self.is_narrow() {
+            return w::icon_button(Icon::ViewMore)
+                .on_press(Message::OpenSheet(Some(Sheet::Options(dynamic))))
+                .into();
+        }
         self.menu_button(
             Icon::ViewMore,
             "Options",
-            Menu::new("Options").section(items),
+            Self::options_menu_def("Options".into(), dynamic, |m| m),
         )
+    }
+
+    /// The page options as a bottom sheet, closing on a choice.
+    fn options_sheet(&self, dynamic: bool) -> Element<'_> {
+        let menu = Self::options_menu_def(self.page_title(), dynamic, |m| {
+            Message::SheetAction(Box::new(m))
+        });
+        Menu::sheet(&menu, None).into()
+    }
+
+    /// What the bottom sheet shows.
+    pub fn sheet_view(&self, sheet: Sheet) -> Element<'_> {
+        match sheet {
+            Sheet::Track(id, album) => self.track_sheet(id, album),
+            Sheet::Options(dynamic) => self.options_sheet(dynamic),
+        }
     }
 
     fn detail_page(&self) -> Element<'_> {
         let narrow = self.is_narrow();
-        let big = 200.0;
-        let description: Element<'_> = w::EditableText::new(
-            self.desc_key()
-                .and_then(|k| self.descriptions.get(&k))
-                .map_or("", String::as_str),
-            Message::Describe,
-        )
-        .placeholder("Add a description")
-        .editing(self.editing_desc)
-        .expanded(self.desc_expanded)
-        .max_height(44.0)
-        .on_edit(Message::EditDescription(true))
-        .on_done(Message::EditDescription(false))
-        .on_expand(Message::DescExpanded)
-        .into();
+        let big = 96.0;
+        // The description is only read here: no edit button. Edit details is in the page's menu
+        // (a dropdown, a bottom sheet on narrow).
+        let description: Element<'_> = match self
+            .desc_key()
+            .and_then(|k| self.descriptions.get(&k))
+            .filter(|d| !d.is_empty())
+        {
+            Some(text) => w::Spoiler::new(ty::body(text.as_str()))
+                .max_height(44.0)
+                .expanded(self.desc_expanded)
+                .on_toggle(Message::DescExpanded)
+                .into(),
+            None => space::vertical().height(0).into(),
+        };
         let (cover_el, kind, title, facts, actions, tint): (
             Element<'_>,
             String,
@@ -769,8 +852,12 @@ impl App {
             }
             _ => unreachable!("detail_page is for playlists, artists and albums"),
         };
+        // The kind ("Dynamic playlist", "Album") sits above the facts and tags line, not over the
+        // name.
+        let facts: Element<'_> = column![ty::caption(kind).style(iad::styles::text::dim), facts]
+            .spacing(2)
+            .into();
         let mut header = w::DetailHeader::new(title)
-            .kind(kind)
             .cover(cover_el)
             .description(description)
             .facts(facts)

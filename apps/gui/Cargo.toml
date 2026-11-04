@@ -15,11 +15,11 @@ default = ["audio"]
 audio = ["weave-player-lib/audio"]
 
 [dependencies]
-weaver.workspace = true
 weave-player-lib.workspace = true
 # The system file chooser (the desktop portal on Linux), to import files and folders.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-# Pinned: iced-adaptive-design has API churn. To develop both together, add a
+# Follows the tip of `main`; Cargo.lock records the commit actually built (`cargo update -p
+# iced-adaptive-design` moves it). To develop both together, add a
 # `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
-iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "6e5dd63cce1cb95ce18b941a3077f94ceb78e3f0" }
+iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", branch = "main" }
 iced = { version = "0.14", features = ["advanced", "svg", "image", "tokio", "canvas"] }

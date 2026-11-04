@@ -2,14 +2,15 @@
 //! playlist dialog, and the jam page.
 
 use iad::Icon;
-use iad::prelude::{self as w, ToggleItem, typography as ty};
-use iced::widget::{column, container, row, scrollable, space, text_input};
+use iad::prelude::{self as w, typography as ty};
+use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::{tag_pill, value_of};
 use crate::data::{self, Filter};
-use crate::{App, Element, Message, Mode3};
+use crate::icons::{cover, playlist_avatar};
+use crate::{App, Dest, Element, Message};
 use iad::prelude::surface;
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
 use iad::primitives::histogram::Histogram;
@@ -211,6 +212,81 @@ impl App {
 
     // ---- dialogs ------------------------------------------------------------------------
 
+    /// The content of Edit details, as Spotify's has it: a close cross at the top, the cover at
+    /// the left with the name and the description beside it, and Save. A playlist has a name to
+    /// edit; an artist and an album only a description. `cover_size` is smaller in the narrow
+    /// sheet.
+    fn details_form<'a>(&'a self, draft: &'a crate::DetailsDraft, cover_size: f32) -> Element<'a> {
+        let cover: Element<'_> = match self.dest {
+            Dest::Playlist(i) => self.lib.playlists.get(i).map_or_else(
+                || space::horizontal().into(),
+                |p| playlist_avatar(&p.name, p.icon, cover_size),
+            ),
+            Dest::Album(i) => cover(i, cover_size),
+            Dest::Artist(i) => {
+                let name = self
+                    .lib
+                    .artists()
+                    .get(i)
+                    .map(|a| a.0.clone())
+                    .unwrap_or_default();
+                w::avatar(cover_size, name).into()
+            }
+            _ => space::horizontal().into(),
+        };
+        // Entry rows in a boxed list, as in the library's own forms: each title floats above its
+        // entry.
+        let mut rows: Vec<Element<'_>> = Vec::new();
+        if let Some(name) = &draft.name {
+            rows.push(
+                w::EntryRow::new("Name", name.as_str())
+                    .on_input(Message::NameInput)
+                    .on_submit(Message::SaveDetails)
+                    .into(),
+            );
+        }
+        rows.push(
+            w::EntryRow::new("Description", draft.description.as_str())
+                .on_input(Message::DescInput)
+                .on_submit(Message::SaveDetails)
+                .into(),
+        );
+        let fields = container(w::boxed_list(rows)).width(Length::Fill);
+        column![
+            row![
+                ty::title_3("Edit details"),
+                space::horizontal(),
+                w::icon_button(Icon::WindowClose).on_press(Message::CancelDetails),
+            ]
+            .align_y(Alignment::Center),
+            row![cover, fields].spacing(16).align_y(Alignment::Center),
+            row![
+                space::horizontal(),
+                w::suggested_pill_button(ty::label("Save")).on_press(Message::SaveDetails),
+            ],
+        ]
+        .spacing(16)
+        .into()
+    }
+
+    /// Edit details as a dialog (wide).
+    pub fn details_dialog<'a>(&'a self, draft: &'a crate::DetailsDraft) -> Element<'a> {
+        container(self.details_form(draft, 112.0))
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fixed(520.0))
+            .style(iad::styles::container::popover)
+            .into()
+    }
+
+    /// Edit details as a bottom sheet (narrow): the same form over the page, closed by its cross,
+    /// by Save, or by a tap outside it.
+    pub fn details_sheet<'a>(&'a self, draft: &'a crate::DetailsDraft) -> Element<'a> {
+        container(self.details_form(draft, 72.0))
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fill)
+            .into()
+    }
+
     /// The rules of a dynamic playlist. Modal and not dismissable: Cancel or Save.
     pub fn filter_dialog<'a>(&'a self, draft: &'a Filter) -> Element<'a> {
         container(
@@ -334,83 +410,6 @@ impl App {
         )
         .padding(20) // gutter-ok: a component's own padding, not a page gutter
         .width(Length::Fixed(460.0))
-        .style(iad::styles::container::popover)
-        .into()
-    }
-
-    /// Edit the tags of every track on the page: delete or replace a tag where it matches, and
-    /// add tags to all of them. Modal: closed by Cancel or Save.
-    pub fn bulk_dialog<'a>(&'a self, b: &'a crate::BulkEdit) -> Element<'a> {
-        let existing: Vec<Element<'a>> = b
-            .rows
-            .iter()
-            .map(|r| {
-                let tag = r.tag.clone();
-                let modes = w::toggle_group(
-                    vec![
-                        ToggleItem::new(Mode3::Keep, "Keep"),
-                        ToggleItem::new(Mode3::Delete, "Delete"),
-                        ToggleItem::new(Mode3::Replace, "Replace with"),
-                    ],
-                    Some(r.mode),
-                    {
-                        let tag = tag.clone();
-                        move |m| Message::BulkMode(tag.clone(), m)
-                    },
-                );
-                let mut line = column![
-                    row![
-                        tag_pill(&r.tag, &self.lib.style_of(&r.tag), ChipSize::Small),
-                        ty::caption(format!("on {} of {}", r.count, b.ids.len())),
-                        space::horizontal(),
-                        modes,
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center)
-                ]
-                .spacing(6);
-                if r.mode == Mode3::Replace {
-                    let tag = r.tag.clone();
-                    line = line.push(
-                        ChipGroup::new(self.tag_options(""), r.target.as_slice(), move |to| {
-                            Message::BulkTarget(tag.clone(), to)
-                        })
-                        .query(&self.tag_query)
-                        .on_color(Color::WHITE),
-                    );
-                }
-                line.into()
-            })
-            .collect();
-        container(
-            column![
-                ty::title_3(format!("Tags · {}", b.title)),
-                ty::caption(format!("Applies to all {} tracks.", b.ids.len())),
-                text_input("Find a tag", &self.tag_query).on_input(Message::TagQuery),
-                scrollable(
-                    column![
-                        ty::heading("Already on these tracks"),
-                        column(existing).spacing(10),
-                        ty::heading("Add to every track"),
-                        ChipGroup::new(self.tag_options(""), &b.add, Message::BulkAddToggle,)
-                            .query(&self.tag_query)
-                            .on_color(Color::WHITE),
-                    ]
-                    .spacing(10)
-                    .padding(iced::Padding::ZERO.right(12.0)) // gutter-ok: a component's own padding,
-                )
-                .height(Length::Fixed(340.0)),
-                row![
-                    space::horizontal(),
-                    w::flat_button(ty::label("Cancel")).on_press(Message::BulkCancel),
-                    w::suggested_button(ty::label("Save")).on_press(Message::BulkSave),
-                ]
-                .spacing(8),
-            ]
-            .spacing(10),
-        )
-        .padding(20) // gutter-ok: a component's own padding, not a page gutter
-        .width(Length::Fixed(620.0))
         .style(iad::styles::container::popover)
         .into()
     }

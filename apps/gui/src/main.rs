@@ -27,7 +27,6 @@ use iad::primitives::synced::{self, Line};
 use iad::transition::Event;
 use iced::{Subscription, Task};
 use iced_adaptive_design as iad;
-use weaver::bulk::{self as bulk_tags, Change, Plan};
 
 type Element<'a> = iad::Element<'a, Message>;
 
@@ -142,8 +141,8 @@ pub enum Message {
     Picked(Vec<std::path::PathBuf>),
     /// The import finished: what to tell the user.
     Imported(Result<String, String>),
-    /// The track menu's bottom sheet (narrow): the track and whether "View album" shows.
-    TrackSheet(Option<(usize, bool)>),
+    /// The bottom sheet of a menu (narrow): a track's actions or a page's options.
+    OpenSheet(Option<Sheet>),
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
@@ -181,12 +180,6 @@ pub enum Message {
     ViewAlbum(usize),
     ViewArtist(usize),
     EditTrack(usize),
-    BulkOpen,
-    BulkAddToggle(String),
-    BulkMode(String, Mode3),
-    BulkTarget(String, String),
-    BulkSave,
-    BulkCancel,
     EditToggleTag(String),
     SaveTrack,
     CancelTrack,
@@ -194,7 +187,16 @@ pub enum Message {
     JamFilters(bool),
     Back,
     Describe(String),
-    EditDescription(bool),
+    /// The pencil of a detail page: its name (a playlist's) and its description are edited together
+    /// in a form.
+    EditDetails,
+    /// Save and Cancel of the form.
+    SaveDetails,
+    CancelDetails,
+    /// What is typed in the form's description field.
+    DescInput(String),
+    /// The playlist's name, as typed in its Edit mode.
+    NameInput(String),
     DescExpanded(bool),
     EditFilter,
     DraftToggle(String),
@@ -223,29 +225,20 @@ pub struct TrackEdit {
     pub tags: Vec<String>,
 }
 
+/// What the bottom sheet (narrow) shows: a menu that is a dropdown on desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode3 {
-    Keep,
-    Delete,
-    Replace,
+pub enum Sheet {
+    /// A track's actions: the track, and whether "View album" shows.
+    Track(usize, bool),
+    /// A detail page's options: whether the page is a dynamic playlist.
+    Options(bool),
 }
 
-/// One tag already on the tracks being edited, and what to do with it.
-#[derive(Debug, Clone)]
-pub struct BulkRow {
-    pub tag: String,
-    pub count: usize,
-    pub mode: Mode3,
-    pub target: Option<String>,
-}
-
-/// Editing the tags of every track of an album or artist at once.
-#[derive(Debug, Clone)]
-pub struct BulkEdit {
-    pub title: String,
-    pub ids: Vec<usize>,
-    pub add: Vec<String>,
-    pub rows: Vec<BulkRow>,
+/// The Edit form of a detail page: the name (a playlist's) and the description, typed until Save.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailsDraft {
+    pub name: Option<String>,
+    pub description: String,
 }
 
 impl Player {
@@ -375,7 +368,7 @@ pub struct App {
     /// One setting for every track list (and the jam's): rows without a picture, one line.
     /// A line shown for a moment (an import's result) and when it appeared.
     pub notice: Option<(String, Instant)>,
-    pub sheet: Option<(usize, bool)>,
+    pub sheet: Option<Sheet>,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
     /// "It's been a while" on Home: rated highly, not played for this many days.
@@ -387,10 +380,10 @@ pub struct App {
     pub sleep_choice: Option<u32>,
     /// The window of the main track list (virtualised) and where it starts.
     pub list_vp: Viewport,
-    pub bulk: Option<BulkEdit>,
     /// Descriptions of detail pages, by `desc_key`, and whether the open one is being edited.
     pub descriptions: std::collections::HashMap<String, String>,
-    pub editing_desc: bool,
+    /// The open Edit form, if any.
+    pub edit: Option<DetailsDraft>,
     pub desc_expanded: bool,
     /// The jam sheet's matches as a virtualised list: the window of rows built, and where it
     /// starts in the full list.
@@ -464,9 +457,8 @@ impl App {
             sleep_left: None,
             sleep_choice: None,
             list_vp: Viewport::new(480.0),
-            bulk: None,
             descriptions: std::collections::HashMap::new(),
-            editing_desc: false,
+            edit: None,
             desc_expanded: false,
             jam_filters_open: true,
             jam_saved: None,
@@ -495,7 +487,11 @@ impl App {
                 ],
                 "track-sheet" => vec![
                     Message::Go(Dest::Tracks),
-                    Message::TrackSheet(Some((3, true))),
+                    Message::OpenSheet(Some(Sheet::Track(3, true))),
+                ],
+                "options-sheet" => vec![
+                    Message::Go(Dest::Playlist(0)),
+                    Message::OpenSheet(Some(Sheet::Options(true))),
                 ],
                 "home-end" => vec![
                     Message::Go(Dest::Home),
@@ -509,8 +505,8 @@ impl App {
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
                 "playlist-in" => vec![Message::Open(Dest::Playlist(0))],
                 "edit-track" => vec![Message::Go(Dest::Tracks), Message::EditTrack(3)],
-                "bulk" => vec![Message::Go(Dest::Album(2)), Message::BulkOpen],
-                "describe" => vec![Message::Go(Dest::Artist(1)), Message::EditDescription(true)],
+                "describe" => vec![Message::Go(Dest::Artist(1)), Message::EditDetails],
+                "edit-playlist" => vec![Message::Go(Dest::Playlist(0)), Message::EditDetails],
                 "long-desc" => vec![
                     Message::Go(Dest::Playlist(0)),
                     Message::Describe(LONG.repeat(3)),
@@ -552,9 +548,8 @@ impl App {
 
     fn close_overlays(&mut self) {
         self.draft = None;
-        self.bulk = None;
         self.edit_track = None;
-        self.editing_desc = false;
+        self.edit = None;
         self.desc_expanded = false;
         self.jam_open = false;
         self.now_playing = false;
@@ -596,30 +591,101 @@ impl App {
         self.notice = Some((text.into(), Instant::now()));
     }
 
-    /// Reads the library again (after an import): the lists, and the queue by slug, since the
-    /// indexes shift when tracks are added.
-    fn reload(&mut self) {
+    /// Reads the library again: the lists, the playlists' descriptions, and the queue by slug,
+    /// since the indexes shift when tracks or playlists are added or renamed. `false` when the
+    /// library cannot be read (the reason is shown).
+    fn reload_library(&mut self) -> bool {
         match self.backend.load() {
             Ok(lib) => {
                 self.lib = lib;
                 for (i, p) in self.lib.playlists.iter().enumerate() {
                     self.descriptions
-                        .entry(format!("playlist:{i}"))
-                        .or_insert_with(|| p.description.clone());
-                }
-                // Pages are addressed by index, which may now mean something else.
-                if matches!(
-                    self.dest,
-                    Dest::Artist(_) | Dest::Album(_) | Dest::Playlist(_)
-                ) {
-                    self.dest = Dest::Home;
-                    self.history = History::new(Place::home());
+                        .insert(format!("playlist:{i}"), p.description.clone());
                 }
                 let s = self.backend.snapshot();
                 self.apply(s);
                 self.refresh();
+                true
             }
-            Err(e) => self.say(format!("Cannot read the library: {e}")),
+            Err(e) => {
+                self.say(format!("Cannot read the library: {e}"));
+                false
+            }
+        }
+    }
+
+    /// After an import: reads the library again and leaves any page addressed by an index, which
+    /// may now mean something else.
+    fn reload(&mut self) {
+        if self.reload_library()
+            && matches!(
+                self.dest,
+                Dest::Artist(_) | Dest::Album(_) | Dest::Playlist(_)
+            )
+        {
+            self.dest = Dest::Home;
+            self.history = History::new(Place::home());
+            self.refresh();
+        }
+    }
+
+    /// Opens the Edit form of the page: a playlist's name and the description, as they are now.
+    fn open_form(&mut self) {
+        let Some(key) = self.desc_key() else { return };
+        let name = match self.dest {
+            Dest::Playlist(i) => self.lib.playlists.get(i).map(|p| p.name.clone()),
+            _ => None,
+        };
+        self.edit = Some(DetailsDraft {
+            name,
+            description: self.descriptions.get(&key).cloned().unwrap_or_default(),
+        });
+    }
+
+    /// Saves the form. A playlist's description and name go to the engine; the name is checked
+    /// there (not empty, not another playlist's), and a refusal is shown with the form closed and
+    /// the name unchanged. An artist's or an album's description is kept in the app.
+    fn save_form(&mut self) {
+        let Some(draft) = self.edit.take() else {
+            return;
+        };
+        let Some(key) = self.desc_key() else { return };
+        let Dest::Playlist(i) = self.dest else {
+            self.descriptions.insert(key, draft.description);
+            return;
+        };
+        let Some(old) = self.lib.playlists.get(i).map(|p| p.name.clone()) else {
+            return;
+        };
+        match self
+            .backend
+            .set_playlist_description(&old, &draft.description)
+        {
+            Ok(()) => {
+                self.lib.playlists[i].description = draft.description.clone();
+                self.descriptions.insert(key, draft.description);
+            }
+            Err(e) => self.say(format!("Cannot save the description: {e}")),
+        }
+        let Some(new) = draft
+            .name
+            .map(|n| n.trim().to_string())
+            .filter(|n| *n != old)
+        else {
+            return;
+        };
+        match self.backend.rename_playlist(&old, &new) {
+            Ok(()) => {
+                if self.reload_library() {
+                    // The list is sorted by name, so the playlist may have moved.
+                    if let Some(at) = self.lib.playlists.iter().position(|p| p.name == new) {
+                        self.dest = Dest::Playlist(at);
+                        self.history = History::new(Place::home());
+                        self.refresh();
+                    }
+                }
+            }
+            Err(e) => self.say(format!("Cannot rename: {e}")),
         }
     }
 
@@ -795,7 +861,7 @@ impl App {
                 self.density = d;
                 Vec::new()
             }
-            Message::TrackSheet(s) => {
+            Message::OpenSheet(s) => {
                 self.sheet = s;
                 Vec::new()
             }
@@ -1031,82 +1097,6 @@ impl App {
                 });
                 Vec::new()
             }
-            Message::BulkOpen => {
-                let title = self.page_title();
-                let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
-                let rows = bulk_tags::census(self.rows.iter().map(|t| t.tags.as_slice()))
-                    .into_iter()
-                    .map(|(tag, count)| BulkRow {
-                        tag,
-                        count,
-                        mode: Mode3::Keep,
-                        target: None,
-                    })
-                    .collect();
-                self.bulk = Some(BulkEdit {
-                    title,
-                    ids,
-                    add: Vec::new(),
-                    rows,
-                });
-                Vec::new()
-            }
-            Message::BulkAddToggle(t) => {
-                if let Some(b) = &mut self.bulk {
-                    toggle(&mut b.add, t);
-                }
-                Vec::new()
-            }
-            Message::BulkMode(tag, m) => {
-                if let Some(r) = self
-                    .bulk
-                    .as_mut()
-                    .and_then(|b| b.rows.iter_mut().find(|r| r.tag == tag))
-                {
-                    r.mode = m;
-                }
-                Vec::new()
-            }
-            Message::BulkTarget(tag, to) => {
-                if let Some(r) = self
-                    .bulk
-                    .as_mut()
-                    .and_then(|b| b.rows.iter_mut().find(|r| r.tag == tag))
-                {
-                    r.target = Some(to);
-                }
-                Vec::new()
-            }
-            Message::BulkSave => {
-                if let Some(b) = self.bulk.take() {
-                    let plan = Plan {
-                        add: b.add,
-                        changes: b
-                            .rows
-                            .into_iter()
-                            .map(|r| {
-                                let change = match (r.mode, r.target) {
-                                    (Mode3::Delete, _) => Change::Delete,
-                                    (Mode3::Replace, Some(to)) => Change::Replace(to),
-                                    _ => Change::Keep,
-                                };
-                                (r.tag, change)
-                            })
-                            .collect(),
-                    };
-                    for id in b.ids {
-                        if let Some(t) = self.lib.tracks.get_mut(id) {
-                            bulk_tags::apply(&mut t.tags, &plan);
-                        }
-                    }
-                }
-                self.refresh();
-                Vec::new()
-            }
-            Message::BulkCancel => {
-                self.bulk = None;
-                Vec::new()
-            }
             Message::EditToggleTag(t) => {
                 if let Some(e) = &mut self.edit_track {
                     toggle(&mut e.tags, t);
@@ -1150,8 +1140,28 @@ impl App {
                 self.desc_expanded = on;
                 Vec::new()
             }
-            Message::EditDescription(on) => {
-                self.editing_desc = on;
+            Message::EditDetails => {
+                self.open_form();
+                Vec::new()
+            }
+            Message::SaveDetails => {
+                self.save_form();
+                Vec::new()
+            }
+            Message::CancelDetails => {
+                self.edit = None;
+                Vec::new()
+            }
+            Message::NameInput(t) => {
+                if let Some(DetailsDraft { name: Some(n), .. }) = &mut self.edit {
+                    *n = t;
+                }
+                Vec::new()
+            }
+            Message::DescInput(t) => {
+                if let Some(d) = &mut self.edit {
+                    d.description = t;
+                }
                 Vec::new()
             }
             Message::EditFilter => {
@@ -1555,6 +1565,120 @@ mod tests {
         let _ = a.update(Message::QueueRemove(0));
         assert_eq!(a.now().map(|t| t.id), Some(playing));
         assert_eq!(a.player.queue[cur], playing);
+    }
+
+    #[test]
+    fn a_playlist_is_renamed_and_described_through_the_engine() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::playlist(&mut backend, "Road trip", "For the drive");
+        backend::sample::playlist(&mut backend, "Other", "");
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        let at = |a: &App, name: &str| a.lib.playlists.iter().position(|p| p.name == name);
+        let i = at(&a, "Road trip").unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(i)));
+        // One form for the name and the description, saved together.
+        let _ = a.update(Message::EditDetails);
+        let draft = a.edit.clone().unwrap();
+        assert_eq!(draft.name.as_deref(), Some("Road trip"));
+        assert_eq!(draft.description, "For the drive");
+        let _ = a.update(Message::NameInput("Alpha drive".into()));
+        let _ = a.update(Message::DescInput("Slow songs".into()));
+        // Nothing is saved until Save: Cancel drops the draft.
+        let _ = a.update(Message::CancelDetails);
+        assert!(a.edit.is_none() && at(&a, "Road trip").is_some());
+        let _ = a.update(Message::EditDetails);
+        let _ = a.update(Message::NameInput("Alpha drive".into()));
+        let _ = a.update(Message::DescInput("Slow songs".into()));
+        let _ = a.update(Message::SaveDetails);
+        assert!(a.edit.is_none());
+        // Saved in the engine, and the page follows the playlist to where the list sorts it.
+        let i = at(&a, "Alpha drive").expect("renamed");
+        assert!(at(&a, "Road trip").is_none());
+        assert_eq!(a.dest, Dest::Playlist(i));
+        assert_eq!(a.lib.playlists[i].description, "Slow songs");
+        // Reading the library again shows the engine has both.
+        let _ = a.update(Message::Imported(Ok(String::new())));
+        let i = at(&a, "Alpha drive").unwrap();
+        assert_eq!(a.lib.playlists[i].description, "Slow songs");
+        // Another playlist's name is refused, and nothing changes.
+        let _ = a.update(Message::Open(Dest::Playlist(i)));
+        let _ = a.update(Message::EditDetails);
+        let _ = a.update(Message::NameInput("other".into()));
+        let _ = a.update(Message::SaveDetails);
+        assert!(a.notice.as_ref().unwrap().0.contains("Cannot rename"));
+        assert!(at(&a, "Alpha drive").is_some());
+        // Artists and albums edit the description only: there is no name to edit.
+        let _ = a.update(Message::Open(Dest::Artist(0)));
+        let _ = a.update(Message::EditDetails);
+        assert!(a.edit.as_ref().is_some_and(|d| d.name.is_none()));
+        let _ = a.view();
+        let _ = a.update(Message::DescInput("A band.".into()));
+        let _ = a.update(Message::SaveDetails);
+        assert_eq!(
+            a.descriptions.get(&a.desc_key().unwrap()).unwrap(),
+            "A band."
+        );
+    }
+
+    #[test]
+    fn a_pages_options_open_as_a_sheet_and_edit_details_opens_the_dialog() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::playlist(&mut backend, "Road trip", "For the drive");
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        let _ = a.update(Message::Open(Dest::Playlist(0)));
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Options(false))));
+        assert_eq!(a.sheet, Some(Sheet::Options(false)));
+        let _ = a.view();
+        // A choice in the sheet closes it, then does it.
+        let _ = a.update(Message::SheetAction(Box::new(Message::EditDetails)));
+        assert!(a.sheet.is_none());
+        assert_eq!(
+            a.edit.as_ref().and_then(|d| d.name.as_deref()),
+            Some("Road trip")
+        );
+        let _ = a.view();
+    }
+
+    #[test]
+    fn edit_details_is_a_dialog_when_wide_and_a_bottom_sheet_when_narrow() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::playlist(&mut backend, "Road trip", "For the drive");
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        let _ = a.update(Message::Open(Dest::Playlist(0)));
+        let _ = a.update(Message::EditDetails);
+        assert!(!a.is_narrow());
+        let _ = a.view();
+        assert!(a.dialog_open_for_test(), "a dialog when wide");
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        assert!(a.is_narrow());
+        let _ = a.view();
+        assert!(
+            !a.dialog_open_for_test(),
+            "no dialog when narrow: the sheet shows it"
+        );
+        // Cancel closes it in either layout.
+        let _ = a.update(Message::CancelDetails);
+        assert!(a.edit.is_none());
+    }
+
+    #[test]
+    fn home_and_explore_say_what_will_show_up_when_there_is_no_history() {
+        // The mock library has tracks but no listening history: those sections get a note
+        // instead of staying blank, and every page builds.
+        let (backend, mut lib) = backend::sample::backend();
+        for t in &mut lib.tracks {
+            t.plays = 0;
+            t.last_played_days = 0;
+        }
+        let mut a = App::with(backend, lib).0;
+        assert!(a.lib.recently_played(5).is_empty() && a.lib.recent_artists(8).is_empty());
+        for dest in [Dest::Home, Dest::Explore] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+        }
     }
 
     #[test]
