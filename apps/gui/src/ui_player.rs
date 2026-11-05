@@ -379,11 +379,10 @@ impl App {
         .spacing(6)
         .align_x(Alignment::Center);
         // The window's player: there is no bar under Now Playing, so the transport is here, in
-        // both layouts.
+        // both layouts (the volume is the bar's, not Now Playing's).
         let transport = column![
             self.seek(t),
             self.controls(20.0),
-            self.volume_control(),
             row![
                 w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
                     .size(16.0)
