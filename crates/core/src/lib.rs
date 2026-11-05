@@ -15,6 +15,7 @@ mod playlist;
 mod queue;
 mod rng;
 mod slug;
+pub mod spectrum;
 mod tag;
 mod track;
 
