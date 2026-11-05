@@ -30,6 +30,8 @@ pub struct Snapshot {
     pub pos: f32,
     pub shuffle: bool,
     pub repeat: bool,
+    /// 0.0 (mute) to 1.0.
+    pub volume: f32,
     /// Counts the tracks started (the engine's `start_seq`): it changes when a track starts or
     /// restarts, which is when the listening history grows.
     pub started: u64,
@@ -201,6 +203,7 @@ impl Backend {
             pos: v.position.as_secs_f32(),
             shuffle: v.state.shuffle,
             repeat: v.state.repeat != RepeatMode::Off,
+            volume: v.state.volume,
             started: v.state.start_seq,
         }
     }
@@ -312,6 +315,12 @@ impl Backend {
             RepeatMode::Off
         };
         self.run(|e| e.set_repeat(mode))
+    }
+
+    /// Sets the volume (0.0 mute to 1.0); it is kept in the session.
+    pub fn set_volume(&mut self, volume: f32) -> Snapshot {
+        let volume = volume.clamp(0.0, 1.0);
+        self.run(|e| e.set_volume(volume))
     }
 
     /// Removes the track at `at` (0-based) of the queue.

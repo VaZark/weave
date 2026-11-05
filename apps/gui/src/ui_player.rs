@@ -74,6 +74,23 @@ impl App {
         .into()
     }
 
+    /// The volume button (mute and back) with its slider.
+    fn volume_control(&self) -> Element<'_> {
+        let icon = if self.player.volume == 0.0 {
+            Icon::VolumeMute
+        } else {
+            Icon::Volume
+        };
+        row![
+            w::icon_button(icon).on_press(Message::ToggleMute),
+            container(w::scale(0.0..=1.0, self.player.volume, Message::SetVolume).step(0.01f32))
+                .width(Length::Fixed(90.0)),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
     /// Wide layout: the player bar.
     pub fn player_bar(&self) -> Element<'_> {
         let Some(t) = self.now() else {
@@ -100,6 +117,7 @@ impl App {
                 w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
                     .size(16.0)
                     .on_toggle(move |_| Message::Repeat),
+                self.volume_control(),
                 w::IconToggleButton::new(Icon::Queue, self.queue_open)
                     .size(16.0)
                     .on_toggle(move |_| Message::ToggleQueue),
@@ -291,21 +309,25 @@ impl App {
             .size(16.0)
             .on_toggle(move |_| Message::ToggleLyrics);
         if narrow {
-            body = body.push(self.seek(t)).push(self.controls(20.0)).push(
-                row![
-                    w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
-                        .size(16.0)
-                        .on_toggle(move |_| Message::Shuffle),
-                    w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
-                        .size(16.0)
-                        .on_toggle(move |_| Message::Repeat),
-                    lyrics,
-                    w::IconToggleButton::new(Icon::Queue, self.queue_open)
-                        .size(16.0)
-                        .on_toggle(move |_| Message::ToggleQueue),
-                ]
-                .spacing(8),
-            );
+            body = body
+                .push(self.seek(t))
+                .push(self.controls(20.0))
+                .push(self.volume_control())
+                .push(
+                    row![
+                        w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                            .size(16.0)
+                            .on_toggle(move |_| Message::Shuffle),
+                        w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                            .size(16.0)
+                            .on_toggle(move |_| Message::Repeat),
+                        lyrics,
+                        w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                            .size(16.0)
+                            .on_toggle(move |_| Message::ToggleQueue),
+                    ]
+                    .spacing(8),
+                );
         } else {
             body = body.push(lyrics);
         }

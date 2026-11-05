@@ -222,6 +222,10 @@ pub enum Message {
     Seek(f32),
     Shuffle,
     Repeat,
+    /// The volume slider: 0.0 to 1.0.
+    SetVolume(f32),
+    /// The volume button: mute, or back to the volume before.
+    ToggleMute,
     Queue(ReorderEvent),
     Progress,
     // Development: `ICED_ADAPTIVE_DESIGN_SCREENSHOT=file.png` saves a screenshot and quits;
@@ -344,6 +348,8 @@ pub struct Player {
     pub pos: f32,
     pub shuffle: bool,
     pub repeat: bool,
+    /// 0.0 (mute) to 1.0.
+    pub volume: f32,
 }
 
 pub struct App {
@@ -359,6 +365,8 @@ pub struct App {
     pub tag_query: String,
     pub jam_open: bool,
     pub now_playing: bool,
+    /// The volume before the volume button muted, to go back to.
+    pub muted_from: Option<f32>,
     pub queue_open: bool,
     pub queue_slide: Slide,
     /// The window's height, for how far a sheet travels.
@@ -446,6 +454,7 @@ impl App {
             tag_query: String::new(),
             jam_open: false,
             now_playing: false,
+            muted_from: None,
             queue_open: false,
             queue_slide: Slide::default(),
             win_h: window_size().1,
@@ -461,6 +470,7 @@ impl App {
                 pos: 0.0,
                 shuffle: false,
                 repeat: false,
+                volume: 1.0,
             },
             lyrics: Vec::new(),
             lyrics_of: None,
@@ -744,6 +754,7 @@ impl App {
         self.player.pos = s.pos;
         self.player.shuffle = s.shuffle;
         self.player.repeat = s.repeat;
+        self.player.volume = s.volume;
         self.player.sync_up_next();
     }
 
@@ -1401,6 +1412,24 @@ impl App {
                 self.apply(s);
                 Vec::new()
             }
+            Message::SetVolume(v) => {
+                self.muted_from = None;
+                let s = self.backend.set_volume(v);
+                self.apply(s);
+                Vec::new()
+            }
+            Message::ToggleMute => {
+                let target = if self.player.volume == 0.0 {
+                    // Muted: back to the volume before, or half when there is none.
+                    self.muted_from.take().filter(|v| *v > 0.0).unwrap_or(0.5)
+                } else {
+                    self.muted_from = Some(self.player.volume);
+                    0.0
+                };
+                let s = self.backend.set_volume(target);
+                self.apply(s);
+                Vec::new()
+            }
             Message::Repeat => {
                 let s = self.backend.repeat(!self.player.repeat);
                 self.apply(s);
@@ -2033,6 +2062,23 @@ mod tests {
         list.sort();
         assert_eq!(list, ids);
         assert_eq!(a.player.queue, ids);
+    }
+
+    #[test]
+    fn the_volume_slider_sets_it_and_the_button_mutes_and_restores_it() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        assert_eq!(a.player.volume, 1.0);
+        let _ = a.update(Message::SetVolume(0.4));
+        assert_eq!(a.player.volume, 0.4);
+        let _ = a.update(Message::ToggleMute);
+        assert_eq!(a.player.volume, 0.0);
+        let _ = a.update(Message::ToggleMute);
+        assert_eq!(a.player.volume, 0.4, "back to what it was");
+        // Muted with the slider (nothing remembered): the button brings sound back.
+        let _ = a.update(Message::SetVolume(0.0));
+        let _ = a.update(Message::ToggleMute);
+        assert!(a.player.volume > 0.0);
     }
 
     #[test]
