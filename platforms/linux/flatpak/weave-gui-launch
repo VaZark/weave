@@ -1,0 +1,5 @@
+#!/bin/sh
+# Entry point inside the Flatpak: use the host's data directory (the library shared with the CLI)
+# instead of the sandbox's own.
+export XDG_DATA_HOME="$HOME/.local/share"
+exec weave-player-gui "$@"

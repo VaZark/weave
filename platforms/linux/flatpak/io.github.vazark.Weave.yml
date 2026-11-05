@@ -5,12 +5,13 @@ runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: weave-player-gui
+command: weave-gui-launch
 finish-args:
   - --socket=wayland
   - --device=dri
   - --socket=pulseaudio
-  # The library: music to read, and the database the CLI and the GUI share (see docs/ui).
+  # The library: music to read, and the database the CLI and the GUI share. The launcher points
+  # XDG_DATA_HOME at the host's, since the sandbox's own would hide it.
   - --filesystem=xdg-music:ro
   - --filesystem=xdg-data/weave
   # Media keys and the shell's player widget.
@@ -28,7 +29,8 @@ modules:
       - cargo build --release --locked -p weave-player-gui
       - install -Dm755 target/release/weave-player-gui /app/bin/weave-player-gui
       - install -Dm644 platforms/linux/icon/io.github.vazark.Weave.svg /app/share/icons/hicolor/scalable/apps/io.github.vazark.Weave.svg
-      - mkdir -p /app/share/applications && target/release/weave-player-gui --print-desktop-entry > /app/share/applications/io.github.vazark.Weave.desktop
+      - install -Dm755 platforms/linux/flatpak/weave-gui-launch /app/bin/weave-gui-launch
+      - mkdir -p /app/share/applications && target/release/weave-player-gui --print-desktop-entry | sed 's/^Exec=.*/Exec=weave-gui-launch/' > /app/share/applications/io.github.vazark.Weave.desktop
       - install -Dm644 platforms/linux/flatpak/io.github.vazark.Weave.metainfo.xml /app/share/metainfo/io.github.vazark.Weave.metainfo.xml
     sources:
       - type: dir
