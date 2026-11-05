@@ -24,6 +24,10 @@ A jam is a dynamic listening mode: pick some filters, press Start, and Weave pla
 
 (The keys in the suggestions are the user's own; `mood`, `lang` and `energy` are examples.)
 
+## The jam page
+
+The jam page itself is short: the **Filters** button (with the number of active filters as a badge), **Surprise me** and **Clear filters** side by side, then **only the active filters** as chips, each with a cross that clears it (a tag, or the tempo range), then the round play button and the matches. Pressing Filters opens the filter page in a **dialog** (wide) or a **full-screen bottom sheet** (narrow); it applies live and closes with Done.
+
 ## The filter page
 
 The filter page is one component with one state: tag tokens, genre and a BPM range, which is the typed filter the library already has (`FilterSpec`; no expression language). It adapts to the space its host gives it.

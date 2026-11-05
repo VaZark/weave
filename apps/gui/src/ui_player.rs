@@ -4,7 +4,7 @@ use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
 use iad::{Icon, styles as style};
-use iced::widget::{button, column, container, mouse_area, row, space};
+use iced::widget::{button, column, container, mouse_area, row, space, vertical_slider};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
@@ -44,7 +44,7 @@ impl App {
         w::icon_button(icon).on_press(msg).into()
     }
 
-    fn controls(&self, size: f32) -> Element<'_> {
+    pub(crate) fn controls(&self, size: f32) -> Element<'_> {
         row![
             self.skip_button(
                 Icon::SkipBackward,
@@ -76,19 +76,29 @@ impl App {
 
     /// The volume button (mute and back) with its slider.
     fn volume_control(&self) -> Element<'_> {
-        let icon = if self.player.volume == 0.0 {
+        let volume = self.player.volume;
+        let icon = if volume == 0.0 {
             Icon::VolumeMute
         } else {
             Icon::Volume
         };
-        row![
-            w::icon_button(icon).on_press(Message::ToggleMute),
-            container(w::scale(0.0..=1.0, self.player.volume, Message::SetVolume).step(0.01f32))
-                .width(Length::Fixed(90.0)),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center)
-        .into()
+        let percent = (volume * 100.0).round() as u32;
+        // A vertical slider; hovering it (and dragging) shows the percentage it is at.
+        let slider = w::tooltip(
+            vertical_slider(0.0..=1.0, volume, Message::SetVolume)
+                .step(0.01f32)
+                .height(Length::Fixed(120.0)),
+            format!("{percent}%"),
+            w::TooltipPosition::Left,
+        );
+        let panel = container(slider)
+            .padding(8) // gutter-ok: a component's own padding, not a page gutter
+            .style(style::container::popover);
+        w::Popover::new(icon.view(16.0), panel)
+            .fit_content()
+            .align(w::PopoverAlign::Center)
+            .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("volume"))
+            .into()
     }
 
     /// The heart of a track: in the Favourites playlist or not.
@@ -153,6 +163,7 @@ impl App {
                 .size(16.0)
                 .on_toggle(move |_| Message::NowPlaying(!self.now_playing)),
                 self.fullscreen_button(),
+                w::icon_button(Icon::Compact).on_press(Message::Minimal(true)),
             ]
             .spacing(14)
             .align_y(Alignment::Center),
@@ -263,18 +274,10 @@ impl App {
                 .into()
         })
         .on_event(Message::Queue);
-        let mut controls = row![
-            w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue),
-            ty::heading("Queue"),
-            space::horizontal(),
-            sleep,
-            timer,
-            w::icon_button(Icon::Delete).on_press_maybe(
-                (!self.player.up_next.items().is_empty()).then_some(Message::ClearQueue)
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
+        // No title: the queue is what is under the player. The close chevron is at the right edge.
+        let mut controls = row![sleep, space::horizontal()]
+            .spacing(8)
+            .align_y(Alignment::Center);
         if narrow {
             controls = controls
                 .push(
@@ -288,62 +291,53 @@ impl App {
                         .on_toggle(move |_| Message::Repeat),
                 );
         }
+        controls = controls
+            .push(timer)
+            .push(w::icon_button(Icon::Delete).on_press_maybe(
+                (!self.player.up_next.items().is_empty()).then_some(Message::ClearQueue),
+            ))
+            .push(w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue));
+        // The playing track is not listed: the player is right above.
         let played = self
             .player
             .current
             .unwrap_or(0)
             .min(self.player.queue.len());
-        let mut history = column![
-            button(
-                row![
-                    if self.history_open {
-                        Icon::GoDown.view(14.0)
-                    } else {
-                        Icon::GoNext.view(14.0)
-                    },
-                    ty::heading("History"),
-                    ty::caption(format!("{played} tracks")),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-            )
-            .style(style::button::flat)
-            .on_press(Message::ToggleQueueHistory)
-        ];
-        if self.history_open {
-            for (at, id) in self.player.queue[..played].iter().enumerate() {
-                let t = &self.lib.tracks[*id];
-                history = history.push(
-                    button(
-                        row![
-                            column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
-                                .width(Length::Fill),
-                            ty::caption(t.duration()),
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                    )
-                    .style(style::button::flat)
-                    .width(Length::Fill)
-                    .on_press(Message::QueueJump(at)),
-                );
-            }
+        let mut history = column![];
+        for (at, id) in self.player.queue[..played].iter().enumerate() {
+            let t = &self.lib.tracks[*id];
+            history = history.push(
+                button(
+                    row![
+                        column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
+                            .width(Length::Fill),
+                        ty::caption(t.duration()),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .style(style::button::flat)
+                .width(Length::Fill)
+                .on_press(Message::QueueJump(at)),
+            );
         }
-        let playing: Element<'_> = match self.now() {
-            Some(t) => column![
-                ty::heading("Now playing"),
-                row![
-                    cover(t.id, 32.0),
-                    column![ty::body(t.title.clone()), ty::caption(t.artist.clone())],
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(4)
-            .into(),
-            None => space::vertical().height(0).into(),
-        };
-        let stack = column![history, playing, ty::heading("Up next"), list].spacing(8);
+        let history = w::Collapsible::new(
+            w::SectionDivider::new("History")
+                .detail(format!("{played} tracks"))
+                .open(self.history_open)
+                .on_toggle(Message::ToggleQueueHistory),
+            history,
+            self.history_open,
+        );
+        let up_next = w::Collapsible::new(
+            w::SectionDivider::new("Up next")
+                .detail(format!("{} tracks", self.player.up_next.items().len()))
+                .open(self.up_next_open)
+                .on_toggle(Message::ToggleUpNext),
+            list,
+            self.up_next_open,
+        );
+        let stack = column![history, up_next].spacing(8);
         column![surface::toolbar(controls), surface::scrolling(stack)]
             .width(Length::Fill)
             .height(Length::Fill)
@@ -361,67 +355,96 @@ impl App {
                 .into();
         };
         let narrow = self.is_narrow();
-        let art: Element<'_> = if self.show_lyrics {
+        let synced = || -> Element<'_> {
             SyncedText::new(LYRICS, &self.lyrics, Message::Seek)
                 .current(self.lyric_line)
                 .placeholder("No lyrics for this track.")
                 .into()
-        } else {
-            container(cover(t.id, 260.0)).center(Length::Fill).into()
         };
+        // Lyrics sit beside the cover when there is room, and replace it when there is not.
+        let beside = !narrow && self.show_lyrics;
         let tags = row(t
             .tags
             .iter()
             .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Medium)))
         .spacing(6)
         .wrap();
-        let mut body = column![
-            container(art).height(Length::Fill).width(Length::Fill),
-            column![
-                row![ty::title_2(t.title.clone()), self.heart(t.id)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                ty::body(t.by_line()),
-                tags,
+        let info = column![
+            row![ty::title_2(t.title.clone()), self.heart(t.id)]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ty::body(t.by_line()),
+            tags,
+        ]
+        .spacing(6)
+        .align_x(Alignment::Center);
+        // The window's player: there is no bar under Now Playing, so the transport is here, in
+        // both layouts (the volume is the bar's, not Now Playing's).
+        let transport = column![
+            self.seek(t),
+            self.controls(20.0),
+            row![
+                w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Shuffle),
+                w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Repeat),
+                w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleLyrics),
+                w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleQueue),
             ]
-            .spacing(6)
-            .align_x(Alignment::Center),
+            .spacing(8),
         ]
         .spacing(12)
-        .align_x(Alignment::Center)
-        .max_width(640)
-        .height(Length::Fill);
-        let lyrics = w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
-            .size(16.0)
-            .on_toggle(move |_| Message::ToggleLyrics);
-        if narrow {
-            body = body
-                .push(self.seek(t))
-                .push(self.controls(20.0))
-                .push(self.volume_control())
-                .push(
-                    row![
-                        w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::Shuffle),
-                        w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::Repeat),
-                        lyrics,
-                        w::IconToggleButton::new(Icon::Queue, self.queue_open)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::ToggleQueue),
-                    ]
-                    .spacing(8),
-                );
+        .align_x(Alignment::Center);
+        let stage: Element<'_> = if beside {
+            // The cover and what it is on the left, the lyrics on the right.
+            row![
+                column![container(cover(t.id, 300.0)).center(Length::Fill), info]
+                    .spacing(12)
+                    .align_x(Alignment::Center)
+                    .width(Length::FillPortion(1)),
+                container(synced())
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill),
+            ]
+            .spacing(48)
+            .height(Length::Fill)
+            .into()
         } else {
-            body = body.push(lyrics);
-        }
+            let art: Element<'_> = if self.show_lyrics {
+                synced()
+            } else {
+                container(cover(t.id, 260.0)).center(Length::Fill).into()
+            };
+            column![
+                container(art).height(Length::Fill).width(Length::Fill),
+                info
+            ]
+            .spacing(12)
+            .align_x(Alignment::Center)
+            .height(Length::Fill)
+            .into()
+        };
+        let body = container(
+            column![stage, transport]
+                .spacing(12)
+                .align_x(Alignment::Center),
+        )
+        .max_width(if beside { 1040 } else { 640 })
+        .height(Length::Fill);
+        // The top row is also the window's handle: with the header gone it is what drags it.
         let close = row![
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
-            space::horizontal(),
+            mouse_area(space::horizontal().height(Length::Fixed(32.0)))
+                .on_press(Message::Window(iad::windows::Action::Drag)),
             self.fullscreen_button(),
-        ];
+        ]
+        .align_y(Alignment::Center);
         let backdrop = iad::color::from_index(t.id);
         container(column![
             close,
