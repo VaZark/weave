@@ -179,6 +179,61 @@ fn metadata_search_is_unicode_case_insensitive_and_injection_safe() {
 }
 
 #[test]
+fn artist_and_album_lists_match_any_exactly_and_the_unknown_token_matches_none() {
+    let (mut s, _) = fixture();
+    // An album-less track (all of the fixture's) and one with no artist at all.
+    s.import_tracks(&[ScannedTrack {
+        path: "/e".into(),
+        metadata: Metadata {
+            title: "E".into(),
+            artist: None,
+            album: Some("Live at the Roxy".into()),
+            ..Default::default()
+        },
+    }])
+    .unwrap();
+    let any = |artists: &[&str], albums: &[&str]| {
+        names(&all(
+            &s,
+            &FilterSpec {
+                artist_any: tags(artists),
+                album_any: tags(albums),
+                ..Default::default()
+            },
+        ))
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
+    };
+    // Any of several artists, case-insensitive and accent-exact.
+    assert_eq!(any(&["romeo santos", "AVENTURA"], &[]), ["B", "A"]);
+    assert_eq!(any(&["édith"], &[]), ["D"]);
+    assert!(
+        any(&["Edith"], &[]).is_empty(),
+        "exact, not a substring or a fold"
+    );
+    assert!(any(&["Aven"], &[]).is_empty(), "exact, not a substring");
+    // The unknown token matches the track without an artist, alone or among names.
+    assert_eq!(any(&[FilterSpec::UNKNOWN], &[]), ["E"]);
+    assert_eq!(any(&[FilterSpec::UNKNOWN, "Kaysha"], &[]), ["E", "C"]);
+    // Albums: the one that exists, and the unknown token for tracks without one.
+    assert_eq!(any(&[], &["live at the roxy"]), ["E"]);
+    assert_eq!(any(&[], &[FilterSpec::UNKNOWN]), ["B", "C", "A", "D"]);
+    // Artists and albums are ANDed with each other and with the rest.
+    assert_eq!(any(&["Kaysha"], &[FilterSpec::UNKNOWN]), ["C"]);
+    assert!(any(&["Kaysha"], &["Live at the Roxy"]).is_empty());
+    let both = FilterSpec {
+        artist_any: tags(&["Romeo Santos", "Kaysha"]),
+        tag_all: tags(&["90s"]),
+        bpm_min: Some(120.0),
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &both)), ["C"]);
+    // Injection-safe like the other text conditions.
+    assert!(any(&["x' OR '1'='1"], &[]).is_empty());
+}
+
+#[test]
 fn remove_tags() {
     let (mut s, fx) = fixture();
     let a = &fx.iter().find(|t| t.metadata.title == "A").unwrap().id.0;

@@ -103,5 +103,31 @@ pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
             args.push(Value::Text(v.trim().to_lowercase()));
         }
     }
+    // Exact names, any of them: the artist is one of `artist_any` (and the album one of
+    // `album_any`). The unknown token also matches a track without one.
+    for (col, names) in [("artist_norm", &f.artist_any), ("album_norm", &f.album_any)] {
+        if names.is_empty() {
+            continue;
+        }
+        let unknown = names
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(FilterSpec::UNKNOWN));
+        let known: Vec<&String> = names
+            .iter()
+            .filter(|n| !n.eq_ignore_ascii_case(FilterSpec::UNKNOWN))
+            .collect();
+        let mut terms = Vec::new();
+        if !known.is_empty() {
+            let marks = vec!["?"; known.len()].join(",");
+            terms.push(format!("m.{col} IN ({marks})"));
+            for n in known {
+                args.push(Value::Text(n.trim().to_lowercase()));
+            }
+        }
+        if unknown {
+            terms.push(format!("m.{col} IS NULL OR m.{col} = ''"));
+        }
+        sql += &format!(" AND ({})", terms.join(" OR "));
+    }
     (sql, args)
 }

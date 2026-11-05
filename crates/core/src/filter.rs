@@ -63,6 +63,11 @@ pub struct FilterSpec {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// Exact artist or album names (case-insensitive), any of them: the track's artist must be
+    /// one of `artist_any` and its album one of `album_any`, and both then apply with every other
+    /// condition (AND). [`FilterSpec::UNKNOWN`] stands for "no artist" / "no album".
+    pub artist_any: Vec<String>,
+    pub album_any: Vec<String>,
     /// Inclusive, 1 to 5. Unrated tracks never match a rating bound.
     pub rating_min: Option<u8>,
     pub rating_max: Option<u8>,
@@ -73,6 +78,9 @@ pub struct FilterSpec {
 }
 
 impl FilterSpec {
+    /// In `artist_any` / `album_any`: the tracks that have no artist / no album.
+    pub const UNKNOWN: &'static str = "(unknown)";
+
     /// The tag conditions, for `weaver`.
     pub fn tag_filter(&self) -> TagFilter {
         TagFilter {
@@ -102,6 +110,18 @@ impl FilterSpec {
             seen.push(key);
             true
         });
+        for names in [&mut self.artist_any, &mut self.album_any] {
+            let mut seen = Vec::new();
+            names.retain_mut(|n| {
+                *n = n.trim().to_string();
+                let key = n.to_lowercase();
+                if key.is_empty() || seen.contains(&key) {
+                    return false;
+                }
+                seen.push(key);
+                true
+            });
+        }
         for field in [&mut self.title, &mut self.artist, &mut self.album] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
@@ -186,6 +206,12 @@ impl FilterSpec {
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
+        if !update.artist_any.is_empty() {
+            self.artist_any = update.artist_any;
+        }
+        if !update.album_any.is_empty() {
+            self.album_any = update.album_any;
+        }
         self.rating_min = update.rating_min.or(self.rating_min);
         self.rating_max = update.rating_max.or(self.rating_max);
         self.sort = update.sort.or(self.sort);
@@ -197,6 +223,32 @@ impl FilterSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artist_and_album_lists_are_trimmed_deduped_and_merge_by_replacing() {
+        let f = FilterSpec {
+            artist_any: vec![
+                " Aventura ".into(),
+                "aventura".into(),
+                "".into(),
+                "Dadju".into(),
+            ],
+            album_any: vec![FilterSpec::UNKNOWN.into(), "  ".into()],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(f.artist_any, ["Aventura", "Dadju"], "first spelling kept");
+        assert_eq!(f.album_any, [FilterSpec::UNKNOWN]);
+        // An update that names some replaces the list; one that names none keeps it.
+        let kept = f.clone().merged(FilterSpec::default());
+        assert_eq!(kept.artist_any, ["Aventura", "Dadju"]);
+        let replaced = f.merged(FilterSpec {
+            artist_any: vec!["Sael".into()],
+            ..Default::default()
+        });
+        assert_eq!(replaced.artist_any, ["Sael"]);
+        assert_eq!(replaced.album_any, [FilterSpec::UNKNOWN]);
+    }
 
     #[test]
     fn the_tracks_own_bpm_and_year_bounds_are_validated() {
