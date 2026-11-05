@@ -258,19 +258,14 @@ impl App {
     }
 
     /// The header of a long list: sortable Title, Album and Time over the rows' columns.
-    fn sort_header(&self) -> Element<'_> {
-        self.media_columns(RowOpts {
-            album: true,
-            bpm: false,
-            menu: true,
-        })
-        .header(&self.sort, Message::Sort)
+    fn sort_header(&self, o: RowOpts) -> Element<'_> {
+        self.media_columns(o).header(&self.sort, Message::Sort)
     }
 
     /// The page's tracks as a virtualised list: only the rows in view are built.
     pub fn virtual_tracks(&self, o: RowOpts) -> Element<'_> {
         column![
-            surface::band(self.sort_header()),
+            surface::band(self.sort_header(o)),
             VirtualList::new(self.rows.len(), self.row_h(), &self.list_vp, move |i| {
                 let t = &self.rows[i];
                 surface::row(self.track_row(t, o, Message::PlayTrack(t.id)))
@@ -279,23 +274,6 @@ impl App {
             .overscan(4),
         ]
         .height(Length::Fill)
-        .into()
-    }
-
-    /// The tracks a jam would play: tempo and time, in the same flat rows.
-    pub fn jam_list(&self) -> Element<'_> {
-        let o = RowOpts {
-            album: false,
-            bpm: true,
-            menu: false,
-        };
-        let rows: Vec<&Track> = self.lib.filtered(&self.filter);
-        VirtualList::new(rows.len(), self.row_h(), &self.jam_vp, move |i| {
-            let t = rows[i];
-            self.track_row(t, o, Message::PlayOne(t.id))
-        })
-        .on_scroll(Message::JamScroll)
-        .overscan(4)
         .into()
     }
 
@@ -348,24 +326,6 @@ impl App {
         ]
         .height(Length::Fill)
         .into()
-    }
-
-    /// Search results: the same list, narrowed.
-    fn results_page(&self) -> Element<'_> {
-        let list = column![
-            surface::toolbar(ty::caption(format!("{} tracks", self.rows.len()))),
-            self.virtual_tracks(RowOpts {
-                album: true,
-                bpm: false,
-                menu: true
-            }),
-        ]
-        .height(Length::Fill);
-        if self.is_narrow() {
-            column![surface::toolbar(self.search_entry()), list].into()
-        } else {
-            list.into()
-        }
     }
 
     // ---- grids ----------------------------------------------------------------------------
@@ -1061,6 +1021,21 @@ impl App {
         if f.bpm != crate::data::BPM {
             parts.push(format!("{:.0}–{:.0} BPM", f.bpm.0, f.bpm.1));
         }
+        for (names, none) in [(&f.artists, "Unknown artist"), (&f.albums, "No album")] {
+            if !names.is_empty() {
+                let shown: Vec<&str> = names
+                    .iter()
+                    .map(|n| {
+                        if n == crate::data::UNKNOWN {
+                            none
+                        } else {
+                            n.as_str()
+                        }
+                    })
+                    .collect();
+                parts.push(shown.join(" or "));
+            }
+        }
         if parts.is_empty() {
             "everything".into()
         } else {
@@ -1107,9 +1082,6 @@ impl App {
     pub fn page(&self) -> Element<'_> {
         if self.jam_open {
             return self.jam_page();
-        }
-        if self.searching {
-            return self.results_page();
         }
         let empty = self.lib.tracks.is_empty();
         match self.dest {

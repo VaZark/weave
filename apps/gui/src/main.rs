@@ -32,8 +32,6 @@ use iced_adaptive_design as iad;
 
 type Element<'a> = iad::Element<'a, Message>;
 
-const JAM_LIST: f32 = 240.0;
-
 /// Row heights of every track list: the normal one carries a picture and two lines.
 pub const ROW: f32 = 56.0;
 pub const ROW_COMPACT: f32 = 32.0;
@@ -97,11 +95,7 @@ impl Place {
         Self::at(Dest::Home)
     }
     pub fn at(dest: Dest) -> Self {
-        Self {
-            dest,
-            searching: false,
-            query: String::new(),
-        }
+        Self { dest }
     }
 }
 
@@ -110,8 +104,6 @@ impl Place {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Place {
     pub dest: Dest,
-    pub searching: bool,
-    pub query: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,8 +132,23 @@ pub enum Message {
     Go(Dest),
     /// Open a page from where you are: Back returns here.
     Open(Dest),
-    SearchOpen(bool),
-    SearchText(String),
+    /// The search icon of the Jam page: shows or hides its artist, album and anything entries.
+    JamSearchOpen(bool),
+    /// A chip of the Artists or Albums section of the Tag filters (any of the chosen ones).
+    JamArtistToggle(String),
+    JamAlbumToggle(String),
+    /// What is typed to find an artist or an album in those sections.
+    ArtistQuery(String),
+    AlbumQuery(String),
+    /// The same chips in the playlist-filter editor.
+    DraftArtistToggle(String),
+    DraftAlbumToggle(String),
+    /// Save as playlist: opens the dialog (or sheet) that asks for the name.
+    SaveNameInput(String),
+    ConfirmSaveJam,
+    CancelSaveJam,
+    /// The generic search over title, artist and album (not saved with a playlist).
+    JamQuery(String),
     /// The jam is a page: this shows it, or goes back to the page you were on.
     ToggleJam,
     ToggleExplore,
@@ -192,7 +199,8 @@ pub enum Message {
     ToggleTag(String),
     TagQuery(String),
     Bpm((f32, f32)),
-    ClearFilter,
+    /// The clear icon of the Tag filters: drops the tags and the tempo, and leaves the search.
+    ClearTagFilters,
     Surprise,
     StartJam,
     // Library.
@@ -210,7 +218,6 @@ pub enum Message {
     AskDeletePlaylist,
     ConfirmDeletePlaylist,
     CancelDeletePlaylist,
-    JamScroll(Viewport),
     // A track's menu.
     PlayNext(usize),
     AddToQueue(usize),
@@ -390,8 +397,13 @@ pub struct App {
     pub backend: backend::Backend,
     pub adaptive: Adaptive<Layout>,
     pub dest: Dest,
-    pub searching: bool,
-    pub query: String,
+    /// The Jam page's search row (artist, album, anything) is open.
+    pub jam_search_open: bool,
+    /// What is typed to find an artist / an album among the chips of the Tag filters.
+    pub artist_query: String,
+    pub album_query: String,
+    /// The name being asked for by the Save as playlist dialog; `None` when it is closed.
+    pub save_name: Option<String>,
     pub filter: Filter,
     /// Narrows the tag chips of the filter page as you type.
     pub tag_query: String,
@@ -469,7 +481,6 @@ pub struct App {
     pub jam_filters_open: bool,
     /// The playlist the jam was last saved as, and the filters it was saved with.
     pub jam_saved: Option<(usize, Filter)>,
-    pub jam_vp: Viewport,
     rng: u64,
 }
 
@@ -501,8 +512,10 @@ impl App {
             )
             .overlap(true),
             dest: Dest::Home,
-            searching: false,
-            query: String::new(),
+            jam_search_open: false,
+            artist_query: String::new(),
+            album_query: String::new(),
+            save_name: None,
             filter: Filter::default(),
             tag_query: String::new(),
             jam_open: false,
@@ -558,7 +571,6 @@ impl App {
             desc_expanded: false,
             jam_filters_open: false,
             jam_saved: None,
-            jam_vp: Viewport::new(JAM_LIST),
             rng: 0x9e37_79b9_7f4a_7c15,
             lib,
         };
@@ -608,7 +620,30 @@ impl App {
             for m in match start.as_str() {
                 "jam" => vec![Message::ToggleJam],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
-                "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
+                "jam-search" => vec![
+                    Message::ToggleJam,
+                    Message::JamSearchOpen(true),
+                    Message::JamQuery("a".into()),
+                ],
+                "jam-picks" => vec![
+                    Message::ToggleJam,
+                    Message::JamArtistToggle("Aventura".into()),
+                    Message::JamAlbumToggle("Don't Look Back".into()),
+                    Message::ToggleTag("mood:romantic".into()),
+                ],
+                "jam-artists" => vec![
+                    Message::ToggleJam,
+                    Message::JamArtistToggle("Aventura".into()),
+                    Message::JamAlbumToggle("Don't Look Back".into()),
+                    Message::JamFilters(true),
+                ],
+                "jam-save" => vec![
+                    Message::ToggleJam,
+                    Message::ToggleTag("mood:romantic".into()),
+                    Message::JamArtistToggle("Aventura".into()),
+                    Message::JamQuery("e".into()),
+                    Message::SaveJamAsPlaylist,
+                ],
                 "library" => vec![Message::Go(Dest::Tracks)],
                 "compact-home" => vec![Message::SetDensity(DensityPref::Compact)],
                 "compact-library" => vec![
@@ -637,7 +672,6 @@ impl App {
                 "artists" => vec![Message::Go(Dest::Artists)],
                 "playlists" => vec![Message::Go(Dest::Playlists)],
                 "recent" => vec![Message::Go(Dest::Recent)],
-                "popover" => vec![Message::SearchOpen(true)],
                 "playlist" => vec![Message::Go(Dest::Playlist(0))],
                 "playlist-in" => vec![Message::Open(Dest::Playlist(0))],
                 "edit-track" => vec![Message::Go(Dest::Tracks), Message::EditTrack(3)],
@@ -702,20 +736,27 @@ impl App {
         )
     }
 
+    /// Leaves the jam: the search text is only for finding something, so it does not stay.
+    fn leave_jam(&mut self) {
+        self.jam_open = false;
+        self.jam_search_open = false;
+        self.filter.q.clear();
+        self.save_name = None;
+    }
+
     fn close_overlays(&mut self) {
         self.draft = None;
         self.edit_track = None;
         self.edit = None;
         self.desc_expanded = false;
-        self.jam_open = false;
+        self.leave_jam();
         self.now_playing = false;
         self.queue_open = false;
     }
 
-    /// Shows a page: the current search ends and anything open over the page closes.
+    /// Shows a page: anything open over the page (the jam, a dialog, Now Playing) closes.
     fn show(&mut self, d: Dest) -> Vec<iad::transition::Command<Layout>> {
         self.dest = d;
-        self.searching = false;
         self.close_overlays();
         self.refresh();
         Vec::new()
@@ -919,19 +960,14 @@ impl App {
         self.player.queue.get(i).map(|id| self.track(*id))
     }
 
-    /// Rebuilds the rows of the current page: its scope, then the search, then the sort.
+    /// Rebuilds the rows of the current page: its scope (the jam's filters, or the page's own), then
+    /// the sort.
     pub fn refresh(&mut self) {
-        let mut rows: Vec<Track> = if self.searching {
-            let q = self.query.trim().to_lowercase();
+        let mut rows: Vec<Track> = if self.jam_open {
+            // The jam page: the tracks the filters match.
             self.lib
                 .filtered(&self.filter)
                 .into_iter()
-                .filter(|t| {
-                    q.is_empty()
-                        || [&t.title, &t.artist, &t.album]
-                            .iter()
-                            .any(|f| f.to_lowercase().contains(&q))
-                })
                 .cloned()
                 .collect()
         } else {
@@ -1112,32 +1148,52 @@ impl App {
                 self.show(d)
             }
             Message::Open(d) => {
-                // The place being left may have changed since it was entered (a search typed).
-                let here = Place {
-                    dest: self.dest,
-                    searching: self.searching,
-                    query: self.query.clone(),
-                };
+                let here = Place { dest: self.dest };
                 self.history.replace(here);
                 self.history.open(Place::at(d));
                 self.show(d)
             }
-            Message::SearchOpen(false) if !self.is_narrow() && self.searching => {
-                return self.update(Message::Go(Dest::Home));
-            }
-            Message::SearchOpen(on) => {
-                self.searching = on;
-                self.jam_open = false;
-                self.now_playing = false;
+            Message::JamSearchOpen(on) => {
+                self.jam_search_open = on;
                 if !on {
-                    self.query.clear();
-                    self.filter = Filter::default();
+                    // Closing the bar drops the text: it was only there to find something.
+                    self.filter.q.clear();
+                    self.refresh();
                 }
+                Vec::new()
+            }
+            Message::JamArtistToggle(a) => {
+                toggle(&mut self.filter.artists, a);
                 self.refresh();
                 Vec::new()
             }
-            Message::SearchText(t) => {
-                self.query = t;
+            Message::JamAlbumToggle(a) => {
+                toggle(&mut self.filter.albums, a);
+                self.refresh();
+                Vec::new()
+            }
+            Message::ArtistQuery(t) => {
+                self.artist_query = t;
+                Vec::new()
+            }
+            Message::AlbumQuery(t) => {
+                self.album_query = t;
+                Vec::new()
+            }
+            Message::DraftArtistToggle(a) => {
+                if let Some(d) = &mut self.draft {
+                    toggle(&mut d.artists, a);
+                }
+                Vec::new()
+            }
+            Message::DraftAlbumToggle(a) => {
+                if let Some(d) = &mut self.draft {
+                    toggle(&mut d.albums, a);
+                }
+                Vec::new()
+            }
+            Message::JamQuery(t) => {
+                self.filter.q = t;
                 self.refresh();
                 Vec::new()
             }
@@ -1147,16 +1203,16 @@ impl App {
                     if !self.is_narrow() {
                         return self.update(Message::Go(Dest::Home));
                     }
-                    self.jam_open = false;
+                    self.leave_jam();
                 } else {
                     self.jam_open = true;
                     self.now_playing = false;
-                    self.searching = false;
                 }
+                self.refresh();
                 Vec::new()
             }
             Message::ToggleExplore => {
-                if self.dest == Dest::Explore && !self.jam_open && !self.searching {
+                if self.dest == Dest::Explore && !self.jam_open {
                     return self.update(Message::Go(Dest::Home));
                 }
                 return self.update(Message::Go(Dest::Explore));
@@ -1410,16 +1466,22 @@ impl App {
                 self.refresh();
                 Vec::new()
             }
-            Message::ClearFilter => {
-                self.filter = Filter::default();
+            Message::ClearTagFilters => {
+                self.filter.tags.clear();
+                self.filter.bpm = data::BPM;
                 self.refresh();
                 Vec::new()
             }
             Message::Surprise => {
-                // Replaces the filter; never a combination that matches nothing.
+                // Replaces the tags and the tempo, keeps the search; never a combination that
+                // matches nothing.
                 let names = self.lib.tag_names();
                 for _ in 0..30 {
-                    let mut f = Filter::default();
+                    let mut f = Filter {
+                        tags: Vec::new(),
+                        bpm: data::BPM,
+                        ..self.filter.clone()
+                    };
                     let picks = 1 + (self.roll() % 2) as usize;
                     for _ in 0..picks {
                         let t = names[(self.roll() % names.len() as u64) as usize].clone();
@@ -1481,14 +1543,41 @@ impl App {
                 Vec::new()
             }
             Message::SaveJamAsPlaylist => {
-                let n = self.lib.filtered(&self.filter).len();
                 if !self.filter.is_saveable() {
                     self.say("Add a tag, tempo, artist or album to save a playlist");
-                } else if n > 0 {
-                    let name = self.new_playlist_name();
+                } else if self.rows.is_empty() {
+                    self.say("Nothing matches these filters yet");
+                } else {
+                    self.save_name = Some(self.new_playlist_name());
+                }
+                Vec::new()
+            }
+            Message::SaveNameInput(t) => {
+                if self.save_name.is_some() {
+                    self.save_name = Some(t);
+                }
+                Vec::new()
+            }
+            Message::CancelSaveJam => {
+                self.save_name = None;
+                Vec::new()
+            }
+            Message::ConfirmSaveJam => {
+                let Some(name) = self.save_name.clone().map(|n| n.trim().to_string()) else {
+                    return Task::none();
+                };
+                if name.is_empty() {
+                    self.say("Give the playlist a name");
+                } else if self.name_is_taken(&name) {
+                    self.say(format!("There is already a playlist called {name}"));
+                } else if !self.filter.is_saveable() {
+                    self.save_name = None;
+                    self.say("Add a tag, tempo, artist or album to save a playlist");
+                } else {
                     let saved_with = self.filter.clone();
                     match self.backend.create_dynamic_playlist(&name, &saved_with) {
                         Ok(()) => {
+                            self.save_name = None;
                             if self.reload_library()
                                 && let Some(i) =
                                     self.lib.playlists.iter().position(|p| p.name == name)
@@ -1499,7 +1588,7 @@ impl App {
                                 format!("Saved as {name}")
                             } else {
                                 format!(
-                                    "Saved as {name}. The text search is not saved; tags, tempo, artist and album are."
+                                    "Saved as {name}. The search text is not saved; tags, tempo, artists and albums are."
                                 )
                             });
                         }
@@ -1600,15 +1689,9 @@ impl App {
                 self.edit_track = None;
                 Vec::new()
             }
-            Message::JamScroll(v) => {
-                self.jam_vp = v;
-                Vec::new()
-            }
             Message::Back => {
                 if let Some(p) = self.history.back().cloned() {
                     self.dest = p.dest;
-                    self.searching = p.searching;
-                    self.query = p.query;
                     self.close_overlays();
                     self.refresh();
                 }
@@ -1785,6 +1868,14 @@ impl App {
         };
         let snap = self.sync_lyrics();
         Task::batch([self.dispatch(cmds), snap])
+    }
+
+    /// Whether a playlist already has this name (case-insensitive).
+    pub fn name_is_taken(&self, name: &str) -> bool {
+        self.lib
+            .playlists
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(name.trim()))
     }
 
     /// A name for a playlist saved from the jam: its tags and tempo, made unique.
@@ -2050,15 +2141,11 @@ mod tests {
     }
 
     #[test]
-    fn back_restores_a_search_and_top_level_navigation_starts_over() {
+    fn top_level_navigation_starts_over() {
         let mut a = app();
-        let _ = a.update(Message::SearchOpen(true));
-        let _ = a.update(Message::SearchText("ave".into()));
         let _ = a.update(Message::Open(Dest::Playlist(0)));
-        assert!(!a.searching);
         let _ = a.update(Message::Back);
-        assert!(a.searching);
-        assert_eq!(a.query, "ave");
+        assert_eq!(a.dest, Dest::Home);
         let _ = a.update(Message::Open(Dest::Artist(0)));
         let _ = a.update(Message::Go(Dest::Tracks));
         assert!(
@@ -2800,10 +2887,171 @@ mod tests {
             Dest::Home,
             "closing the jam goes Home, not back to Tracks"
         );
-        let _ = a.update(Message::SearchOpen(true));
-        let _ = a.update(Message::SearchOpen(false));
-        assert!(!a.searching);
         assert_eq!(a.dest, Dest::Home);
+    }
+
+    #[test]
+    fn the_jam_page_holds_the_search_and_its_table_follows_the_filters() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        assert_eq!(a.rows.len(), a.lib.tracks.len(), "no filters: every track");
+        assert!(!a.jam_search_open, "the search bar starts closed");
+        let _ = a.update(Message::JamSearchOpen(true));
+        assert!(a.jam_search_open);
+        // Artists: any of the chosen ones; albums likewise; then ANDed.
+        let artist = a.lib.tracks[3].artist.clone();
+        let _ = a.update(Message::JamArtistToggle(artist.clone()));
+        let by_artist = a.rows.len();
+        assert!(by_artist > 0 && by_artist < a.lib.tracks.len());
+        assert!(a.rows.iter().all(|t| t.artist == artist));
+        let other = a
+            .lib
+            .tracks
+            .iter()
+            .find(|t| t.artist != artist)
+            .unwrap()
+            .artist
+            .clone();
+        let _ = a.update(Message::JamArtistToggle(other.clone()));
+        assert!(a.rows.len() > by_artist, "ORed: more with a second artist");
+        assert!(
+            a.rows
+                .iter()
+                .all(|t| t.artist == artist || t.artist == other)
+        );
+        let _ = a.update(Message::JamArtistToggle(other));
+        // The search narrows further, and the bar's close drops its text.
+        let title = a.rows[0].title.clone();
+        let _ = a.update(Message::JamQuery(title[..3].to_string()));
+        assert!(a.rows.len() <= by_artist);
+        assert_eq!(a.filter.search_count(), 1);
+        let _ = a.update(Message::JamSearchOpen(false));
+        assert!(a.filter.q.is_empty(), "closing the bar clears the search");
+        assert_eq!(a.rows.len(), by_artist);
+        let _ = a.update(Message::JamAlbumToggle("zzz-no-album".into()));
+        assert!(a.rows.is_empty());
+        let _ = a.update(Message::JamAlbumToggle("zzz-no-album".into()));
+        let _ = a.update(Message::JamArtistToggle(artist));
+        assert_eq!(a.rows.len(), a.lib.tracks.len());
+        // The page builds with and without the bar, and a sort applies.
+        let _ = a.view();
+        let _ = a.update(Message::JamSearchOpen(true));
+        let _ = a.view();
+        let _ = a.update(Message::Sort(Col::Title));
+        let _ = a.view();
+        assert_eq!(a.page_title(), "Jam");
+    }
+
+    #[test]
+    fn the_search_does_not_outlive_the_jam() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamSearchOpen(true));
+        let _ = a.update(Message::JamQuery("a".into()));
+        assert!(!a.rows.is_empty() && a.filter.q == "a");
+        let _ = a.update(Message::Go(Dest::Tracks));
+        assert!(
+            a.filter.q.is_empty() && !a.jam_search_open,
+            "leaving the jam drops it"
+        );
+        let _ = a.update(Message::ToggleJam);
+        assert!(!a.jam_search_open && a.filter.q.is_empty());
+    }
+
+    #[test]
+    fn the_pickers_offer_the_popular_names_first_and_the_unknown_sentinel() {
+        let a = app();
+        let (artists, no_artist) = a.lib.artist_choices();
+        assert!(!artists.is_empty());
+        assert!(
+            artists.windows(2).all(|w| w[0].1 >= w[1].1),
+            "most tracks first"
+        );
+        assert_eq!(
+            artists.iter().map(|(_, n)| n).sum::<usize>() + no_artist,
+            a.lib.tracks.len(),
+            "every track is counted once"
+        );
+        let (albums, no_album) = a.lib.album_choices();
+        assert_eq!(
+            albums.iter().map(|(_, n)| n).sum::<usize>() + no_album,
+            a.lib.tracks.len()
+        );
+        // The Tag filters, with several artists and albums chosen, build.
+        let mut a = a;
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamArtistToggle(artists[0].0.clone()));
+        let _ = a.update(Message::JamArtistToggle(data::UNKNOWN.into()));
+        let _ = a.update(Message::JamAlbumToggle(data::UNKNOWN.into()));
+        let _ = a.update(Message::ArtistQuery("av".into()));
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.view();
+        assert!(a.dialog_open_for_test());
+        assert_eq!(a.filter.tag_count(), 3);
+    }
+
+    #[test]
+    fn save_as_playlist_asks_for_a_name_and_checks_it() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let before = a.lib.playlists.len();
+        // Nothing to save: refused with a notice, no dialog.
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert!(a.save_name.is_none() && !a.dialog_open_for_test());
+        assert!(a.notice.as_ref().is_some_and(|n| n.0.contains("Add a")));
+        // Only a search: still nothing to save.
+        let _ = a.update(Message::JamQuery("a".into()));
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert!(a.save_name.is_none(), "the search is never saved");
+        // A tag: the dialog opens with a suggested name.
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let suggested = a.save_name.clone().expect("the dialog asks for a name");
+        assert!(suggested.contains("romantic"), "{suggested}");
+        assert!(a.dialog_open_for_test(), "wide: a dialog");
+        let _ = a.view();
+        // An empty name and a taken one are refused and the dialog stays.
+        let _ = a.update(Message::SaveNameInput("  ".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        assert!(a.save_name.is_some() && a.lib.playlists.len() == before);
+        // Cancel closes it without saving.
+        let _ = a.update(Message::CancelSaveJam);
+        assert!(a.save_name.is_none() && a.lib.playlists.len() == before);
+        // A name of the user's own saves it, and says the search text was left out.
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let _ = a.update(Message::SaveNameInput("My romantic set".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        assert!(a.save_name.is_none());
+        assert!(a.lib.playlists.iter().any(|p| p.name == "My romantic set"));
+        let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
+        assert!(
+            notice.contains("My romantic set") && notice.contains("not saved"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn save_as_playlist_is_a_sheet_on_narrow() {
+        let mut a = app();
+        let _ = a.update(Message::Resized(420.0, 760.0));
+        let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert!(a.save_name.is_some());
+        if a.is_narrow() {
+            assert!(
+                !a.dialog_open_for_test(),
+                "narrow: a bottom sheet, not a dialog"
+            );
+        }
+        let _ = a.view();
+    }
+
+    /// Save as playlist as the user does it: open the dialog, accept the suggested name.
+    fn save_jam(a: &mut App) {
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let _ = a.update(Message::ConfirmSaveJam);
     }
 
     #[test]
@@ -2812,7 +3060,7 @@ mod tests {
         let before = a.lib.playlists.len();
         let _ = a.update(Message::ToggleJam);
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         assert_eq!(a.lib.playlists.len(), before + 1);
         let p = a
             .lib
@@ -2836,7 +3084,7 @@ mod tests {
         );
         // Saving the same filters again makes a second playlist with its own name.
         a.jam_saved = None;
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         assert_eq!(a.lib.playlists.len(), before + 2);
         assert_eq!(
             a.lib
@@ -2857,7 +3105,7 @@ mod tests {
         a.filter.q = "a".into();
         a.refresh();
         assert!(a.lib.filtered(&a.filter).len() > 0);
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
         assert!(
             notice.contains("not saved"),
@@ -2879,7 +3127,7 @@ mod tests {
         // Without a generic search the notice is a plain "Saved as".
         a.filter.q.clear();
         a.jam_saved = None;
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
         assert!(
             notice.starts_with("Saved as ") && !notice.contains("not saved"),
@@ -2894,7 +3142,7 @@ mod tests {
         let artist = a.lib.tracks[3].artist.clone();
         a.filter.artists = vec![artist.clone()];
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         let i = a
             .lib
             .playlists
@@ -3022,15 +3270,15 @@ mod tests {
         let _ = a.update(Message::ToggleJam);
         let before = a.lib.playlists.len();
         // Nothing set, and only a search: refused with a notice, nothing is created.
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         assert_eq!(a.lib.playlists.len(), before);
         assert!(a.notice.as_ref().is_some_and(|n| n.0.contains("Add a")));
         a.filter.q = "a".into();
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         assert_eq!(a.lib.playlists.len(), before, "a search alone is not saved");
         // An artist (any of several, one of them the unknown sentinel) is enough, and is kept.
         a.filter.artists = vec![a.lib.tracks[0].artist.clone(), data::UNKNOWN.into()];
-        let _ = a.update(Message::SaveJamAsPlaylist);
+        save_jam(&mut a);
         assert_eq!(a.lib.playlists.len(), before + 1);
         assert!(a.reload_library());
         let p = a
