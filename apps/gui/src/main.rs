@@ -13,6 +13,7 @@ mod platforms;
 mod ui;
 mod ui_dialogs;
 mod ui_lists;
+mod ui_minimal;
 mod ui_player;
 
 use std::time::{Duration, Instant};
@@ -38,6 +39,11 @@ pub const ROW: f32 = 56.0;
 pub const ROW_COMPACT: f32 = 32.0;
 
 const WINDOW: (f32, f32) = (1120.0, 720.0);
+
+/// The window in minimal mode: one line, as high as the player bar.
+const MINIMAL: (f32, f32) = (560.0, 72.0);
+/// The narrowest minimal mode goes.
+const MINIMAL_MIN_WIDTH: f32 = 360.0;
 
 /// `WEAVE_GUI_SIZE=WxH` starts the window at that size (to judge the narrow layout).
 fn window_size() -> (f32, f32) {
@@ -170,6 +176,7 @@ pub enum Message {
     /// A history entry of the queue: play it again (its place in the whole queue).
     QueueJump(usize),
     ToggleQueueHistory,
+    ToggleUpNext,
     NowPlaying(bool),
     ToggleQueue,
     /// Full screen mode on or off: the window goes fullscreen and shows Now Playing; leaving
@@ -238,6 +245,10 @@ pub enum Message {
     Repeat,
     /// The volume slider: 0.0 to 1.0.
     SetVolume(f32),
+    /// Enter (true) or leave minimal mode: the window shrinks to the one-line player and back.
+    Minimal(bool),
+    /// A new reading of the spectrum, while minimal mode draws it.
+    SpectrumTick,
     /// The volume button: mute, or back to the volume before.
     ToggleMute,
     Queue(ReorderEvent),
@@ -385,12 +396,21 @@ pub struct App {
     pub np_before_fullscreen: bool,
     /// Whether the queue lists the tracks already played (collapsed until asked for).
     pub history_open: bool,
+    /// Whether the queue lists what comes next (open until folded).
+    pub up_next_open: bool,
     /// The volume before the volume button muted, to go back to.
     pub muted_from: Option<f32>,
     pub queue_open: bool,
     pub queue_slide: Slide,
     /// The window's height, for how far a sheet travels.
     pub win_h: f32,
+    pub win_w: f32,
+    /// Minimal mode: the window is the one-line player.
+    pub minimal: bool,
+    /// The window size to come back to when minimal mode ends.
+    pub restore_size: Option<(f32, f32)>,
+    /// The spectrum of what plays, as last read (drawn in minimal mode).
+    pub spectrum: [f32; weave_player_lib::core::spectrum::BANDS],
     pub show_lyrics: bool,
     pub history: History<Place>,
     pub sort: SortState<Col>,
@@ -479,10 +499,15 @@ impl App {
             fullscreen: false,
             np_before_fullscreen: false,
             history_open: false,
+            up_next_open: true,
             muted_from: None,
             queue_open: false,
             queue_slide: Slide::default(),
             win_h: window_size().1,
+            win_w: window_size().0,
+            minimal: false,
+            restore_size: None,
+            spectrum: [0.0; weave_player_lib::core::spectrum::BANDS],
             show_lyrics: false,
             history: History::new(Place::home()),
             sort: SortState::new(),
@@ -547,6 +572,7 @@ impl App {
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
                 "jam" => vec![Message::ToggleJam],
+                "minimal" => vec![Message::Minimal(true)],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
                 "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
                 "library" => vec![Message::Go(Dest::Tracks)],
@@ -969,6 +995,7 @@ impl App {
         let cmds = match message {
             Message::Resized(w, h) => {
                 self.win_h = h;
+                self.win_w = w;
                 self.adaptive.resize(w, now)
             }
             Message::Frame(t) => {
@@ -977,6 +1004,32 @@ impl App {
             }
             Message::Tick(t) => self.adaptive.tick(t),
             Message::Transition(e) => self.adaptive.report(e, now),
+            Message::Minimal(on) => {
+                if on == self.minimal {
+                    return Task::none();
+                }
+                self.minimal = on;
+                let (size, min) = if on {
+                    // Overlays go; the player stays.
+                    self.now_playing = false;
+                    self.queue_open = false;
+                    self.restore_size = Some((self.win_w, self.win_h));
+                    (
+                        iced::Size::new(MINIMAL.0, MINIMAL.1),
+                        iced::Size::new(MINIMAL_MIN_WIDTH, MINIMAL.1),
+                    )
+                } else {
+                    let (w, h) = self.restore_size.take().unwrap_or_else(window_size);
+                    (iced::Size::new(w, h), iad::windows::min_size())
+                };
+                return iced::window::oldest().and_then(move |id| {
+                    iced::window::set_min_size(id, Some(min)).chain(iced::window::resize(id, size))
+                });
+            }
+            Message::SpectrumTick => {
+                self.spectrum = weave_player_lib::core::spectrum::bands();
+                Vec::new()
+            }
             Message::Window(a) => {
                 return iced::window::oldest().and_then(move |id| a.perform(id));
             }
@@ -1197,6 +1250,10 @@ impl App {
             Message::QueueJump(at) => {
                 let s = self.backend.jump(at);
                 self.apply(s);
+                Vec::new()
+            }
+            Message::ToggleUpNext => {
+                self.up_next_open = !self.up_next_open;
                 Vec::new()
             }
             Message::ToggleQueueHistory => {
@@ -1709,6 +1766,10 @@ impl App {
         subs.push(iced::time::every(Duration::from_millis(poll)).map(|_| Message::Poll));
         if self.player.playing {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Progress));
+        }
+        // The bars are read as often as they are drawn, and until they have fallen quiet.
+        if self.minimal && (self.player.playing || self.spectrum.iter().any(|l| *l > 0.0)) {
+            subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::SpectrumTick));
         }
         Subscription::batch(subs)
     }
@@ -2240,6 +2301,9 @@ mod tests {
         assert_eq!(a.player.queue, vec![10, 11, 12]);
         let _ = a.update(Message::ToggleQueueHistory);
         assert!(a.history_open);
+        assert!(a.up_next_open, "up next is open until folded");
+        let _ = a.update(Message::ToggleUpNext);
+        assert!(!a.up_next_open);
     }
 
     #[test]
@@ -2341,6 +2405,27 @@ mod tests {
         assert_eq!(a.filter.count(), 1);
         let _ = a.update(Message::Bpm(data::BPM));
         assert!(a.filter.is_empty());
+    }
+
+    #[test]
+    fn minimal_mode_shrinks_the_window_and_remembers_its_size_to_come_back() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        a.play(vec![10, 11], 0);
+        let _ = a.update(Message::Resized(900.0, 640.0));
+        let _ = a.update(Message::NowPlaying(true));
+        let _ = a.update(Message::Minimal(true));
+        assert!(a.minimal && !a.now_playing, "overlays close");
+        assert_eq!(a.restore_size, Some((900.0, 640.0)));
+        // The strip builds, playing or not.
+        let _ = a.view();
+        let _ = a.update(Message::Resized(560.0, 72.0));
+        let _ = a.update(Message::Minimal(false));
+        assert!(!a.minimal);
+        assert_eq!(a.restore_size, None, "the size is used once");
+        // Asking for what already is does nothing.
+        let _ = a.update(Message::Minimal(false));
+        assert!(!a.minimal);
     }
 
     #[test]

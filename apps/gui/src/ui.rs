@@ -30,9 +30,14 @@ pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
 
 impl App {
     pub fn view(&self) -> Element<'_> {
-        let body = adaptive(&self.adaptive)
-            .layout(Layout::Narrow, || self.narrow())
-            .layout(Layout::Wide, || self.wide());
+        let body: Element<'_> = if self.minimal {
+            self.minimal_view()
+        } else {
+            adaptive(&self.adaptive)
+                .layout(Layout::Narrow, || self.narrow())
+                .layout(Layout::Wide, || self.wide())
+                .into()
+        };
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
         let jam_filters = self.jam_filters_showing() && !self.is_narrow();
