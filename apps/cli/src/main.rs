@@ -610,6 +610,9 @@ struct FilterArgs {
     year_min: Option<i32>,
     #[arg(long)]
     year_max: Option<i32>,
+    /// Only tracks first imported within this many rolling 24-hour days.
+    #[arg(long)]
+    imported_within_days: Option<u32>,
     /// Case-insensitive part of the title. The genre is a tag: `--tag-any genre=bachata`.
     #[arg(long)]
     title: Option<String>,
@@ -708,6 +711,7 @@ impl From<FilterArgs> for FilterSpec {
             bpm_max: a.bpm_max,
             year_min: a.year_min,
             year_max: a.year_max,
+            imported_within_days: a.imported_within_days,
             title: a.title,
             artist: a.artist,
             album: a.album,
@@ -1503,6 +1507,27 @@ mod arg_tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("weave-player").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn recent_imports_cli_uses_the_shared_filter() {
+        let Cmd::Search { filter, .. } = Cli::try_parse_from([
+            "weave-player",
+            "search",
+            "--imported-within-days",
+            "7",
+            "--artist",
+            "x",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not search")
+        };
+        let f = FilterSpec::from(filter);
+        assert_eq!(f.imported_within_days, Some(7));
+        assert_eq!(f.artist.as_deref(), Some("x"));
+        assert!(output::describe(&f).contains("--imported-within-days 7"));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub struct Track {
     /// How rare it is among the library's tracks: 0 is the one added last (the engine's `Added`
     /// order, newest first).
     pub added: usize,
+    pub added_at: i64,
     /// Listening history, from the engine (`Library::apply_history`): times played, whole days
     /// since the last play, and when it was (unix seconds). 0 and 0 and 0 for a track never
     /// played.
@@ -99,6 +100,7 @@ pub struct Filter {
     pub albums: Vec<String>,
     /// A substring of the title, artist or album. Not saved.
     pub q: String,
+    pub imported_within_days: Option<u32>,
 }
 
 pub const BPM: (f32, f32) = (60.0, 180.0);
@@ -114,6 +116,7 @@ impl Default for Filter {
             artists: Vec::new(),
             albums: Vec::new(),
             q: String::new(),
+            imported_within_days: None,
         }
     }
 }
@@ -150,7 +153,11 @@ impl Filter {
     /// The conditions the Tag filters edit: tags, tempo, artists and albums. These are the ones a
     /// dynamic playlist keeps.
     pub fn tag_count(&self) -> usize {
-        self.tags.len() + usize::from(self.bpm != BPM) + self.artists.len() + self.albums.len()
+        self.tags.len()
+            + usize::from(self.bpm != BPM)
+            + self.artists.len()
+            + self.albums.len()
+            + usize::from(self.imported_within_days.is_some())
     }
 
     /// The conditions the search bar edits: the generic search.
@@ -164,6 +171,19 @@ impl Filter {
     }
 
     pub fn matches(&self, t: &Track, tree: &[TreeNode]) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if (weave_player_lib::core::FilterSpec {
+            imported_within_days: self.imported_within_days,
+            ..Default::default()
+        })
+        .import_cutoff(now)
+        .is_some_and(|cutoff| t.added_at < cutoff)
+        {
+            return false;
+        }
         if self.bpm != BPM && (t.bpm < self.bpm.0 || t.bpm > self.bpm.1) {
             return false;
         }
@@ -197,6 +217,7 @@ impl Filter {
             bpm_max: (self.bpm != BPM).then_some(f64::from(self.bpm.1)),
             artist_any: self.artists.clone(),
             album_any: self.albums.clone(),
+            imported_within_days: self.imported_within_days,
             ..Default::default()
         }
         .normalized()
@@ -213,6 +234,7 @@ impl Filter {
             artists: spec.artist_any.clone(),
             albums: spec.album_any.clone(),
             q: String::new(),
+            imported_within_days: spec.imported_within_days,
         }
     }
 }
@@ -338,6 +360,7 @@ impl Library {
                 rating: t.rating.unwrap_or(0),
                 secs: (t.metadata.duration_ms.unwrap_or(0) / 1000) as u32,
                 added: *added.get(t.id.0.as_str()).unwrap_or(&usize::MAX),
+                added_at: t.added_at,
                 plays: 0,
                 last_played_days: 0,
                 played_at: 0,

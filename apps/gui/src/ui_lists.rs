@@ -1016,6 +1016,9 @@ impl App {
             .iter()
             .map(|t| t.split_once(':').map_or(t.as_str(), |(_, v)| v).to_string())
             .collect();
+        if let Some(days) = f.imported_within_days {
+            parts.push(format!("imported in the last {days} days"));
+        }
         if f.bpm != crate::data::BPM {
             parts.push(format!("{:.0}–{:.0} BPM", f.bpm.0, f.bpm.1));
         }

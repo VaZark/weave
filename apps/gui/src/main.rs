@@ -149,6 +149,8 @@ pub enum Message {
     CancelSaveJam,
     /// The generic search over title, artist and album (not saved with a playlist).
     JamQuery(String),
+    JamRecent(bool),
+    DraftRecent(bool),
     /// The jam is a page: this shows it, or goes back to the page you were on.
     ToggleJam,
     ToggleExplore,
@@ -1194,6 +1196,17 @@ impl App {
                 }
                 Vec::new()
             }
+            Message::JamRecent(on) => {
+                self.filter.imported_within_days = on.then_some(7);
+                self.refresh();
+                Vec::new()
+            }
+            Message::DraftRecent(on) => {
+                if let Some(d) = &mut self.draft {
+                    d.imported_within_days = on.then_some(7);
+                }
+                Vec::new()
+            }
             Message::JamQuery(t) => {
                 self.filter.q = t;
                 self.refresh();
@@ -1294,6 +1307,11 @@ impl App {
                 match result {
                     Ok(text) => {
                         self.reload();
+                        self.filter.imported_within_days = Some(7);
+                        self.queue_open = false;
+                        self.jam_open = true;
+                        self.now_playing = false;
+                        self.refresh();
                         self.say(text);
                     }
                     Err(e) => self.say(format!("Import failed: {e}")),
@@ -1469,6 +1487,7 @@ impl App {
                 Vec::new()
             }
             Message::ClearTagFilters => {
+                self.filter.imported_within_days = None;
                 self.filter.tags.clear();
                 self.filter.bpm = data::BPM;
                 self.refresh();
@@ -3319,6 +3338,30 @@ mod tests {
         let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
         let _ = a.update(Message::OpenSheet(None));
         assert!(a.sheet.is_none());
+    }
+
+    #[test]
+    fn imports_open_jam_with_a_composable_removable_recent_filter() {
+        let mut a = app();
+        let t = a.lib.tracks[0].clone();
+        let _ = a.update(Message::JamArtistToggle(t.artist.clone()));
+        let _ = a.update(Message::Imported(Ok("Imported tracks".into())));
+        assert!(a.jam_open);
+        assert_eq!(a.filter.imported_within_days, Some(7));
+        assert_eq!(a.filter.artists, [t.artist.clone()]);
+        assert!(!a.rows.is_empty());
+        let mut old = t.clone();
+        old.added_at = 1;
+        assert!(!a.filter.matches(&old, &a.lib.tags));
+        let spec = a.filter.to_spec();
+        assert_eq!(Filter::from_spec(&spec).imported_within_days, Some(7));
+        let _ = a.view();
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.view();
+        let _ = a.update(Message::JamRecent(false));
+        assert!(a.filter.matches(&old, &a.lib.tags));
+        assert_eq!(a.filter.artists, [t.artist]);
     }
 
     #[test]

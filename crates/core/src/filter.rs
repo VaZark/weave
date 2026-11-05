@@ -58,6 +58,8 @@ pub struct FilterSpec {
     pub bpm_max: Option<f64>,
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
+    /// Imported in the last N rolling 24-hour days, inclusive. ANDed with other filters.
+    pub imported_within_days: Option<u32>,
     /// Case-insensitive substrings of the track's identifying fields. The genre is a tag:
     /// use `genre:bachata`.
     pub title: Option<String>,
@@ -130,7 +132,18 @@ impl FilterSpec {
         self
     }
 
+    /// Earliest accepted import timestamp (Unix seconds), evaluated against the supplied clock.
+    pub fn import_cutoff(&self, now: i64) -> Option<i64> {
+        self.imported_within_days
+            .map(|days| now.saturating_sub(i64::from(days) * 86_400))
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if self.imported_within_days == Some(0) {
+            return Err(Error::InvalidFilter(
+                "imported-within-days must be at least 1".into(),
+            ));
+        }
         self.tag_filter().validate()?;
         for (name, v) in [("bpm-min", self.bpm_min), ("bpm-max", self.bpm_max)] {
             if let Some(v) = v
@@ -203,6 +216,7 @@ impl FilterSpec {
         self.bpm_max = update.bpm_max.or(self.bpm_max);
         self.year_min = update.year_min.or(self.year_min);
         self.year_max = update.year_max.or(self.year_max);
+        self.imported_within_days = update.imported_within_days.or(self.imported_within_days);
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
@@ -223,6 +237,30 @@ impl FilterSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_window_is_rolling_validated_and_preserved() {
+        let f = FilterSpec {
+            imported_within_days: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(f.import_cutoff(1_000_000), Some(395_200));
+        assert!(f.validate().is_ok());
+        assert_eq!(f.clone().merged(FilterSpec::default()), f);
+        let merged = f.merged(FilterSpec {
+            imported_within_days: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(merged.import_cutoff(1_000_000), Some(913_600));
+        assert!(
+            FilterSpec {
+                imported_within_days: Some(0),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
 
     #[test]
     fn artist_and_album_lists_are_trimmed_deduped_and_merge_by_replacing() {

@@ -290,6 +290,10 @@ pub fn describe(f: &FilterSpec) -> String {
         ("bpm-max", f.bpm_max.map(|v| v.to_string())),
         ("year-min", f.year_min.map(|v| v.to_string())),
         ("year-max", f.year_max.map(|v| v.to_string())),
+        (
+            "imported-within-days",
+            f.imported_within_days.map(|v| v.to_string()),
+        ),
         ("rating-min", f.rating_min.map(|v| v.to_string())),
         ("rating-max", f.rating_max.map(|v| v.to_string())),
     ];
@@ -502,6 +506,7 @@ mod tests {
             },
             tags: tags.iter().map(|t| t.to_string()).collect(),
             rating: None,
+            added_at: 0,
         }
     }
 

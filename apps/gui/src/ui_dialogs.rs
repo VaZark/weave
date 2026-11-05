@@ -29,6 +29,7 @@ pub struct FilterMsgs {
     pub artist: fn(String) -> Message,
     pub album: fn(String) -> Message,
     pub bpm: fn((f32, f32)) -> Message,
+    pub recent: fn(bool) -> Message,
 }
 
 const JAM_FILTER: FilterMsgs = FilterMsgs {
@@ -36,6 +37,7 @@ const JAM_FILTER: FilterMsgs = FilterMsgs {
     artist: Message::JamArtistToggle,
     album: Message::JamAlbumToggle,
     bpm: Message::Bpm,
+    recent: Message::JamRecent,
 };
 
 const DRAFT_FILTER: FilterMsgs = FilterMsgs {
@@ -43,6 +45,7 @@ const DRAFT_FILTER: FilterMsgs = FilterMsgs {
     artist: Message::DraftArtistToggle,
     album: Message::DraftAlbumToggle,
     bpm: Message::DraftBpm,
+    recent: Message::DraftRecent,
 };
 
 impl App {
@@ -101,6 +104,11 @@ impl App {
                 Message::AlbumQuery,
                 "Find an album",
             ),
+            w::flat_button(ty::label(match filter.imported_within_days {
+                Some(days) => format!("✓ Recently imported (last {days} days)"),
+                None => "Recently imported (last 7 days)".to_string(),
+            }))
+            .on_press((msgs.recent)(filter.imported_within_days.is_none())),
             self.bpm_section(filter, msgs.bpm),
         ]
         .spacing(16)
@@ -248,6 +256,14 @@ impl App {
                 )
             })
             .collect();
+        if let Some(days) = f.imported_within_days {
+            chips.push(
+                w::Chip::new(format!("Recently imported · {days} days"))
+                    .size(ChipSize::Medium)
+                    .on_remove(Message::JamRecent(false))
+                    .into(),
+            );
+        }
         if f.bpm != data::BPM {
             let (lo, hi) = f.bpm;
             chips.push(

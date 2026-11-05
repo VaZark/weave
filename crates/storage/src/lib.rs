@@ -265,6 +265,7 @@ impl Storage {
                         },
                         tags: Vec::new(),
                         rating: r.get(13)?,
+                        added_at: r.get(14)?,
                     },
                 ))
             })

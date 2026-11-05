@@ -13,7 +13,7 @@ pub const FROM: &str = " FROM track_metadata m \
 /// Column order is relied on by `Storage::fetch`.
 pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, \
      m.composer, m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
-     t.slug, a.rating";
+     t.slug, a.rating, t.added_at";
 
 /// The default order matches the `meta_sort` index, so paging needs no sort step.
 const DEFAULT_ORDER: &str = "m.artist_norm, m.album_norm, m.title_norm, m.track_id";
@@ -71,6 +71,14 @@ pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
     let mut sql = String::new();
     let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
     sql += &tag_sql;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if let Some(cutoff) = f.import_cutoff(now) {
+        sql += " AND t.added_at >= ?";
+        args.push(Value::Integer(cutoff));
+    }
     // NULL compares as NULL, so an unknown BPM, year or rating never matches a bound.
     for (col, op, v) in [
         ("m.bpm", ">=", f.bpm_min.map(Value::Real)),

@@ -1029,3 +1029,35 @@ fn a_dynamic_playlists_order_is_total_and_repeatable() {
         "ties fall back to artist, album, title"
     );
 }
+
+#[test]
+fn import_window_combines_filters_and_saved_queries_refresh() {
+    let mut s = annotated();
+    s.conn
+        .execute("UPDATE tracks SET added_at = 1 WHERE slug LIKE '%-a'", [])
+        .unwrap();
+    let f = FilterSpec {
+        imported_within_days: Some(7),
+        ..Default::default()
+    };
+    assert_eq!(names(&all(&s, &f)), ["B", "C", "D"]);
+    let old = s.track(&id(&s, "A")).unwrap();
+    assert_eq!(old.added_at, 1);
+    let combined = FilterSpec {
+        artist: Some("x".into()),
+        ..f.clone()
+    };
+    assert_eq!(names(&all(&s, &combined)), ["B"]);
+    let saved = s
+        .create_playlist("Recent imports", None, &combined)
+        .unwrap();
+    s.import_tracks(&[scanned("/new", "New", "x", Some(100.0))])
+        .unwrap();
+    let saved = s.playlist(&saved.id).unwrap();
+    assert_eq!(names(&all(&s, &saved.filter)), ["B", "New"]);
+    // Reimporting a known file must not renew its original import timestamp.
+    let known = scanned("A", "A", "x", Some(100.0));
+    assert_eq!(s.import_tracks(&[known]).unwrap().added, 0);
+    assert_eq!(s.track(&old.id.0).unwrap().added_at, 1);
+    assert_eq!(names(&all(&s, &saved.filter)), ["B", "New"]);
+}

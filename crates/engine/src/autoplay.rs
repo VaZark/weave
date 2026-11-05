@@ -122,6 +122,7 @@ mod tests {
             },
             tags: tags.iter().map(|t| t.to_string()).collect(),
             rating: None,
+            added_at: 0,
         }
     }
 
