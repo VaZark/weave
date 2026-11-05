@@ -5,6 +5,7 @@
 //! (destination, search, jam, queue) lives here; the layouts in `ui.rs` only render it, so a
 //! window that crosses the breakpoint loses nothing.
 
+mod about_me;
 mod components;
 mod data;
 mod icons;
@@ -72,6 +73,7 @@ pub enum Dest {
     /// Rediscover and explore: old favourites, what you play most, what you might like, and
     /// links to every list.
     Explore,
+    AboutMe,
     Recent,
     Tracks,
     Artists,
@@ -195,6 +197,8 @@ pub enum Message {
     SaveFilter,
     CancelFilter,
     Days(u8),
+    StatsDays(u16),
+    StatsCustom(String),
     // The player.
     TogglePlay,
     Next,
@@ -358,6 +362,8 @@ pub struct App {
     lyrics_of: Option<usize>,
     pub lyric_line: Option<usize>,
     pub days: u8,
+    pub stats_days: u16,
+    pub stats_custom: String,
     /// The filter being edited in the playlist dialog, and its tag tree.
     pub draft: Option<Filter>,
     pub edit_track: Option<TrackEdit>,
@@ -433,6 +439,8 @@ impl App {
             lyrics_of: None,
             lyric_line: None,
             days: 7,
+            stats_days: 7,
+            stats_custom: String::new(),
             draft: None,
             edit_track: None,
             rate_track: None,
@@ -483,6 +491,7 @@ impl App {
                     Message::ListScroll(Viewport::new(480.0)),
                 ],
                 "explore" => vec![Message::Go(Dest::Explore)],
+                "about-me" => vec![Message::Go(Dest::AboutMe)],
                 "albums" => vec![Message::Go(Dest::Albums)],
                 "playing-queue" => vec![Message::NowPlaying(true), Message::ToggleQueue],
                 "settings" => vec![Message::OpenSettings],
@@ -1148,6 +1157,18 @@ impl App {
             }
             Message::Days(d) => {
                 self.days = d;
+                Vec::new()
+            }
+            Message::StatsDays(days) => {
+                self.stats_days = days.max(1);
+                self.stats_custom.clear();
+                Vec::new()
+            }
+            Message::StatsCustom(value) => {
+                self.stats_custom = value.chars().filter(char::is_ascii_digit).take(5).collect();
+                if let Ok(days) = self.stats_custom.parse::<u16>() {
+                    self.stats_days = days.max(1);
+                }
                 Vec::new()
             }
             Message::TogglePlay => {
