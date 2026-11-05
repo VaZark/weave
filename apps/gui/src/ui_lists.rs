@@ -794,6 +794,7 @@ impl App {
     fn options_menu_def(
         title: String,
         dynamic: bool,
+        deletable: bool,
         wrap: impl Fn(Message) -> Message,
     ) -> Menu<Message> {
         let mut items =
@@ -803,7 +804,15 @@ impl App {
                 MenuItem::action("Edit filter", wrap(Message::EditFilter)).icon(Icon::Filter),
             );
         }
-        Menu::new(title).section(items)
+        let mut menu = Menu::new(title).section(items);
+        if deletable {
+            menu = menu.section([MenuItem::action(
+                "Delete playlist…",
+                wrap(Message::AskDeletePlaylist),
+            )
+            .icon(Icon::Delete)]);
+        }
+        menu
     }
 
     /// The shuffle toggle of a playlist or an album page, beside its ⋮: on, Play shuffles it (from
@@ -832,15 +841,18 @@ impl App {
         self.menu_button(
             Icon::ViewMore,
             "Options",
-            Self::options_menu_def("Options".into(), dynamic, |m| m),
+            Self::options_menu_def("Options".into(), dynamic, self.can_delete_playlist(), |m| m),
         )
     }
 
     /// The page options as a bottom sheet, closing on a choice.
     fn options_sheet(&self, dynamic: bool) -> Element<'_> {
-        let menu = Self::options_menu_def(self.page_title(), dynamic, |m| {
-            Message::SheetAction(Box::new(m))
-        });
+        let menu = Self::options_menu_def(
+            self.page_title(),
+            dynamic,
+            self.can_delete_playlist(),
+            |m| Message::SheetAction(Box::new(m)),
+        );
         Menu::sheet(&menu, None).into()
     }
 

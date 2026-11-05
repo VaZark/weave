@@ -269,6 +269,54 @@ impl App {
             .into()
     }
 
+    // ---- delete playlist ----------------------------------------------------------------
+
+    /// The question before a playlist is deleted: what goes and what stays.
+    fn delete_playlist_form(&self, name: &str) -> Element<'_> {
+        let dependents = self.backend.playlist_dependents(name);
+        let mut col = column![
+            ty::title_3(format!("Delete “{name}”?")),
+            ty::body("The playlist is removed. Its tracks stay in your library."),
+        ]
+        .spacing(10);
+        if dependents > 0 {
+            col = col.push(
+                ty::caption(format!(
+                    "{dependents} other playlist{} draw{} on it and will stop doing so.",
+                    if dependents == 1 { "" } else { "s" },
+                    if dependents == 1 { "s" } else { "" },
+                ))
+                .style(iad::styles::text::dim),
+            );
+        }
+        col.push(
+            row![
+                space::horizontal(),
+                w::flat_button(ty::label("Cancel")).on_press(Message::CancelDeletePlaylist),
+                w::destructive_button(ty::label("Delete")).on_press(Message::ConfirmDeletePlaylist),
+            ]
+            .spacing(8),
+        )
+        .into()
+    }
+
+    /// Delete playlist as a dialog (wide).
+    pub fn delete_playlist_dialog<'a>(&'a self, name: &'a str) -> Element<'a> {
+        container(self.delete_playlist_form(name))
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fixed(440.0))
+            .style(iad::styles::container::popover)
+            .into()
+    }
+
+    /// Delete playlist as a bottom sheet (narrow).
+    pub fn delete_playlist_sheet<'a>(&'a self, name: &'a str) -> Element<'a> {
+        container(self.delete_playlist_form(name))
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fill)
+            .into()
+    }
+
     // ---- dialogs ------------------------------------------------------------------------
 
     /// The content of Edit details, as Spotify's has it: a close cross at the top, the cover at

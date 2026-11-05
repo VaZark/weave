@@ -71,6 +71,11 @@ impl App {
         if self.jam_filters_showing() && !self.is_narrow() {
             return Some(self.jam_filters_dialog());
         }
+        if !self.is_narrow()
+            && let Some(name) = &self.delete_playlist
+        {
+            return Some(self.delete_playlist_dialog(name));
+        }
         self.draft
             .as_ref()
             .map(|f| self.filter_dialog(f))
@@ -394,6 +399,15 @@ impl App {
                 .into()
         } else {
             base
+        };
+        // Delete playlist: a bottom sheet over everything.
+        let base = match &self.delete_playlist {
+            Some(name) => w::Dock::new(base, self.delete_playlist_sheet(name))
+                .scope(w::DockScope::Window)
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::CancelDeletePlaylist)
+                .into(),
+            None => base,
         };
         // Edit details: a bottom sheet over everything, with the page behind it.
         match &self.edit {

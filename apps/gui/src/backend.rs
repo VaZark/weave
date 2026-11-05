@@ -422,6 +422,20 @@ impl Backend {
             .map_err(|e| e.to_string())
     }
 
+    /// How many dynamic playlists draw on this one as a source.
+    pub fn playlist_dependents(&self, name: &str) -> usize {
+        self.engine.playlist_dependents(name).map_or(0, |d| d.len())
+    }
+
+    /// Deletes a playlist. Those that draw on it lose it as a source. Its tracks stay in the
+    /// library. Returns how many playlists were detached.
+    pub fn delete_playlist(&mut self, name: &str) -> Result<usize, String> {
+        self.engine
+            .delete_playlist(name, true)
+            .map(|d| d.len())
+            .map_err(|e| e.to_string())
+    }
+
     pub fn set_playlist_description(&mut self, name: &str, text: &str) -> Result<(), String> {
         use weave_player_lib::core::FilterSpec;
         self.engine

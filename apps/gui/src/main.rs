@@ -206,6 +206,10 @@ pub enum Message {
     PlayAll(Vec<usize>),
     /// Stores the jam's filters as a dynamic playlist.
     SaveJamAsPlaylist,
+    /// Delete playlist, in a playlist page's options: asks first.
+    AskDeletePlaylist,
+    ConfirmDeletePlaylist,
+    CancelDeletePlaylist,
     JamScroll(Viewport),
     // A track's menu.
     PlayNext(usize),
@@ -393,6 +397,8 @@ pub struct App {
     pub tag_query: String,
     pub jam_open: bool,
     pub now_playing: bool,
+    /// The playlist the Delete playlist question is about; `None` when it is not asked.
+    pub delete_playlist: Option<String>,
     /// Full screen mode is on: the window is fullscreen, over Now Playing.
     pub fullscreen: bool,
     /// Whether Now Playing was open when full screen mode started, to go back to.
@@ -501,6 +507,7 @@ impl App {
             tag_query: String::new(),
             jam_open: false,
             now_playing: false,
+            delete_playlist: None,
             fullscreen: false,
             np_before_fullscreen: false,
             history_open: false,
@@ -635,6 +642,9 @@ impl App {
                 "playlist-in" => vec![Message::Open(Dest::Playlist(0))],
                 "edit-track" => vec![Message::Go(Dest::Tracks), Message::EditTrack(3)],
                 "describe" => vec![Message::Go(Dest::Artist(1)), Message::EditDetails],
+                "delete-playlist" => {
+                    vec![Message::Go(Dest::Playlist(0)), Message::AskDeletePlaylist]
+                }
                 "edit-playlist" => vec![Message::Go(Dest::Playlist(0)), Message::EditDetails],
                 "long-desc" => vec![
                     Message::Go(Dest::Playlist(0)),
@@ -868,6 +878,12 @@ impl App {
         self.player.repeat = s.repeat;
         self.player.volume = s.volume;
         self.player.sync_up_next();
+    }
+
+    /// Whether the page is a playlist that can be deleted: any but the default Favourites.
+    pub fn can_delete_playlist(&self) -> bool {
+        matches!(self.dest, Dest::Playlist(i)
+            if self.lib.playlists.get(i).is_some_and(|p| p.name != backend::FAVOURITES))
     }
 
     /// Whether the track is in the Favourites playlist.
@@ -1489,6 +1505,39 @@ impl App {
                         }
                         Err(e) => self.say(format!("Cannot save the playlist: {e}")),
                     }
+                }
+                Vec::new()
+            }
+            Message::AskDeletePlaylist => {
+                if self.can_delete_playlist()
+                    && let Dest::Playlist(i) = self.dest
+                {
+                    self.delete_playlist = self.lib.playlists.get(i).map(|p| p.name.clone());
+                }
+                Vec::new()
+            }
+            Message::CancelDeletePlaylist => {
+                self.delete_playlist = None;
+                Vec::new()
+            }
+            Message::ConfirmDeletePlaylist => {
+                let Some(name) = self.delete_playlist.take() else {
+                    return Task::none();
+                };
+                if name == backend::FAVOURITES {
+                    self.say("The Favourites playlist cannot be deleted");
+                    return Task::none();
+                }
+                match self.backend.delete_playlist(&name) {
+                    Ok(_) => {
+                        // The page was the playlist, whose place in the list is gone.
+                        self.jam_saved = None;
+                        self.dest = Dest::Playlists;
+                        self.history = History::new(Place::at(Dest::Playlists));
+                        self.reload_library();
+                        self.say(format!("Deleted {name}"));
+                    }
+                    Err(e) => self.say(format!("Cannot delete the playlist: {e}")),
                 }
                 Vec::new()
             }
@@ -2417,6 +2466,64 @@ mod tests {
         let _ = a.update(Message::NowPlaying(false));
         assert!(!a.fullscreen && !a.now_playing);
         let _ = a.view();
+    }
+
+    #[test]
+    fn a_playlist_is_deleted_after_a_question_and_favourites_never_is() {
+        let (mut backend, _) = backend::sample::backend();
+        backend::sample::playlist(&mut backend, "Road trip", "");
+        backend::sample::playlist(&mut backend, "Party", "");
+        let lib = backend.load().unwrap();
+        let mut a = App::with(backend, lib).0;
+        let before = a.lib.playlists.len();
+        let i = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Road trip")
+            .unwrap();
+        // Not on a playlist: nothing to delete.
+        let _ = a.update(Message::AskDeletePlaylist);
+        assert!(a.delete_playlist.is_none());
+        let _ = a.update(Message::Open(Dest::Playlist(i)));
+        assert!(a.can_delete_playlist());
+        // Asking opens the question (a dialog on wide); cancelling keeps everything.
+        let _ = a.update(Message::AskDeletePlaylist);
+        assert_eq!(a.delete_playlist.as_deref(), Some("Road trip"));
+        assert!(a.dialog_open_for_test());
+        let _ = a.view();
+        let _ = a.update(Message::CancelDeletePlaylist);
+        assert!(a.delete_playlist.is_none() && a.lib.playlists.len() == before);
+        // Confirming deletes it from the library, and the app leaves its page.
+        let _ = a.update(Message::AskDeletePlaylist);
+        let _ = a.update(Message::ConfirmDeletePlaylist);
+        assert_eq!(a.lib.playlists.len(), before - 1);
+        assert!(a.lib.playlists.iter().all(|p| p.name != "Road trip"));
+        assert_eq!(a.dest, Dest::Playlists);
+        assert!(a.notice.as_ref().is_some_and(|n| n.0.contains("Deleted")));
+        // It stays deleted when the library is read again; its tracks are all still there.
+        assert!(a.reload_library());
+        assert!(a.lib.playlists.iter().all(|p| p.name != "Road trip"));
+        // The default Favourites playlist has no delete option and refuses.
+        let _ = a.update(Message::ToggleFavoriteTrack(3));
+        let fav = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(fav)));
+        assert!(!a.can_delete_playlist());
+        let _ = a.update(Message::AskDeletePlaylist);
+        assert!(a.delete_playlist.is_none());
+        a.delete_playlist = Some(backend::FAVOURITES.into());
+        let _ = a.update(Message::ConfirmDeletePlaylist);
+        assert!(
+            a.lib
+                .playlists
+                .iter()
+                .any(|p| p.name == backend::FAVOURITES)
+        );
     }
 
     #[test]
