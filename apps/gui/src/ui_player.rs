@@ -345,62 +345,93 @@ impl App {
                 .into();
         };
         let narrow = self.is_narrow();
-        let art: Element<'_> = if self.show_lyrics {
+        let synced = || -> Element<'_> {
             SyncedText::new(LYRICS, &self.lyrics, Message::Seek)
                 .current(self.lyric_line)
                 .placeholder("No lyrics for this track.")
                 .into()
-        } else {
-            container(cover(t.id, 260.0)).center(Length::Fill).into()
         };
+        // Lyrics sit beside the cover when there is room, and replace it when there is not.
+        let beside = !narrow && self.show_lyrics;
         let tags = row(t
             .tags
             .iter()
             .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Medium)))
         .spacing(6)
         .wrap();
-        let mut body = column![
-            container(art).height(Length::Fill).width(Length::Fill),
-            column![
-                row![ty::title_2(t.title.clone()), self.heart(t.id)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                ty::body(t.by_line()),
-                tags,
-            ]
-            .spacing(6)
-            .align_x(Alignment::Center),
+        let info = column![
+            row![ty::title_2(t.title.clone()), self.heart(t.id)]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ty::body(t.by_line()),
+            tags,
         ]
-        .spacing(12)
-        .align_x(Alignment::Center)
-        .max_width(640)
-        .height(Length::Fill);
+        .spacing(6)
+        .align_x(Alignment::Center);
         let lyrics = w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
             .size(16.0)
             .on_toggle(move |_| Message::ToggleLyrics);
-        if narrow {
-            body = body
-                .push(self.seek(t))
-                .push(self.controls(20.0))
-                .push(self.volume_control())
-                .push(
-                    row![
-                        w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::Shuffle),
-                        w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::Repeat),
+        let body: Element<'_> = if beside {
+            // The cover and what it is on the left, the lyrics on the right.
+            container(
+                row![
+                    column![
+                        container(cover(t.id, 300.0)).center(Length::Fill),
+                        info,
                         lyrics,
-                        w::IconToggleButton::new(Icon::Queue, self.queue_open)
-                            .size(16.0)
-                            .on_toggle(move |_| Message::ToggleQueue),
                     ]
-                    .spacing(8),
-                );
+                    .spacing(12)
+                    .align_x(Alignment::Center)
+                    .width(Length::FillPortion(1)),
+                    container(synced())
+                        .width(Length::FillPortion(1))
+                        .height(Length::Fill),
+                ]
+                .spacing(48)
+                .height(Length::Fill),
+            )
+            .max_width(1040)
+            .height(Length::Fill)
+            .into()
         } else {
-            body = body.push(lyrics);
-        }
+            let art: Element<'_> = if self.show_lyrics {
+                synced()
+            } else {
+                container(cover(t.id, 260.0)).center(Length::Fill).into()
+            };
+            let mut body = column![
+                container(art).height(Length::Fill).width(Length::Fill),
+                info
+            ]
+            .spacing(12)
+            .align_x(Alignment::Center)
+            .max_width(640)
+            .height(Length::Fill);
+            if narrow {
+                body = body
+                    .push(self.seek(t))
+                    .push(self.controls(20.0))
+                    .push(self.volume_control())
+                    .push(
+                        row![
+                            w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                                .size(16.0)
+                                .on_toggle(move |_| Message::Shuffle),
+                            w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                                .size(16.0)
+                                .on_toggle(move |_| Message::Repeat),
+                            lyrics,
+                            w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                                .size(16.0)
+                                .on_toggle(move |_| Message::ToggleQueue),
+                        ]
+                        .spacing(8),
+                    );
+            } else {
+                body = body.push(lyrics);
+            }
+            body.into()
+        };
         let close = row![
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
             space::horizontal(),
