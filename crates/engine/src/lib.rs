@@ -319,6 +319,23 @@ impl Library {
         Ok((p, result))
     }
 
+    /// Replace a dynamic playlist's whole filter: unlike [`update_playlist`](Self::update_playlist)
+    /// this can remove conditions (a tag, an artist). The description stays. A manual playlist has
+    /// no filter and refuses.
+    pub fn set_playlist_filter(&mut self, name: &str, filter: FilterSpec) -> Result<Playlist> {
+        let mut p = self.storage.playlist(name)?;
+        if p.kind == PlaylistKind::Manual {
+            return Err(Error::InvalidInput(format!(
+                "playlist \"{}\" is manual and has no filters; use playlist add/remove",
+                p.name
+            )));
+        }
+        p.filter = self
+            .storage
+            .update_playlist(&p.id, p.description.as_deref(), &filter)?;
+        Ok(p)
+    }
+
     /// Change the specified filters; retain the others. `description`: `None` keeps
     /// the current one, `Some("")` clears it. Manual playlists only take a description.
     pub fn update_playlist(
@@ -459,6 +476,38 @@ mod tests {
             .unwrap();
         assert_eq!(p.filter.tag_all, ["bachata"]);
         assert_eq!(lib.playlist("P").unwrap().filter.rating_min, Some(4));
+    }
+
+    #[test]
+    fn set_playlist_filter_replaces_so_conditions_can_be_removed() {
+        let mut lib = Library::open_in_memory().unwrap();
+        lib.create_playlist(
+            "P",
+            Some("about"),
+            FilterSpec {
+                tag_all: vec!["bachata".into()],
+                artist: Some("aventura".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Merging cannot drop the artist; replacing can.
+        let p = lib
+            .set_playlist_filter(
+                "P",
+                FilterSpec {
+                    tag_all: vec!["bachata".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(p.filter.tag_all, ["bachata"]);
+        let stored = lib.playlist("P").unwrap();
+        assert_eq!(stored.filter.artist, None);
+        assert_eq!(stored.description.as_deref(), Some("about"));
+        // A manual playlist has no filter to replace.
+        lib.create_manual_playlist("M", None).unwrap();
+        assert!(lib.set_playlist_filter("M", FilterSpec::default()).is_err());
     }
 
     #[test]
