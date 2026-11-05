@@ -1466,7 +1466,9 @@ impl App {
             }
             Message::SaveJamAsPlaylist => {
                 let n = self.lib.filtered(&self.filter).len();
-                if n > 0 {
+                if !self.filter.is_saveable() {
+                    self.say("Add a tag, tempo, artist or album to save a playlist");
+                } else if n > 0 {
                     let name = self.new_playlist_name();
                     let saved_with = self.filter.clone();
                     match self.backend.create_dynamic_playlist(&name, &saved_with) {
@@ -1750,9 +1752,16 @@ impl App {
                 self.filter.bpm.0, self.filter.bpm.1
             ));
         }
-        for text in [&self.filter.artist, &self.filter.album] {
-            if !text.trim().is_empty() {
-                parts.push(text.trim().to_string());
+        for (names, none) in [
+            (&self.filter.artists, "Unknown artist"),
+            (&self.filter.albums, "No album"),
+        ] {
+            if !names.is_empty() {
+                let shown: Vec<&str> = names
+                    .iter()
+                    .map(|n| if n == data::UNKNOWN { none } else { n.as_str() })
+                    .collect();
+                parts.push(shown.join(" or "));
             }
         }
         let base = if parts.is_empty() {
@@ -2737,7 +2746,7 @@ mod tests {
         let mut a = app();
         let _ = a.update(Message::ToggleJam);
         let artist = a.lib.tracks[3].artist.clone();
-        a.filter.artist = artist.clone();
+        a.filter.artists = vec![artist.clone()];
         a.filter.q = "a".into();
         a.refresh();
         assert!(a.lib.filtered(&a.filter).len() > 0);
@@ -2753,7 +2762,11 @@ mod tests {
             .lib
             .playlists
             .iter()
-            .find(|p| p.filter.as_ref().is_some_and(|f| f.artist == artist))
+            .find(|p| {
+                p.filter
+                    .as_ref()
+                    .is_some_and(|f| f.artists == vec![artist.clone()])
+            })
             .expect("the artist was saved");
         assert_eq!(p.filter.as_ref().unwrap().q, "");
         // Without a generic search the notice is a plain "Saved as".
@@ -2772,20 +2785,24 @@ mod tests {
         let mut a = app();
         let _ = a.update(Message::ToggleJam);
         let artist = a.lib.tracks[3].artist.clone();
-        a.filter.artist = artist.clone();
+        a.filter.artists = vec![artist.clone()];
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
         let _ = a.update(Message::SaveJamAsPlaylist);
         let i = a
             .lib
             .playlists
             .iter()
-            .position(|p| p.filter.as_ref().is_some_and(|f| f.artist == artist))
+            .position(|p| {
+                p.filter
+                    .as_ref()
+                    .is_some_and(|f| f.artists == vec![artist.clone()])
+            })
             .unwrap();
         let _ = a.update(Message::Open(Dest::Playlist(i)));
         let _ = a.update(Message::EditFilter);
         // Remove the artist and the tag in the draft, and save.
         if let Some(d) = a.draft.as_mut() {
-            d.artist.clear();
+            d.artists.clear();
             d.tags.clear();
             d.bpm = (90.0, 120.0);
         }
@@ -2799,39 +2816,129 @@ mod tests {
             .expect("the edit was stored")];
         let f = p.filter.as_ref().unwrap();
         assert!(
-            f.artist.is_empty() && f.tags.is_empty(),
+            f.artists.is_empty() && f.tags.is_empty(),
             "conditions were removed"
         );
     }
 
     #[test]
-    fn a_filter_matches_by_tags_tempo_artist_album_and_the_generic_search() {
+    fn a_filter_matches_tags_tempo_any_of_the_artists_any_of_the_albums_and_the_search() {
         let a = app();
-        let t = &a.lib.tracks[3];
         let tree = &a.lib.tags;
+        let t = &a.lib.tracks[3];
+        let other = a.lib.tracks.iter().find(|x| x.artist != t.artist).unwrap();
         let mut f = Filter::default();
         assert!(f.matches(t, tree) && f.is_empty() && f.count() == 0);
-        f.artist = t.artist.to_uppercase();
-        assert!(f.matches(t, tree), "case-insensitive");
-        f.artist = "zzz-nobody".into();
-        assert!(!f.matches(t, tree));
-        f.artist.clear();
+        // Artists: any of them, exact and case-insensitive.
+        f.artists = vec![t.artist.to_uppercase()];
+        assert!(f.matches(t, tree) && !f.matches(other, tree));
+        f.artists = vec!["zzz-nobody".into(), other.artist.clone()];
+        assert!(!f.matches(t, tree) && f.matches(other, tree), "ORed within");
+        f.artists = vec![t.artist[..2].to_string()];
+        assert!(!f.matches(t, tree), "exact, not a substring");
+        // Both artists chosen: the two tracks' artists are both accepted.
+        f.artists = vec![t.artist.clone(), other.artist.clone()];
+        assert!(f.matches(t, tree) && f.matches(other, tree));
+        // ANDed across: an artist and an album that do not go together match nothing.
+        f.artists = vec![t.artist.clone()];
+        f.albums = vec!["zzz-no-album".into()];
+        assert!(!f.matches(t, tree), "artists AND albums");
+        f.albums.clear();
+        // The generic search reaches the title.
+        f.artists.clear();
         f.q = t.title[..2].to_string();
-        assert!(f.matches(t, tree), "the generic search reaches the title");
+        assert!(f.matches(t, tree));
         f.q = "zzz-nothing".into();
         assert!(!f.matches(t, tree));
-        // Counting: tags and tempo are the tag filters; artist, album and q the search.
+        // Counting: tags, tempo, artists and albums are the tag filters; q the search.
         f.q = "x".into();
-        f.artist = "y".into();
+        f.artists = vec!["y".into(), "z".into()];
+        f.albums = vec!["w".into()];
         f.bpm = (90.0, 120.0);
-        assert_eq!((f.count(), f.tag_count(), f.search_count()), (3, 1, 2));
+        assert_eq!((f.count(), f.tag_count(), f.search_count()), (5, 4, 1));
+        assert!(f.is_saveable());
+        f.artists.clear();
+        f.albums.clear();
+        f.bpm = data::BPM;
+        assert!(!f.is_saveable(), "the search alone is not a playlist");
         // What is stored: everything but the generic search, and it reads back the same.
+        f.artists = vec!["y".into()];
+        f.albums = vec!["w".into()];
+        f.bpm = (90.0, 120.0);
         let spec = f.to_spec();
-        assert_eq!(spec.artist.as_deref(), Some("y"));
+        assert_eq!(spec.artist_any, ["y"]);
+        assert_eq!(spec.album_any, ["w"]);
         assert_eq!((spec.bpm_min, spec.bpm_max), (Some(90.0), Some(120.0)));
         let back = Filter::from_spec(&spec);
         assert_eq!(back.q, "");
-        assert_eq!((back.artist.as_str(), back.bpm), ("y", (90.0, 120.0)));
+        assert_eq!(
+            (back.artists, back.albums, back.bpm),
+            (f.artists, f.albums, (90.0, 120.0))
+        );
+    }
+
+    #[test]
+    fn the_unknown_sentinel_picks_tracks_with_no_artist_or_no_album() {
+        let a = app();
+        let tree = &a.lib.tags;
+        let mut no_album = a.lib.tracks[0].clone();
+        no_album.album.clear();
+        let mut with_album = a.lib.tracks[0].clone();
+        with_album.album = "Some Album".into();
+        let mut no_artist = a.lib.tracks[0].clone();
+        no_artist.artist = "Unknown artist".into();
+        no_artist.artist_known = false;
+        let mut f = Filter {
+            albums: vec![data::UNKNOWN.into()],
+            ..Filter::default()
+        };
+        assert!(f.matches(&no_album, tree) && !f.matches(&with_album, tree));
+        f.albums = vec![data::UNKNOWN.into(), "Some Album".into()];
+        assert!(
+            f.matches(&no_album, tree) && f.matches(&with_album, tree),
+            "or a named one"
+        );
+        f.albums.clear();
+        f.artists = vec![data::UNKNOWN.into()];
+        assert!(f.matches(&no_artist, tree) && !f.matches(&with_album, tree));
+        // The text "Unknown artist" is not a real artist the sentinel could be confused with.
+        f.artists = vec!["Unknown artist".into()];
+        assert!(
+            !f.matches(&no_artist, tree),
+            "only the sentinel names a missing artist"
+        );
+    }
+
+    #[test]
+    fn a_playlist_needs_a_filter_other_than_the_search_to_be_saved() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let before = a.lib.playlists.len();
+        // Nothing set, and only a search: refused with a notice, nothing is created.
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert_eq!(a.lib.playlists.len(), before);
+        assert!(a.notice.as_ref().is_some_and(|n| n.0.contains("Add a")));
+        a.filter.q = "a".into();
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert_eq!(a.lib.playlists.len(), before, "a search alone is not saved");
+        // An artist (any of several, one of them the unknown sentinel) is enough, and is kept.
+        a.filter.artists = vec![a.lib.tracks[0].artist.clone(), data::UNKNOWN.into()];
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        assert_eq!(a.lib.playlists.len(), before + 1);
+        assert!(a.reload_library());
+        let p = a
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.filter.as_ref().is_some_and(|f| f.artists.len() == 2))
+            .expect("both artists were stored");
+        assert!(
+            p.filter
+                .as_ref()
+                .unwrap()
+                .artists
+                .contains(&data::UNKNOWN.to_string())
+        );
     }
 
     #[test]

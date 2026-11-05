@@ -15,6 +15,8 @@ pub struct Track {
     pub year: Option<i32>,
     pub title: String,
     pub artist: String,
+    /// False when the track has no artist tag (`artist` then reads "Unknown artist").
+    pub artist_known: bool,
     /// Empty for a track with no album tag.
     pub album: String,
     pub tags: Vec<String>,
@@ -80,30 +82,37 @@ fn subtree<'a>(tree: &'a [TreeNode], tag: &str, out: &mut Vec<&'a str>, inside: 
     }
 }
 
-/// The filter page's state: tags (each also reaching its descendants), a BPM range, and text
-/// searches. `artist` and `album` are saved with a dynamic playlist; `q` (the generic search over
-/// title, artist and album) is not: it only narrows what is on screen.
+/// The filter page's state: tags (each also reaching its descendants), a BPM range, artists and
+/// albums, and a text search.
+///
+/// A track must have every chosen tag, be in the tempo range, have one of the chosen artists (if
+/// any are chosen) and one of the chosen albums (if any are), and match the search. `q`, the
+/// generic search over title, artist and album, is not saved with a dynamic playlist: it only
+/// narrows what is on screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
     pub tags: Vec<String>,
     pub bpm: (f32, f32),
-    /// A substring of the artist (case-insensitive). Saved.
-    pub artist: String,
-    /// A substring of the album (case-insensitive). Saved.
-    pub album: String,
+    /// Exact artist names, any of them; [`UNKNOWN`] is "no artist". Saved.
+    pub artists: Vec<String>,
+    /// Exact album names, any of them; [`UNKNOWN`] is "no album". Saved.
+    pub albums: Vec<String>,
     /// A substring of the title, artist or album. Not saved.
     pub q: String,
 }
 
 pub const BPM: (f32, f32) = (60.0, 180.0);
 
+/// In `Filter::artists` / `albums`: the tracks that have none.
+pub const UNKNOWN: &str = weave_player_lib::core::FilterSpec::UNKNOWN;
+
 impl Default for Filter {
     fn default() -> Self {
         Self {
             tags: Vec::new(),
             bpm: BPM,
-            artist: String::new(),
-            album: String::new(),
+            artists: Vec::new(),
+            albums: Vec::new(),
             q: String::new(),
         }
     }
@@ -115,38 +124,52 @@ fn contains_ci(hay: &str, needle: &str) -> bool {
     n.is_empty() || hay.to_lowercase().contains(&n.to_lowercase())
 }
 
+/// Whether one of `wanted` names `value` exactly (case-insensitive); [`UNKNOWN`] names a missing
+/// value. Nothing wanted accepts anything.
+fn one_of(wanted: &[String], value: &str, known: bool) -> bool {
+    wanted.is_empty()
+        || wanted.iter().any(|w| {
+            if w == UNKNOWN {
+                !known
+            } else {
+                known && w.trim().to_lowercase() == value.trim().to_lowercase()
+            }
+        })
+}
+
 impl Filter {
     pub fn is_empty(&self) -> bool {
         self.count() == 0
     }
 
-    /// The number of active conditions, for a badge.
+    /// The number of active conditions.
     pub fn count(&self) -> usize {
-        let text = |s: &str| usize::from(!s.trim().is_empty());
-        self.tags.len()
-            + usize::from(self.bpm != BPM)
-            + text(&self.artist)
-            + text(&self.album)
-            + text(&self.q)
+        self.tag_count() + self.search_count()
     }
 
-    /// The conditions the tag filters page edits: tags and tempo.
+    /// The conditions the Tag filters edit: tags, tempo, artists and albums. These are the ones a
+    /// dynamic playlist keeps.
     pub fn tag_count(&self) -> usize {
-        self.tags.len() + usize::from(self.bpm != BPM)
+        self.tags.len() + usize::from(self.bpm != BPM) + self.artists.len() + self.albums.len()
     }
 
-    /// The conditions the search row edits: artist, album and the generic search.
+    /// The conditions the search bar edits: the generic search.
     pub fn search_count(&self) -> usize {
-        self.count() - self.tag_count()
+        usize::from(!self.q.trim().is_empty())
     }
 
-    /// All the chosen tags must be on the track (or one of their descendants), and the text
-    /// searches must be in it.
+    /// Whether a dynamic playlist can be made of it: something other than the search is set.
+    pub fn is_saveable(&self) -> bool {
+        self.tag_count() > 0
+    }
+
     pub fn matches(&self, t: &Track, tree: &[TreeNode]) -> bool {
         if self.bpm != BPM && (t.bpm < self.bpm.0 || t.bpm > self.bpm.1) {
             return false;
         }
-        if !contains_ci(&t.artist, &self.artist) || !contains_ci(&t.album, &self.album) {
+        if !one_of(&self.artists, &t.artist, t.artist_known)
+            || !one_of(&self.albums, &t.album, !t.album.is_empty())
+        {
             return false;
         }
         if !self.q.trim().is_empty()
@@ -165,16 +188,15 @@ impl Filter {
         })
     }
 
-    /// What a dynamic playlist stores of this filter: tags, tempo, artist and album. The generic
-    /// search `q` is left out.
+    /// What a dynamic playlist stores of this filter: tags, tempo, artists and albums. The
+    /// generic search `q` is left out.
     pub fn to_spec(&self) -> weave_player_lib::core::FilterSpec {
-        let text = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
         weave_player_lib::core::FilterSpec {
             tag_all: self.tags.clone(),
             bpm_min: (self.bpm != BPM).then_some(f64::from(self.bpm.0)),
             bpm_max: (self.bpm != BPM).then_some(f64::from(self.bpm.1)),
-            artist: text(&self.artist),
-            album: text(&self.album),
+            artist_any: self.artists.clone(),
+            album_any: self.albums.clone(),
             ..Default::default()
         }
         .normalized()
@@ -188,8 +210,8 @@ impl Filter {
                 spec.bpm_min.map_or(BPM.0, |v| v as f32),
                 spec.bpm_max.map_or(BPM.1, |v| v as f32),
             ),
-            artist: spec.artist.clone().unwrap_or_default(),
-            album: spec.album.clone().unwrap_or_default(),
+            artists: spec.artist_any.clone(),
+            albums: spec.album_any.clone(),
             q: String::new(),
         }
     }
@@ -305,6 +327,11 @@ impl Library {
                     .artist
                     .clone()
                     .unwrap_or_else(|| "Unknown artist".into()),
+                artist_known: t
+                    .metadata
+                    .artist
+                    .as_deref()
+                    .is_some_and(|a| !a.trim().is_empty()),
                 album: t.metadata.album.clone().unwrap_or_default(),
                 tags: t.tags.clone(),
                 bpm: t.metadata.bpm.unwrap_or(0.0) as f32,
