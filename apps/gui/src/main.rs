@@ -170,6 +170,13 @@ pub enum Message {
     ToggleQueueHistory,
     NowPlaying(bool),
     ToggleQueue,
+    /// Full screen mode on or off: the window goes fullscreen and shows Now Playing; leaving
+    /// puts both back.
+    Fullscreen(bool),
+    /// F11.
+    ToggleFullscreen,
+    /// Escape: leaves fullscreen, and does nothing otherwise.
+    EscapeKey,
     ToggleLyrics,
     // The filter page, shared by search and jam.
     ToggleTag(String),
@@ -370,6 +377,10 @@ pub struct App {
     pub tag_query: String,
     pub jam_open: bool,
     pub now_playing: bool,
+    /// Full screen mode is on: the window is fullscreen, over Now Playing.
+    pub fullscreen: bool,
+    /// Whether Now Playing was open when full screen mode started, to go back to.
+    pub np_before_fullscreen: bool,
     /// Whether the queue lists the tracks already played (collapsed until asked for).
     pub history_open: bool,
     /// The volume before the volume button muted, to go back to.
@@ -461,6 +472,8 @@ impl App {
             tag_query: String::new(),
             jam_open: false,
             now_playing: false,
+            fullscreen: false,
+            np_before_fullscreen: false,
             history_open: false,
             muted_from: None,
             queue_open: false,
@@ -515,6 +528,18 @@ impl App {
         app.refresh();
         let cmds = app.adaptive.resize(window_size().0, Instant::now());
         let mut tasks = vec![app.dispatch(cmds)];
+        if std::env::var("WEAVE_GUI_START").as_deref() == Ok("fullscreen") {
+            // After the window is on screen, as when the full screen button is pressed.
+            tasks.push(Task::future(async {
+                let (tx, rx) = iced::futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let _ = tx.send(());
+                });
+                let _ = rx.await;
+                Message::Fullscreen(true)
+            }));
+        }
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
                 "jam" => vec![Message::ToggleJam],
@@ -1139,6 +1164,39 @@ impl App {
                 }
                 Vec::new()
             }
+            Message::NowPlaying(false) if self.fullscreen => {
+                // Closing Now Playing ends full screen mode too.
+                self.np_before_fullscreen = false;
+                return self.update(Message::Fullscreen(false));
+            }
+            Message::Fullscreen(on) => {
+                if on == self.fullscreen {
+                    return Task::none();
+                }
+                self.fullscreen = on;
+                if on {
+                    self.np_before_fullscreen = self.now_playing;
+                    self.now_playing = true;
+                    self.queue_open = false;
+                } else {
+                    self.now_playing = self.np_before_fullscreen;
+                }
+                let mode = if on {
+                    iced::window::Mode::Fullscreen
+                } else {
+                    iced::window::Mode::Windowed
+                };
+                return iced::window::oldest().and_then(move |id| iced::window::set_mode(id, mode));
+            }
+            Message::ToggleFullscreen => {
+                return self.update(Message::Fullscreen(!self.fullscreen));
+            }
+            Message::EscapeKey => {
+                if self.fullscreen {
+                    return self.update(Message::Fullscreen(false));
+                }
+                return Task::none();
+            }
             Message::NowPlaying(on) => {
                 self.now_playing = on;
                 if on {
@@ -1581,6 +1639,20 @@ impl App {
             self.adaptive.subscription(Message::Tick),
             iad::system::follow_color_scheme().map(Message::SystemScheme),
         ];
+        subs.push(iced::keyboard::listen().filter_map(|event| {
+            use iced::keyboard::{Event, Key, key::Named};
+            match event {
+                Event::KeyPressed {
+                    key: Key::Named(Named::F11),
+                    ..
+                } => Some(Message::ToggleFullscreen),
+                Event::KeyPressed {
+                    key: Key::Named(Named::Escape),
+                    ..
+                } => Some(Message::EscapeKey),
+                _ => None,
+            }
+        }));
         if self.animating() {
             subs.push(iced::window::frames().map(Message::Frame));
         }
@@ -2120,6 +2192,33 @@ mod tests {
         assert_eq!(a.player.queue, vec![10, 11, 12]);
         let _ = a.update(Message::ToggleQueueHistory);
         assert!(a.history_open);
+    }
+
+    #[test]
+    fn full_screen_mode_shows_now_playing_and_leaving_puts_things_back() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        a.play(vec![10, 11], 0);
+        let _ = a.update(Message::Fullscreen(true));
+        assert!(a.fullscreen && a.now_playing, "fullscreen over Now Playing");
+        let _ = a.update(Message::Fullscreen(false));
+        assert!(
+            !a.fullscreen && !a.now_playing,
+            "Now Playing was not open before"
+        );
+        // Started from Now Playing: it stays open when full screen ends.
+        let _ = a.update(Message::NowPlaying(true));
+        let _ = a.update(Message::ToggleFullscreen);
+        assert!(a.fullscreen);
+        let _ = a.update(Message::EscapeKey);
+        assert!(!a.fullscreen && a.now_playing);
+        // Escape does nothing when not fullscreen; closing Now Playing ends full screen.
+        let _ = a.update(Message::EscapeKey);
+        assert!(a.now_playing);
+        let _ = a.update(Message::Fullscreen(true));
+        let _ = a.update(Message::NowPlaying(false));
+        assert!(!a.fullscreen && !a.now_playing);
+        let _ = a.view();
     }
 
     #[test]

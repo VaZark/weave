@@ -70,7 +70,7 @@ impl App {
     fn chrome(&self, left: bool, right: bool) -> Chrome {
         Chrome::new(WindowState {
             maximized: false,
-            fullscreen: false,
+            fullscreen: self.fullscreen,
         })
         .edges(left, right)
     }

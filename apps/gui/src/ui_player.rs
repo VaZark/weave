@@ -91,6 +91,18 @@ impl App {
         .into()
     }
 
+    /// Enters or leaves full screen mode.
+    fn fullscreen_button(&self) -> Element<'_> {
+        let icon = if self.fullscreen {
+            Icon::FullscreenExit
+        } else {
+            Icon::Fullscreen
+        };
+        w::icon_button(icon)
+            .on_press(Message::Fullscreen(!self.fullscreen))
+            .into()
+    }
+
     /// Wide layout: the player bar.
     pub fn player_bar(&self) -> Element<'_> {
         let Some(t) = self.now() else {
@@ -131,6 +143,7 @@ impl App {
                 )
                 .size(16.0)
                 .on_toggle(move |_| Message::NowPlaying(!self.now_playing)),
+                self.fullscreen_button(),
             ]
             .spacing(14)
             .align_y(Alignment::Center),
@@ -392,6 +405,7 @@ impl App {
         let close = row![
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
             space::horizontal(),
+            self.fullscreen_button(),
         ];
         let backdrop = iad::color::from_index(t.id);
         container(column![
