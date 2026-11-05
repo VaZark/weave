@@ -98,7 +98,11 @@ impl App {
     /// What a track's menu offers, in sections: icon, label, message. One list for the dropdown
     /// (desktop) and the bottom sheet (narrow). `album` is false on an album's own page, where
     /// "View album" is moot.
-    fn track_actions(id: usize, album: bool) -> Vec<Vec<(iad::IconSource, &'static str, Message)>> {
+    fn track_actions(
+        id: usize,
+        album: bool,
+        favourite: bool,
+    ) -> Vec<Vec<(iad::IconSource, &'static str, Message)>> {
         let mut views = vec![];
         if album {
             views.push((
@@ -122,6 +126,15 @@ impl App {
                 ),
             ],
             vec![
+                (
+                    Icon::Heart.into(),
+                    if favourite {
+                        "Remove from favourites"
+                    } else {
+                        "Add to favourites"
+                    },
+                    Message::ToggleFavoriteTrack(id),
+                ),
                 (Icon::Star.into(), "Rate", Message::RateTrack(id)),
                 (Icon::Edit.into(), "Edit tags", Message::EditTrack(id)),
                 (
@@ -140,10 +153,11 @@ impl App {
         title: String,
         id: usize,
         album: bool,
+        favourite: bool,
         wrap: impl Fn(Message) -> Message,
     ) -> Menu<Message> {
         let mut menu = Menu::new(title);
-        for section in Self::track_actions(id, album) {
+        for section in Self::track_actions(id, album, favourite) {
             menu = menu.section(
                 section
                     .into_iter()
@@ -163,14 +177,14 @@ impl App {
         self.menu_button(
             Icon::ViewMore,
             "Track options",
-            Self::track_menu_def("Track".into(), id, album, |m| m),
+            Self::track_menu_def("Track".into(), id, album, self.is_favourite(id), |m| m),
         )
     }
 
     /// The track menu as a bottom sheet: iad's `Menu::sheet`, closing on a choice.
     pub fn track_sheet(&self, id: usize, album: bool) -> Element<'_> {
         let t = self.track(id);
-        let menu = Self::track_menu_def(t.title.clone(), id, album, |m| {
+        let menu = Self::track_menu_def(t.title.clone(), id, album, self.is_favourite(id), |m| {
             Message::SheetAction(Box::new(m))
         });
         Menu::sheet(&menu, Some(t.artist.clone())).into()

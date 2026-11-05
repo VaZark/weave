@@ -91,6 +91,14 @@ impl App {
         .into()
     }
 
+    /// The heart of a track: in the Favourites playlist or not.
+    fn heart(&self, id: usize) -> Element<'_> {
+        w::IconToggleButton::new(Icon::Heart, self.is_favourite(id))
+            .size(16.0)
+            .on_toggle(move |_| Message::ToggleFavoriteTrack(id))
+            .into()
+    }
+
     /// Enters or leaves full screen mode.
     fn fullscreen_button(&self) -> Element<'_> {
         let icon = if self.fullscreen {
@@ -121,6 +129,7 @@ impl App {
                     .align_y(Alignment::Center)
                 )
                 .on_press(Message::NowPlaying(!self.now_playing)),
+                self.heart(t.id),
                 self.controls(16.0),
                 container(self.seek(t)).width(Length::Fill),
                 w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
@@ -368,9 +377,15 @@ impl App {
         .wrap();
         let mut body = column![
             container(art).height(Length::Fill).width(Length::Fill),
-            column![ty::title_2(t.title.clone()), ty::body(t.by_line()), tags,]
-                .spacing(6)
-                .align_x(Alignment::Center),
+            column![
+                row![ty::title_2(t.title.clone()), self.heart(t.id)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                ty::body(t.by_line()),
+                tags,
+            ]
+            .spacing(6)
+            .align_x(Alignment::Center),
         ]
         .spacing(12)
         .align_x(Alignment::Center)

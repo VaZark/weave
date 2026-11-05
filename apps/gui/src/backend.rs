@@ -15,6 +15,9 @@ use weave_player_lib::{Library as Engine, SessionView};
 
 use crate::data::Library;
 
+/// The default playlist: every favourited track is in it.
+pub const FAVOURITES: &str = "Favourites";
+
 /// What the UI shows of the session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
@@ -139,6 +142,7 @@ impl Backend {
                 Err(e) => eprintln!("weave: no sound from this window: {e}"),
             }
         }
+        b.ensure_favourites();
         let lib = b.load()?;
         Ok((b, lib))
     }
@@ -152,6 +156,26 @@ impl Backend {
             #[cfg(feature = "audio")]
             sound: None,
         }
+    }
+
+    /// Makes sure the Favourites playlist exists (an empty manual one). Where the name is taken by
+    /// something else the favourites cannot be kept, which `set_favourite` then reports.
+    fn ensure_favourites(&mut self) {
+        let _ = self
+            .engine
+            .create_manual_playlist(FAVOURITES, Some("The tracks you favourited"));
+    }
+
+    /// Adds the track to the Favourites playlist, or takes it out.
+    pub fn set_favourite(&mut self, slug: &str, on: bool) -> Result<(), String> {
+        self.ensure_favourites();
+        let ids = [slug.to_string()];
+        let done = if on {
+            self.engine.playlist_add(FAVOURITES, &ids)
+        } else {
+            self.engine.playlist_remove(FAVOURITES, &ids)
+        };
+        done.map(|_| ()).map_err(|e| e.to_string())
     }
 
     /// The database file, to open another handle on it.

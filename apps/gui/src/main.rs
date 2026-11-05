@@ -155,6 +155,8 @@ pub enum Message {
     SetDensity(DensityPref),
     WhileDays(u32),
     ToggleFavorite(String),
+    /// The heart of a track: in or out of the Favourites playlist.
+    ToggleFavoriteTrack(usize),
     SleepTimer(Option<u32>),
     ListScroll(Viewport),
     RateTrack(usize),
@@ -717,8 +719,14 @@ impl App {
     /// Opens the Edit form of the page: a playlist's name and the description, as they are now.
     fn open_form(&mut self) {
         let Some(key) = self.desc_key() else { return };
+        // The default playlist keeps its name.
         let name = match self.dest {
-            Dest::Playlist(i) => self.lib.playlists.get(i).map(|p| p.name.clone()),
+            Dest::Playlist(i) => self
+                .lib
+                .playlists
+                .get(i)
+                .map(|p| p.name.clone())
+                .filter(|n| n != backend::FAVOURITES),
             _ => None,
         };
         self.edit = Some(DetailsDraft {
@@ -789,6 +797,14 @@ impl App {
         self.player.repeat = s.repeat;
         self.player.volume = s.volume;
         self.player.sync_up_next();
+    }
+
+    /// Whether the track is in the Favourites playlist.
+    pub fn is_favourite(&self, id: usize) -> bool {
+        self.lib
+            .playlists
+            .iter()
+            .any(|p| p.name == backend::FAVOURITES && p.filter.is_none() && p.tracks.contains(&id))
     }
 
     pub fn track(&self, id: usize) -> &Track {
@@ -1099,6 +1115,36 @@ impl App {
             }
             Message::WhileDays(d) => {
                 self.while_days = d;
+                Vec::new()
+            }
+            Message::ToggleFavoriteTrack(id) => {
+                let on = !self.is_favourite(id);
+                let slug = self.lib.tracks[id].slug.clone();
+                match self.backend.set_favourite(&slug, on) {
+                    Ok(()) => {
+                        match self
+                            .lib
+                            .playlists
+                            .iter()
+                            .position(|p| p.name == backend::FAVOURITES)
+                        {
+                            Some(i) => {
+                                let tracks = &mut self.lib.playlists[i].tracks;
+                                if on {
+                                    tracks.push(id);
+                                } else {
+                                    tracks.retain(|t| *t != id);
+                                }
+                                self.refresh();
+                            }
+                            // The playlist did not exist when the library was read.
+                            None => {
+                                self.reload_library();
+                            }
+                        }
+                    }
+                    Err(e) => self.say(format!("Cannot change the favourites: {e}")),
+                }
                 Vec::new()
             }
             Message::ToggleFavorite(a) => {
@@ -2219,6 +2265,39 @@ mod tests {
         let _ = a.update(Message::NowPlaying(false));
         assert!(!a.fullscreen && !a.now_playing);
         let _ = a.view();
+    }
+
+    #[test]
+    fn favourites_is_a_default_playlist_that_holds_the_favourited_tracks() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        assert!(!a.is_favourite(10));
+        let _ = a.update(Message::ToggleFavoriteTrack(10));
+        assert!(a.is_favourite(10), "the heart fills");
+        let fav = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .expect("the playlist exists once something is favourited");
+        assert_eq!(a.lib.playlists[fav].tracks, vec![10]);
+        let _ = a.update(Message::ToggleFavoriteTrack(12));
+        assert_eq!(a.lib.playlists[fav].tracks, vec![10, 12]);
+        // It is kept by the engine: reading the library again finds it.
+        assert!(a.reload_library());
+        assert!(a.is_favourite(10) && a.is_favourite(12) && !a.is_favourite(11));
+        let _ = a.update(Message::ToggleFavoriteTrack(10));
+        assert!(!a.is_favourite(10) && a.is_favourite(12));
+        // The default playlist keeps its name: Edit details has no name field for it.
+        let fav = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(fav)));
+        let _ = a.update(Message::EditDetails);
+        assert!(a.edit.as_ref().is_some_and(|d| d.name.is_none()));
     }
 
     #[test]
