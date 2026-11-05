@@ -645,6 +645,7 @@ impl App {
                 "artist" => vec![Message::Go(Dest::Artist(1))],
                 "album" => vec![Message::Go(Dest::Album(2))],
                 "playing" => vec![Message::NowPlaying(true)],
+                "volume" => vec![Message::SetVolume(0.42)],
                 "queue" => vec![Message::ToggleQueue],
                 "lyrics" => vec![
                     Message::NowPlaying(true),

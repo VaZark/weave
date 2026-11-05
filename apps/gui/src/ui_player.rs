@@ -4,7 +4,7 @@ use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
 use iad::{Icon, styles as style};
-use iced::widget::{button, column, container, mouse_area, row, space};
+use iced::widget::{button, column, container, mouse_area, row, space, tooltip, vertical_slider};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
@@ -76,19 +76,35 @@ impl App {
 
     /// The volume button (mute and back) with its slider.
     fn volume_control(&self) -> Element<'_> {
-        let icon = if self.player.volume == 0.0 {
+        let volume = self.player.volume;
+        let icon = if volume == 0.0 {
             Icon::VolumeMute
         } else {
             Icon::Volume
         };
-        row![
-            w::icon_button(icon).on_press(Message::ToggleMute),
-            container(w::scale(0.0..=1.0, self.player.volume, Message::SetVolume).step(0.01f32))
-                .width(Length::Fixed(90.0)),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center)
-        .into()
+        let percent = (volume * 100.0).round() as u32;
+        // A vertical slider; hovering it (and dragging) shows the percentage it is at.
+        let slider = tooltip(
+            vertical_slider(0.0..=1.0, volume, Message::SetVolume)
+                .step(0.01f32)
+                .height(Length::Fixed(120.0)),
+            container(ty::caption(format!("{percent}%")))
+                .padding([2, 8]) // gutter-ok: a tooltip's own padding
+                .style(style::container::popover),
+            tooltip::Position::Left,
+        )
+        .gap(8);
+        let panel = container(
+            column![slider, w::icon_button(icon).on_press(Message::ToggleMute),]
+                .spacing(8)
+                .align_x(Alignment::Center),
+        )
+        .padding(8) // gutter-ok: a component's own padding, not a page gutter
+        .style(style::container::popover);
+        w::Popover::new(icon.view(16.0), panel)
+            .popover_width(64.0)
+            .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("volume"))
+            .into()
     }
 
     /// The heart of a track: in the Favourites playlist or not.
