@@ -11,7 +11,7 @@ use crate::components::tag_badge::{tag_chip_removable, tag_pill, value_of};
 use crate::data::{self, Filter};
 use crate::icons::{cover, playlist_avatar};
 use crate::ui_lists::RowOpts;
-use crate::{App, Dest, Element, Message};
+use crate::{App, ChipPicker, Dest, Element, Message};
 use iad::prelude::surface;
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
 use iad::primitives::histogram::Histogram;
@@ -67,7 +67,7 @@ impl App {
     }
 
     /// The fields of a filter, as chips: the tags (all of them are listed, with a search), the
-    /// artists and the albums (any of the chosen ones; only the top two lines of chips, found by
+    /// artists and the albums (any of the chosen ones; initially three lines of chips, found by
     /// typing), then the tempo. Shared by the jam's Tag filters and the playlist-filter editor,
     /// each with its own messages.
     pub fn filter_fields<'a>(
@@ -81,8 +81,13 @@ impl App {
             ChipGroup::new(self.tag_options(""), &filter.tags, msgs.tag)
                 .search(&self.tag_query, Message::TagQuery)
                 .placeholder("Find a tag")
+                .max_lines(self.chip_line_limit)
+                .expandable(self.chip_expanded[ChipPicker::Tags as usize], |on| {
+                    Message::ChipExpand(ChipPicker::Tags, on)
+                })
                 .on_color(Color::WHITE),
             self.names_picker(
+                ChipPicker::Artists,
                 "Artists",
                 artists,
                 no_artist,
@@ -94,6 +99,7 @@ impl App {
                 "Find an artist",
             ),
             self.names_picker(
+                ChipPicker::Albums,
                 "Albums",
                 albums,
                 no_album,
@@ -116,11 +122,12 @@ impl App {
     }
 
     /// Artists or albums as chips with a search entry: the chosen ones first, then those with the
-    /// most tracks, then the "unknown" one; clipped to two lines, so typing is how the rest is
+    /// most tracks, then the "unknown" one; clamped with Show all, and typing is how the rest is
     /// found. Several chosen are "any of".
     #[allow(clippy::too_many_arguments)]
     fn names_picker<'a>(
         &'a self,
+        picker: ChipPicker,
         title: &'static str,
         choices: Vec<(String, usize)>,
         unknown_count: usize,
@@ -160,7 +167,10 @@ impl App {
             ChipGroup::new(options, selected, on_toggle)
                 .search(query, on_query)
                 .placeholder(placeholder)
-                .max_lines(2)
+                .max_lines(self.chip_line_limit)
+                .expandable(self.chip_expanded[picker as usize], move |on| {
+                    Message::ChipExpand(picker, on)
+                })
                 .empty_text("No match")
                 .on_color(Color::WHITE),
         ]
@@ -701,10 +711,20 @@ impl App {
             column![
                 ty::title_3(format!("Tags · {}", t.title)),
                 ty::caption(t.by_line()),
-                ChipGroup::new(self.tag_options(""), &e.tags, Message::EditToggleTag)
-                    .search(&self.tag_query, Message::TagQuery)
-                    .placeholder("Find a tag")
-                    .on_color(Color::WHITE),
+                container(
+                    scrollable(
+                        ChipGroup::new(self.tag_options(""), &e.tags, Message::EditToggleTag)
+                            .search(&self.tag_query, Message::TagQuery)
+                            .placeholder("Find a tag")
+                            .max_lines(self.chip_line_limit)
+                            .expandable(self.chip_expanded[ChipPicker::TrackTags as usize], |on| {
+                                Message::ChipExpand(ChipPicker::TrackTags, on)
+                            })
+                            .on_color(Color::WHITE)
+                    )
+                    .height(Length::Shrink)
+                )
+                .max_height((self.win_h - 170.0).clamp(40.0, 360.0)),
                 row![
                     space::horizontal(),
                     w::flat_button(ty::label("Cancel")).on_press(Message::CancelTrack),

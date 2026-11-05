@@ -200,6 +200,7 @@ pub enum Message {
     // The filter page, shared by search and jam.
     ToggleTag(String),
     TagQuery(String),
+    ChipExpand(ChipPicker, bool),
     Bpm((f32, f32)),
     /// The clear icon of the Tag filters: drops the tags and the tempo, and leaves the search.
     ClearTagFilters,
@@ -279,6 +280,15 @@ pub enum Message {
 pub struct TrackEdit {
     pub id: usize,
     pub tags: Vec<String>,
+}
+
+/// Presentation state for each independent wrapping chip collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipPicker {
+    Tags,
+    Artists,
+    Albums,
+    TrackTags,
 }
 
 /// What the bottom sheet (narrow) shows: a menu that is a dropdown on desktop.
@@ -411,6 +421,9 @@ pub struct App {
     pub filter: Filter,
     /// Narrows the tag chips of the filter page as you type.
     pub tag_query: String,
+    pub chip_expanded: [bool; 4],
+    /// Default lines before Show all; shared by every chip picker.
+    pub chip_line_limit: usize,
     pub jam_open: bool,
     pub now_playing: bool,
     /// The playlist the Delete playlist question is about; `None` when it is not asked.
@@ -522,6 +535,8 @@ impl App {
             save_name: None,
             filter: Filter::default(),
             tag_query: String::new(),
+            chip_expanded: [false; 4],
+            chip_line_limit: 3,
             jam_open: false,
             now_playing: false,
             delete_playlist: None,
@@ -624,6 +639,13 @@ impl App {
             for m in match start.as_str() {
                 "jam" => vec![Message::ToggleJam],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
+                "jam-filters-expanded" => vec![
+                    Message::ToggleJam,
+                    Message::JamFilters(true),
+                    Message::ChipExpand(ChipPicker::Tags, true),
+                    Message::ChipExpand(ChipPicker::Artists, true),
+                    Message::ChipExpand(ChipPicker::Albums, true),
+                ],
                 "jam-search" => vec![
                     Message::ToggleJam,
                     Message::JamSearchOpen(true),
@@ -1477,6 +1499,10 @@ impl App {
                 self.refresh();
                 Vec::new()
             }
+            Message::ChipExpand(picker, expanded) => {
+                self.chip_expanded[picker as usize] = expanded;
+                Vec::new()
+            }
             Message::TagQuery(q) => {
                 self.tag_query = q;
                 Vec::new()
@@ -1652,6 +1678,9 @@ impl App {
                 Vec::new()
             }
             Message::JamFilters(on) => {
+                if on && !self.jam_filters_open {
+                    self.chip_expanded = [false; 4];
+                }
                 self.jam_filters_open = on;
                 Vec::new()
             }
@@ -1684,6 +1713,7 @@ impl App {
                 Vec::new()
             }
             Message::EditTrack(id) => {
+                self.chip_expanded[ChipPicker::TrackTags as usize] = false;
                 let t = self.track(id);
                 self.edit_track = Some(TrackEdit {
                     id,
@@ -1753,6 +1783,7 @@ impl App {
                 Vec::new()
             }
             Message::EditFilter => {
+                self.chip_expanded = [false; 4];
                 if let Dest::Playlist(i) = self.dest {
                     self.draft = self.lib.playlists.get(i).and_then(|p| p.filter.clone());
                 }
@@ -2145,6 +2176,110 @@ mod tests {
     fn app() -> App {
         let (backend, lib) = backend::sample::backend();
         App::with(backend, lib).0
+    }
+
+    #[test]
+    fn chip_expansion_is_independent_and_does_not_change_filter_selection() {
+        let mut a = app();
+        assert_eq!(a.chip_line_limit, 3);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let selected = a.filter.clone();
+        let _ = a.update(Message::JamFilters(true));
+        for picker in [ChipPicker::Tags, ChipPicker::Artists, ChipPicker::Albums] {
+            let _ = a.update(Message::ChipExpand(picker, true));
+            assert!(a.chip_expanded[picker as usize]);
+        }
+        let _ = a.update(Message::ChipExpand(ChipPicker::Artists, false));
+        assert_eq!(a.chip_expanded, [true, false, true, false]);
+        let _ = a.update(Message::TagQuery("calm".into()));
+        assert_eq!(a.filter, selected);
+        let _ = a.view();
+        let _ = a.update(Message::JamFilters(false));
+        let _ = a.update(Message::JamFilters(true));
+        assert_eq!(a.chip_expanded, [false; 4]);
+        assert_eq!(a.filter, selected);
+        let _ = a.update(Message::EditTrack(0));
+        let _ = a.update(Message::ChipExpand(ChipPicker::TrackTags, true));
+        let _ = a.view();
+        let _ = a.update(Message::EditTrack(1));
+        assert!(!a.chip_expanded[ChipPicker::TrackTags as usize]);
+    }
+
+    #[test]
+    fn render_chip_filters_in_collapsed_expanded_and_search_states() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless, Style},
+            widget::Tree,
+        };
+        use iced::{Font, Pixels, Point, Rectangle, Size, mouse};
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        let track_edit = TrackEdit {
+            id: 0,
+            tags: a.lib.tracks[0].tags.clone(),
+        };
+        for (name, width, height, expanded, query) in [
+            ("wide-collapsed", 560, 520, false, ""),
+            ("wide-expanded", 560, 520, true, ""),
+            ("narrow-collapsed", 390, 844, false, ""),
+            ("narrow-expanded", 390, 844, true, ""),
+            ("narrow-search", 390, 844, false, "romantic"),
+            ("track-tags-collapsed", 390, 520, false, ""),
+            ("track-tags-expanded", 390, 520, true, ""),
+        ] {
+            a.chip_expanded = [expanded; 4];
+            a.tag_query = query.into();
+            let theme = a.theme();
+            let mut el = if name.starts_with("track-tags") {
+                a.track_dialog(&track_edit)
+            } else if width < 500 {
+                a.jam_filters_sheet()
+            } else {
+                a.jam_filters_dialog()
+            };
+            let mut tree = Tree::new(&el);
+            let size = Size::new(width as f32, height as f32);
+            let node = el.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, size),
+            );
+            if name.starts_with("track-tags") {
+                assert_eq!(node.size().width, size.width);
+                assert!(node.size().height <= size.height);
+            } else {
+                assert_eq!(node.size(), size);
+            }
+            let physical = Size::new(width, node.size().height.ceil() as u32);
+            iced::advanced::Renderer::reset(&mut renderer, Rectangle::new(Point::ORIGIN, size));
+            el.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &theme,
+                &Style {
+                    text_color: theme.semantic.window.fg,
+                },
+                layout::Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &Rectangle::new(Point::ORIGIN, size),
+            );
+            let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
+            assert!(
+                pixels.chunks_exact(4).any(|p| p[0] != p[1] || p[1] != p[2]),
+                "rendered chips have color"
+            );
+            if let Some(dir) = std::env::var_os("WEAVE_CHIP_REVIEW_DIR") {
+                let path = std::path::PathBuf::from(dir).join(format!("{name}.png"));
+                iad::dev::save_png(&iced::window::Screenshot::new(pixels, physical, 1.0), &path)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
