@@ -397,6 +397,31 @@ impl Backend {
     }
 
     /// Saves a playlist's description (empty clears it). The filter stays as it is.
+    /// Creates a dynamic playlist from a filter: its tags, tempo, artist and album (the generic
+    /// search is not part of it).
+    pub fn create_dynamic_playlist(
+        &mut self,
+        name: &str,
+        f: &crate::data::Filter,
+    ) -> Result<(), String> {
+        self.engine
+            .create_playlist(name, None, f.to_spec())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Replaces a dynamic playlist's filter.
+    pub fn set_playlist_filter(
+        &mut self,
+        name: &str,
+        f: &crate::data::Filter,
+    ) -> Result<(), String> {
+        self.engine
+            .set_playlist_filter(name, f.to_spec())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     pub fn set_playlist_description(&mut self, name: &str, text: &str) -> Result<(), String> {
         use weave_player_lib::core::FilterSpec;
         self.engine

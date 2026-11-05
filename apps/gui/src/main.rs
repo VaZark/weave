@@ -18,7 +18,7 @@ mod ui_player;
 
 use std::time::{Duration, Instant};
 
-use data::{Filter, Library, Playlist, RecentOrder, Track};
+use data::{Filter, Library, RecentOrder, Track};
 use iad::adaptive::{Adaptive, Layouts};
 use iad::breakpoints::WidthClass;
 use iad::layouts::virtualize::Viewport;
@@ -1468,18 +1468,25 @@ impl App {
                 let n = self.lib.filtered(&self.filter).len();
                 if n > 0 {
                     let name = self.new_playlist_name();
-                    self.lib.playlists.push(Playlist {
-                        name: name.clone(),
-                        icon: None,
-                        description: String::new(),
-                        filter: Some(self.filter.clone()),
-                        tracks: Vec::new(),
-                        shuffle: None,
-                    });
-                    let i = self.lib.playlists.len() - 1;
-                    self.descriptions
-                        .insert(format!("playlist:{i}"), String::new());
-                    self.jam_saved = Some((i, self.filter.clone()));
+                    let saved_with = self.filter.clone();
+                    match self.backend.create_dynamic_playlist(&name, &saved_with) {
+                        Ok(()) => {
+                            if self.reload_library()
+                                && let Some(i) =
+                                    self.lib.playlists.iter().position(|p| p.name == name)
+                            {
+                                self.jam_saved = Some((i, saved_with.clone()));
+                            }
+                            self.say(if saved_with.q.trim().is_empty() {
+                                format!("Saved as {name}")
+                            } else {
+                                format!(
+                                    "Saved as {name}. The text search is not saved; tags, tempo, artist and album are."
+                                )
+                            });
+                        }
+                        Err(e) => self.say(format!("Cannot save the playlist: {e}")),
+                    }
                 }
                 Vec::new()
             }
@@ -1610,9 +1617,16 @@ impl App {
             }
             Message::SaveFilter => {
                 if let (Dest::Playlist(i), Some(f)) = (self.dest, self.draft.take())
-                    && let Some(p) = self.lib.playlists.get_mut(i)
+                    && let Some(name) = self.lib.playlists.get(i).map(|p| p.name.clone())
                 {
-                    p.filter = Some(f);
+                    match self.backend.set_playlist_filter(&name, &f) {
+                        Ok(()) => {
+                            if let Some(p) = self.lib.playlists.get_mut(i) {
+                                p.filter = Some(Filter::from_spec(&f.to_spec()));
+                            }
+                        }
+                        Err(e) => self.say(format!("Cannot save the filter: {e}")),
+                    }
                 }
                 self.refresh();
                 Vec::new()
@@ -1735,6 +1749,11 @@ impl App {
                 "{:.0}–{:.0} BPM",
                 self.filter.bpm.0, self.filter.bpm.1
             ));
+        }
+        for text in [&self.filter.artist, &self.filter.album] {
+            if !text.trim().is_empty() {
+                parts.push(text.trim().to_string());
+            }
         }
         let base = if parts.is_empty() {
             "Jam".to_string()
@@ -2679,19 +2698,140 @@ mod tests {
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
         let _ = a.update(Message::SaveJamAsPlaylist);
         assert_eq!(a.lib.playlists.len(), before + 1);
-        let p = a.lib.playlists.last().unwrap();
+        let p = a
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.name.contains("romantic"))
+            .expect("saved under a name made of its filters");
         assert_eq!(
             p.filter.as_ref(),
             Some(&a.filter),
-            "stores the filters, not the tracks"
+            "stores the filters, which the engine evaluates"
         );
-        assert!(p.tracks.is_empty());
-        assert!(p.name.contains("romantic"), "{}", p.name);
-        // saving the same filters again makes a second playlist with its own name
         let first = p.name.clone();
+        // It is in the library, not only on screen: reading it again finds it.
+        assert!(a.reload_library());
+        assert!(
+            a.lib
+                .playlists
+                .iter()
+                .any(|p| p.name == first && p.filter.is_some())
+        );
+        // Saving the same filters again makes a second playlist with its own name.
         a.jam_saved = None;
         let _ = a.update(Message::SaveJamAsPlaylist);
-        assert_ne!(a.lib.playlists.last().unwrap().name, first);
+        assert_eq!(a.lib.playlists.len(), before + 2);
+        assert_eq!(
+            a.lib
+                .playlists
+                .iter()
+                .filter(|p| p.name.contains("romantic"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_saved_jam_keeps_everything_but_the_generic_search_and_says_so() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let artist = a.lib.tracks[3].artist.clone();
+        a.filter.artist = artist.clone();
+        a.filter.q = "a".into();
+        a.refresh();
+        assert!(a.lib.filtered(&a.filter).len() > 0);
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
+        assert!(
+            notice.contains("not saved"),
+            "tells the text search is left out: {notice}"
+        );
+        // Read back from the library: the artist is there, the generic search is not.
+        assert!(a.reload_library());
+        let p = a
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.filter.as_ref().is_some_and(|f| f.artist == artist))
+            .expect("the artist was saved");
+        assert_eq!(p.filter.as_ref().unwrap().q, "");
+        // Without a generic search the notice is a plain "Saved as".
+        a.filter.q.clear();
+        a.jam_saved = None;
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
+        assert!(
+            notice.starts_with("Saved as ") && !notice.contains("not saved"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn editing_a_dynamic_playlists_filter_is_kept_and_can_remove_conditions() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let artist = a.lib.tracks[3].artist.clone();
+        a.filter.artist = artist.clone();
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let _ = a.update(Message::SaveJamAsPlaylist);
+        let i = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.filter.as_ref().is_some_and(|f| f.artist == artist))
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(i)));
+        let _ = a.update(Message::EditFilter);
+        // Remove the artist and the tag in the draft, and save.
+        if let Some(d) = a.draft.as_mut() {
+            d.artist.clear();
+            d.tags.clear();
+            d.bpm = (90.0, 120.0);
+        }
+        let _ = a.update(Message::SaveFilter);
+        assert!(a.reload_library());
+        let p = &a.lib.playlists[a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.filter.as_ref().is_some_and(|f| f.bpm == (90.0, 120.0)))
+            .expect("the edit was stored")];
+        let f = p.filter.as_ref().unwrap();
+        assert!(
+            f.artist.is_empty() && f.tags.is_empty(),
+            "conditions were removed"
+        );
+    }
+
+    #[test]
+    fn a_filter_matches_by_tags_tempo_artist_album_and_the_generic_search() {
+        let a = app();
+        let t = &a.lib.tracks[3];
+        let tree = &a.lib.tags;
+        let mut f = Filter::default();
+        assert!(f.matches(t, tree) && f.is_empty() && f.count() == 0);
+        f.artist = t.artist.to_uppercase();
+        assert!(f.matches(t, tree), "case-insensitive");
+        f.artist = "zzz-nobody".into();
+        assert!(!f.matches(t, tree));
+        f.artist.clear();
+        f.q = t.title[..2].to_string();
+        assert!(f.matches(t, tree), "the generic search reaches the title");
+        f.q = "zzz-nothing".into();
+        assert!(!f.matches(t, tree));
+        // Counting: tags and tempo are the tag filters; artist, album and q the search.
+        f.q = "x".into();
+        f.artist = "y".into();
+        f.bpm = (90.0, 120.0);
+        assert_eq!((f.count(), f.tag_count(), f.search_count()), (3, 1, 2));
+        // What is stored: everything but the generic search, and it reads back the same.
+        let spec = f.to_spec();
+        assert_eq!(spec.artist.as_deref(), Some("y"));
+        assert_eq!((spec.bpm_min, spec.bpm_max), (Some(90.0), Some(120.0)));
+        let back = Filter::from_spec(&spec);
+        assert_eq!(back.q, "");
+        assert_eq!((back.artist.as_str(), back.bpm), ("y", (90.0, 120.0)));
     }
 
     #[test]
