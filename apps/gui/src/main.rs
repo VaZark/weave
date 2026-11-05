@@ -2301,6 +2301,23 @@ mod tests {
     }
 
     #[test]
+    fn a_session_left_playing_starts_paused_with_its_queue_and_place_kept() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        a.play(vec![10, 11, 12], 1);
+        assert!(a.player.playing, "it was playing when the window closed");
+        // The next start.
+        a.backend.start_paused();
+        let s = a.backend.snapshot();
+        assert!(!s.playing, "nothing sounds until asked");
+        assert_eq!(s.queue, vec![10, 11, 12]);
+        assert_eq!(s.current, Some(1));
+        // Already paused (or never started): nothing changes.
+        a.backend.start_paused();
+        assert!(!a.backend.snapshot().playing);
+    }
+
+    #[test]
     fn a_playlist_or_album_has_a_shuffle_toggle_that_decides_how_play_starts_it() {
         let (mut backend, _) = backend::sample::backend();
         backend::sample::playlist(&mut backend, "Road trip", "");

@@ -132,6 +132,9 @@ impl Backend {
 
         let mut b = Self::with(engine);
         b.db = Some(db.to_path_buf());
+        // Before the sound player starts to follow the session: it never starts playing by
+        // itself, whatever the last session was doing.
+        b.start_paused();
         #[cfg(feature = "audio")]
         {
             use weave_player_lib::{Player, PlayerOptions};
@@ -145,6 +148,14 @@ impl Backend {
         b.ensure_favourites();
         let lib = b.load()?;
         Ok((b, lib))
+    }
+
+    /// A session left playing (the window was closed mid-song) is paused, so nothing sounds until
+    /// asked. The queue and the position stay.
+    pub(crate) fn start_paused(&mut self) {
+        if matches!(self.engine.session(), Ok(v) if v.state.status == PlayStatus::Playing) {
+            let _ = self.engine.pause();
+        }
     }
 
     fn with(engine: Engine) -> Self {
