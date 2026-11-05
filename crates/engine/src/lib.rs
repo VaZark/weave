@@ -1,6 +1,8 @@
 //! The one engine API. Frontends call this and never touch storage directly.
 
+mod analytics;
 mod autoplay;
+mod discovery;
 mod player;
 
 use std::path::Path;
@@ -63,6 +65,18 @@ impl Library {
     pub fn import(&mut self, path: &Path) -> Result<ImportStats> {
         let scanned = self.local.scan(path)?;
         self.storage.import_tracks(&scanned)
+    }
+
+    /// Import mixed files and folders together, returning partial scan failures explicitly.
+    pub fn import_paths(
+        &mut self,
+        paths: &[std::path::PathBuf],
+    ) -> Result<weave_player_core::ImportReport> {
+        let (tracks, mut report) = self.local.scan_paths(paths);
+        let stats = self.storage.import_tracks(&tracks)?;
+        report.added = stats.added;
+        report.skipped = stats.skipped;
+        Ok(report)
     }
 
     /// Index tracks that were already scanned (also used for fixtures and seed data).

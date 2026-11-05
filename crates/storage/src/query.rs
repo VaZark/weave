@@ -15,6 +15,12 @@ pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artis
      m.composer, m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
      t.slug, a.rating, t.added_at";
 
+pub const PLAY_COUNT: &str = "(SELECT COUNT(*) FROM play_history h WHERE h.track_id = t.id)";
+pub const LAST_PLAYED: &str = "(SELECT MAX(last) FROM (\
+    SELECT MAX(h.played_at) AS last FROM play_history h WHERE h.track_id = t.id \
+    UNION ALL SELECT MAX(s.ended_ms / 1000) AS last FROM listening_segments s \
+    JOIN listening_events e ON e.id = s.event_id WHERE e.track_id = t.id))";
+
 /// The default order matches the `meta_sort` index, so paging needs no sort step.
 const DEFAULT_ORDER: &str = "m.artist_norm, m.album_norm, m.title_norm, m.track_id";
 
@@ -33,7 +39,16 @@ pub fn order_by(sort: Option<Sort>) -> String {
         SortField::Duration => "m.duration_ms",
         SortField::Rating => "a.rating",
         SortField::Added => "t.added_at",
+        SortField::PlayCount => PLAY_COUNT,
+        SortField::LastPlayed => LAST_PLAYED,
+        SortField::Preference => "a.rating",
     };
+    if field == SortField::Preference {
+        let dir = if descending { "DESC" } else { "ASC" };
+        return format!(
+            " ORDER BY {expr} IS NULL, {expr} {dir}, (SELECT COUNT(*) FROM listening_events e WHERE e.track_id = t.id AND e.reason = 'completed' AND e.listened_ms > 0) {dir}, {PLAY_COUNT} {dir}, {DEFAULT_ORDER}"
+        );
+    }
     let dir = if descending { "DESC" } else { "ASC" };
     format!(" ORDER BY {expr} IS NULL, {expr} {dir}, {DEFAULT_ORDER}")
 }
@@ -78,6 +93,20 @@ pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
     if let Some(cutoff) = f.import_cutoff(now) {
         sql += " AND t.added_at >= ?";
         args.push(Value::Integer(cutoff));
+    }
+    if let Some(q) = f.query.as_ref() {
+        sql += " AND (instr(m.title_norm, ?) > 0 OR instr(m.artist_norm, ?) > 0 OR instr(m.album_norm, ?) > 0)";
+        args.extend(std::iter::repeat_n(Value::Text(q.trim().to_lowercase()), 3));
+    }
+    if let Some(days) = f.not_played_for_days {
+        sql += &format!(" AND ({LAST_PLAYED} IS NULL OR {LAST_PLAYED} <= ?)");
+        args.push(Value::Integer(now.saturating_sub(i64::from(days) * 86_400)));
+    }
+    if let Some(played) = f.has_played {
+        sql += &format!(
+            " AND {LAST_PLAYED} IS {}NULL",
+            if played { "NOT " } else { "" }
+        );
     }
     // NULL compares as NULL, so an unknown BPM, year or rating never matches a bound.
     for (col, op, v) in [

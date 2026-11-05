@@ -16,6 +16,10 @@ pub enum SortField {
     Rating,
     /// When the track was first indexed.
     Added,
+    PlayCount,
+    LastPlayed,
+    /// Rating, then completed listens, then lifetime starts.
+    Preference,
 }
 text_enum!(SortField {
     Title => "title",
@@ -27,6 +31,9 @@ text_enum!(SortField {
     Duration => "duration",
     Rating => "rating",
     Added => "added",
+    PlayCount => "plays",
+    LastPlayed => "last-played",
+    Preference => "preference",
 });
 
 /// Unknown values always sort last, in either direction.
@@ -60,6 +67,12 @@ pub struct FilterSpec {
     pub year_max: Option<i32>,
     /// Imported in the last N rolling 24-hour days, inclusive. ANDed with other filters.
     pub imported_within_days: Option<u32>,
+    /// Substring of title, artist OR album (case insensitive), ANDed with other fields.
+    pub query: Option<String>,
+    /// Last known playback at least N rolling days ago; never-played tracks also match.
+    pub not_played_for_days: Option<u32>,
+    /// Restrict to previously played (`true`) or never played (`false`).
+    pub has_played: Option<bool>,
     /// Case-insensitive substrings of the track's identifying fields. The genre is a tag:
     /// use `genre:bachata`.
     pub title: Option<String>,
@@ -124,7 +137,12 @@ impl FilterSpec {
                 true
             });
         }
-        for field in [&mut self.title, &mut self.artist, &mut self.album] {
+        for field in [
+            &mut self.title,
+            &mut self.artist,
+            &mut self.album,
+            &mut self.query,
+        ] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
             }
@@ -216,6 +234,9 @@ impl FilterSpec {
         self.bpm_max = update.bpm_max.or(self.bpm_max);
         self.year_min = update.year_min.or(self.year_min);
         self.year_max = update.year_max.or(self.year_max);
+        self.query = update.query.or(self.query);
+        self.not_played_for_days = update.not_played_for_days.or(self.not_played_for_days);
+        self.has_played = update.has_played.or(self.has_played);
         self.imported_within_days = update.imported_within_days.or(self.imported_within_days);
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);

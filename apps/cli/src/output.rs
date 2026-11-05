@@ -291,6 +291,11 @@ pub fn describe(f: &FilterSpec) -> String {
         ("year-min", f.year_min.map(|v| v.to_string())),
         ("year-max", f.year_max.map(|v| v.to_string())),
         (
+            "not-played-for-days",
+            f.not_played_for_days.map(|v| v.to_string()),
+        ),
+        ("has-played", f.has_played.map(|v| v.to_string())),
+        (
             "imported-within-days",
             f.imported_within_days.map(|v| v.to_string()),
         ),
@@ -303,6 +308,7 @@ pub fn describe(f: &FilterSpec) -> String {
         }
     }
     for (k, v) in [
+        ("query", &f.query),
         ("title", &f.title),
         ("artist", &f.artist),
         ("album", &f.album),

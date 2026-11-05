@@ -5,6 +5,7 @@ mod annotations;
 mod dedup;
 mod entities;
 mod history;
+mod listening;
 mod migrations;
 mod playlists;
 mod prefs;
@@ -68,6 +69,7 @@ impl Storage {
             .map_err(db_err)?;
         migrations::run(&mut conn)?;
         history::ensure(&conn)?;
+        listening::ensure(&conn)?;
         prefs::ensure(&conn)?;
         Ok(Self { conn })
     }

@@ -286,5 +286,8 @@ fn run(
         }
         std::thread::sleep(wait);
     }
+    if let Err(e) = host.shutdown(&mut lib) {
+        let _ = events.send(PlayerEvent::Error(e.to_string()));
+    }
     let _ = lib.clear_host_quit();
 }

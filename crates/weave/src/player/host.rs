@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use weave_player_core::{Error, PlayStatus, Playback, PlayerState, Result};
+use weave_player_core::{Error, ListenEnd, PlayStatus, Playback, PlayerState, Result};
 use weave_player_engine::{Library, SessionView};
 
 use super::PlayerEvent;
@@ -90,7 +90,16 @@ impl Follower {
 
 // --- the host loop -------------------------------------------------------------------------
 
+struct ActiveListen {
+    id: String,
+    elapsed: Duration,
+    running_since: Option<Instant>,
+    paused_at: Option<Instant>,
+}
+
 pub struct Host {
+    recovered_listening: bool,
+    listening: Option<ActiveListen>,
     follower: Follower,
     playback: Option<Box<dyn Playback>>,
     last_report: Instant,
@@ -110,6 +119,8 @@ impl Host {
     pub fn new(playback: Option<Box<dyn Playback>>) -> Self {
         let now = Instant::now();
         Self {
+            recovered_listening: false,
+            listening: None,
             follower: Follower::default(),
             playback,
             last_report: now,
@@ -135,6 +146,10 @@ impl Host {
 
     /// One pass: follow the session, detect a finished track, publish the position.
     pub fn tick(&mut self, lib: &mut Library) -> Result<Vec<PlayerEvent>> {
+        if !self.recovered_listening && self.playback.is_some() {
+            lib.recover_listening()?;
+            self.recovered_listening = true;
+        }
         let mut events = Vec::new();
         while let Some(remote) = self.media.as_ref().and_then(MediaService::try_recv) {
             match apply_remote(lib, &remote) {
@@ -146,21 +161,30 @@ impl Host {
         let state = lib.player_state()?;
         let position = lib.session_position_ms()?;
 
+        let mut output_failed = false;
         for action in self.follower.step(&state, position) {
             if let Err(e) = self.apply(lib, action) {
+                self.close_listening(lib, ListenEnd::Error)?;
                 events.push(PlayerEvent::Error(e.to_string()));
                 self.skip_unplayable(lib, &mut events)?;
+                output_failed = true;
+                break;
             }
         }
 
-        if let Some(p) = self.playback.as_mut() {
+        // A failed output action may have advanced or stopped the queue. Its old EOF/
+        // position must not be attributed to the replacement track.
+        if !output_failed && let Some(p) = self.playback.as_mut() {
             if state.status == PlayStatus::Playing && p.finished() {
+                self.close_listening(lib, ListenEnd::Completed)?;
                 lib.track_ended()?;
             } else if state.status == PlayStatus::Playing
                 && self.last_report.elapsed() >= self.report_every
             {
                 self.last_report = Instant::now();
-                lib.report_position(state.start_seq, p.position())?;
+                let position = p.position();
+                lib.report_position(state.start_seq, position)?;
+                self.flush_listening(lib)?;
             }
         }
 
@@ -202,7 +226,54 @@ impl Host {
         Ok(())
     }
 
+    fn flush_listening(&mut self, lib: &mut Library) -> Result<()> {
+        if let Some(active) = &mut self.listening {
+            if let Some(since) = active.running_since.as_mut() {
+                let now = Instant::now();
+                active.elapsed += now.duration_since(*since);
+                *since = now;
+            }
+            lib.report_listening(&active.id, active.elapsed.as_millis() as u64)?;
+        }
+        Ok(())
+    }
+
+    fn close_listening(&mut self, lib: &mut Library, reason: ListenEnd) -> Result<()> {
+        self.flush_listening(lib)?;
+        if let Some(active) = &self.listening {
+            lib.end_listening(&active.id, reason)?;
+        }
+        self.listening = None;
+        Ok(())
+    }
+
+    /// Flush the last sub-second segment on a graceful shutdown. Crashes retain only reports.
+    pub fn shutdown(&mut self, lib: &mut Library) -> Result<()> {
+        self.close_listening(lib, ListenEnd::Interrupted)?;
+        if let Some(p) = &mut self.playback {
+            p.stop();
+        }
+        Ok(())
+    }
+
     fn apply(&mut self, lib: &mut Library, action: Action) -> Result<()> {
+        match action {
+            Action::Start(_) => self.close_listening(lib, ListenEnd::Skipped)?,
+            Action::Stop => self.close_listening(lib, ListenEnd::Stopped)?,
+            Action::Pause | Action::Seek(_) => self.flush_listening(lib)?,
+            Action::Resume => {
+                let expired = self
+                    .listening
+                    .as_ref()
+                    .and_then(|a| a.paused_at)
+                    .is_some_and(|at| at.elapsed() >= Duration::from_secs(1800));
+                if expired {
+                    self.close_listening(lib, ListenEnd::Interrupted)?;
+                }
+            }
+            _ => {}
+        }
+
         let Some(p) = self.playback.as_mut() else {
             return Ok(());
         };
@@ -219,10 +290,40 @@ impl Host {
                     .map_err(|e| {
                         Error::Player(format!("cannot play \"{}\": {e}", track.metadata.title))
                     })?;
+                let seq = lib.player_state()?.start_seq;
+                let id = lib.begin_listening(seq)?;
+                self.listening = Some(ActiveListen {
+                    id,
+                    elapsed: Duration::ZERO,
+                    running_since: Some(Instant::now()),
+                    paused_at: None,
+                });
                 self.skipped = 0;
             }
-            Action::Pause => p.pause(),
-            Action::Resume => p.resume(),
+            Action::Pause => {
+                p.pause();
+                if let Some(active) = &mut self.listening {
+                    active.running_since = None;
+                    active.paused_at = Some(Instant::now());
+                }
+            }
+            Action::Resume => {
+                p.resume();
+                if self.listening.is_none() {
+                    let seq = lib.player_state()?.start_seq;
+                    let id = lib.begin_listening(seq)?;
+                    self.listening = Some(ActiveListen {
+                        id,
+                        elapsed: Duration::ZERO,
+                        running_since: None,
+                        paused_at: None,
+                    });
+                }
+                if let Some(active) = &mut self.listening {
+                    active.running_since = Some(Instant::now());
+                    active.paused_at = None;
+                }
+            }
             Action::Stop => p.stop(),
             Action::Seek(ms) => p.seek(Duration::from_millis(ms))?,
             Action::Volume(v) => p.set_volume(v),

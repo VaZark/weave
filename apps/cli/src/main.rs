@@ -121,6 +121,8 @@ enum ArtistCmd {
     List {
         #[command(flatten)]
         tags: TagFilterArgs,
+        #[arg(long, default_value = "")]
+        query: String,
     },
     /// Add or remove tags on an artist.
     Tag(TagEdit),
@@ -166,6 +168,8 @@ enum AlbumCmd {
         artist: Option<String>,
         #[command(flatten)]
         tags: TagFilterArgs,
+        #[arg(long, default_value = "")]
+        query: String,
     },
     /// Add or remove tags on an album.
     Tag(TagEdit),
@@ -195,7 +199,19 @@ enum TagCmd {
         parent: Option<String>,
     },
     /// List tags with their parents and track counts.
-    List,
+    List {
+        #[arg(long, default_value = "")]
+        query: String,
+        /// Named tag key; use --custom for unkeyed tags.
+        #[arg(long, conflicts_with = "custom")]
+        category: Option<String>,
+        #[arg(long)]
+        custom: bool,
+        /// Direct children of this tag; pass an empty string for roots.
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    Categories,
     /// Set a tag's parent, or clear it. Assignments do not change, only what the parent matches.
     Parent {
         name: String,
@@ -235,10 +251,20 @@ enum Cmd {
     /// one already in the library; afterwards it asks about new artists, albums and tracks that
     /// look like existing ones, and merges only what you say.
     Import {
-        path: PathBuf,
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
         /// Do not ask about duplicates; review them later with `dedup`.
         #[arg(long)]
         disable_dedup_check: bool,
+    },
+    /// Measured listening statistics; --json includes every chart dataset.
+    Stats(AnalyticsArgs),
+    /// Previously played tracks inactive for 180 days, ordered by preference by default.
+    Rediscover {
+        #[command(flatten)]
+        filter: FilterArgs,
+        #[command(flatten)]
+        page: PageArgs,
     },
     /// Find and settle artists, albums and tracks that look alike.
     #[command(subcommand)]
@@ -466,7 +492,10 @@ enum PlaylistCmd {
         track_ids: Vec<String>,
     },
     /// List saved playlists.
-    List,
+    List {
+        #[arg(long, default_value = "")]
+        query: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -613,6 +642,15 @@ struct FilterArgs {
     /// Only tracks first imported within this many rolling 24-hour days.
     #[arg(long)]
     imported_within_days: Option<u32>,
+    /// Substring of title, artist or album.
+    #[arg(long)]
+    query: Option<String>,
+    /// Tracks whose last start was at least N days ago (also matches never played).
+    #[arg(long)]
+    not_played_for_days: Option<u32>,
+    /// Restrict to played (true) or never played (false) tracks.
+    #[arg(long, num_args = 1)]
+    has_played: Option<bool>,
     /// Case-insensitive part of the title. The genre is a tag: `--tag-any genre=bachata`.
     #[arg(long)]
     title: Option<String>,
@@ -630,6 +668,37 @@ struct FilterArgs {
     rating_max: Option<u8>,
     #[command(flatten)]
     result: ResultArgs,
+}
+
+#[derive(Args)]
+struct AnalyticsArgs {
+    /// Rolling day (24h), week (7d), month (30d) or year (365d).
+    #[arg(long, conflicts_with = "since_ms")]
+    period: Option<weave_player_lib::core::AnalyticsPeriod>,
+    /// Inclusive Unix millisecond lower bound (UTC).
+    #[arg(long)]
+    since_ms: Option<i64>,
+    /// Exclusive Unix millisecond upper bound (UTC); defaults to now.
+    #[arg(long)]
+    until_ms: Option<i64>,
+    #[arg(long, default_value_t = 10)]
+    top_n: usize,
+    /// Show measured events and clipped listening segments instead of aggregates.
+    #[arg(long)]
+    events: bool,
+    #[command(flatten)]
+    filter: FilterArgs,
+}
+impl AnalyticsArgs {
+    fn query(self) -> weave_player_lib::core::AnalyticsQuery {
+        weave_player_lib::core::AnalyticsQuery {
+            since_ms: self.since_ms,
+            until_ms: self.until_ms,
+            period: self.period,
+            filter: self.filter.into(),
+            top_n: self.top_n,
+        }
+    }
 }
 
 /// One `--tag-*` value. Bare (`mood:calm,live`): plain tag names. Keyed (`lang=spanish,french`):
@@ -712,6 +781,9 @@ impl From<FilterArgs> for FilterSpec {
             year_min: a.year_min,
             year_max: a.year_max,
             imported_within_days: a.imported_within_days,
+            query: a.query,
+            not_played_for_days: a.not_played_for_days,
+            has_played: a.has_played,
             title: a.title,
             artist: a.artist,
             album: a.album,
@@ -946,18 +1018,30 @@ fn run(cli: Cli) -> Result<(), Failure> {
 
     match cli.command {
         Cmd::Import {
-            path,
+            paths,
             disable_dedup_check,
         } => {
             let mark = lib.dedup_mark()?;
-            let s = lib.import(&path)?;
-            out(
-                json,
-                &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
-                || outln!("imported {} new, {} already indexed", s.added, s.skipped),
-            )?;
+            let s = lib.import_paths(&paths)?;
+            out(json, &s, || {
+                outln!(
+                    "imported {} new, {} already indexed, {} non-audio, {} issues",
+                    s.added,
+                    s.skipped,
+                    s.ignored,
+                    s.issues.len()
+                );
+                for issue in &s.issues {
+                    outln!("{}: {}", issue.path, issue.message);
+                }
+            })?;
             if !disable_dedup_check {
                 review_similar(&mut lib, &dedup::KINDS, Some(&mark), json)?;
+            }
+            if !s.issues.is_empty() {
+                return Err(Failure::Other(
+                    "import completed with inaccessible inputs; see report".into(),
+                ));
             }
         }
         Cmd::List { result, page } => print_page(
@@ -965,6 +1049,89 @@ fn run(cli: Cli) -> Result<(), Failure> {
             show_ids,
             page,
             &lib.search(&result.spec(), page.page())?,
+        )?,
+        Cmd::Stats(args) => {
+            let events = args.events;
+            let query = args.query();
+            if events {
+                let found = lib.listening_events(&query)?;
+                out(json, &found, || {
+                    for e in &found {
+                        outln!(
+                            "{}  {}  {} ms  {}",
+                            e.id,
+                            e.track,
+                            e.listened_ms,
+                            e.reason
+                                .map(|r| r.to_string())
+                                .unwrap_or_else(|| "unfinished".into())
+                        );
+                    }
+                    if found.is_empty() {
+                        outln!(
+                            "No measured listening in this range. Statistics accumulate while audio plays; old start counts are not listening time."
+                        );
+                    }
+                })?;
+            } else {
+                let stats = lib.listening_analytics(&query)?;
+                out(json, &stats, || {
+                    if stats.listens == 0 {
+                        outln!(
+                            "No measured listening in this range. Statistics accumulate while audio plays; old start counts are not listening time."
+                        );
+                    }
+                    outln!(
+                        "Listening hours: {:.3}\nUnique tracks: {}\nListens: {}\nCompleted listens: {}",
+                        stats.listened_ms as f64 / 3_600_000.0,
+                        stats.unique_tracks,
+                        stats.listens,
+                        stats.completed_listens
+                    );
+                    for (label, share) in [
+                        ("Favorite track (rating)", &stats.favorite_track),
+                        ("Favorite artist (mean rating)", &stats.favorite_artist),
+                        ("Most listened track", &stats.most_listened_track),
+                        ("Most listened artist", &stats.most_listened_artist),
+                        ("Most listened tag", &stats.most_listened_tag),
+                    ] {
+                        outln!(
+                            "{label}: {}",
+                            share.as_ref().map(|s| s.name.as_str()).unwrap_or("—")
+                        );
+                    }
+                    outln!(
+                        "Longest session (listened ms): {}",
+                        stats.longest_session.as_ref().map_or(0, |s| s.listened_ms)
+                    );
+                    outln!(
+                        "Most replayed track: {}",
+                        stats
+                            .most_replayed_track
+                            .as_ref()
+                            .map_or("—", |s| s.track.as_str())
+                    );
+                    for l in &stats.loyalty {
+                        outln!(
+                            "{}: {} listens, {} completed, completion {}, replay {:.3}, repeats/day {:.3}",
+                            l.track,
+                            l.listens,
+                            l.completed_listens,
+                            l.completion_rate
+                                .map(|r| format!("{r:.3}"))
+                                .unwrap_or_else(|| "—".into()),
+                            l.replay_rate.unwrap_or(0.0),
+                            l.repeats_per_day
+                        );
+                    }
+                })?;
+            }
+        }
+        Cmd::Rediscover { filter, page } => print_page(
+            json,
+            show_ids,
+            page,
+            &lib.rediscover(&filter.into(), page.page())?,
         )?,
         Cmd::Search { filter, page } => print_page(
             json,
@@ -1043,8 +1210,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Cmd::Artist(ArtistArgs { cmd: Some(cmd), .. }) => match cmd {
             ArtistCmd::Show { .. } => unreachable!("handled above"),
-            ArtistCmd::List { tags } => {
-                profile::print_artists(json, show_ids, &lib.artists(&tags.spec())?)?
+            ArtistCmd::List { tags, query } => {
+                profile::print_artists(json, show_ids, &lib.search_artists(&query, &tags.spec())?)?
             }
             ArtistCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Artist, edit, json)?,
             ArtistCmd::Split {
@@ -1086,9 +1253,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Cmd::Album(AlbumArgs { cmd: Some(cmd), .. }) => match cmd {
             AlbumCmd::Show { .. } => unreachable!("handled above"),
-            AlbumCmd::List { artist, tags } => {
-                profile::print_albums(json, &lib.albums(&tags.spec(), artist.as_deref())?)?
-            }
+            AlbumCmd::List {
+                artist,
+                tags,
+                query,
+            } => profile::print_albums(
+                json,
+                &lib.search_albums(&query, &tags.spec(), artist.as_deref())?,
+            )?,
             AlbumCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Album, edit, json)?,
             AlbumCmd::Link { album, artist } => {
                 let a = lib.link_album(&album, Some(&artist))?;
@@ -1108,8 +1280,29 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let tag = lib.create_tag(&name, parent.as_deref())?;
             out(json, &tag, || outln!("created tag {}", tag.name))?;
         }
-        Cmd::Tag(TagCmd::List) => {
-            let tags = lib.list_tags()?;
+        Cmd::Tag(TagCmd::Categories) => {
+            let keys = lib.tag_categories()?;
+            out(json, &keys, || {
+                for key in &keys {
+                    outln!("{}", key.as_deref().unwrap_or("Custom"));
+                }
+            })?;
+        }
+        Cmd::Tag(TagCmd::List {
+            query,
+            category,
+            custom,
+            parent,
+        }) => {
+            let tags = lib.browse_tags(
+                &query,
+                if custom {
+                    Some("")
+                } else {
+                    category.as_deref()
+                },
+                parent.as_deref(),
+            )?;
             out(json, &tags, || {
                 let rows = tags
                     .iter()
@@ -1291,7 +1484,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 outln!("removed {n} track(s)")
             })?;
         }
-        Cmd::Playlist(PlaylistCmd::List) => print_playlists(json, show_ids, &lib.playlists()?)?,
+        Cmd::Playlist(PlaylistCmd::List { query }) => {
+            print_playlists(json, show_ids, &lib.search_playlists(&query)?)?
+        }
 
         Cmd::Queue(QueueCmd::Show) => print_queue(json, show_ids, &lib.session()?)?,
         Cmd::Queue(QueueCmd::Add {
@@ -1507,6 +1702,99 @@ mod arg_tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("weave-player").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn discovery_import_and_analytics_commands_parse() {
+        for args in [
+            vec![
+                "weave-player",
+                "import",
+                "/music",
+                "/song.wav",
+                "--disable-dedup-check",
+            ],
+            vec![
+                "weave-player",
+                "artist",
+                "list",
+                "--query",
+                "Alice",
+                "--tag-all",
+                "mood:calm",
+            ],
+            vec!["weave-player", "album", "list", "--query", "morning"],
+            vec!["weave-player", "playlist", "list", "--query", "quiet"],
+            vec![
+                "weave-player",
+                "tag",
+                "list",
+                "--category",
+                "mood",
+                "--query",
+                "calm",
+            ],
+            vec!["weave-player", "tag", "list", "--custom"],
+            vec!["weave-player", "tag", "categories"],
+            vec![
+                "weave-player",
+                "rediscover",
+                "--not-played-for-days",
+                "90",
+                "--sort",
+                "rating",
+                "--desc",
+            ],
+            vec![
+                "weave-player",
+                "stats",
+                "--period",
+                "week",
+                "--tag-exclude",
+                "live",
+                "--json",
+            ],
+            vec![
+                "weave-player",
+                "stats",
+                "--since-ms",
+                "1000",
+                "--until-ms",
+                "5000",
+                "--events",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "weave-player",
+                "stats",
+                "--period",
+                "day",
+                "--since-ms",
+                "1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "weave-player",
+                "tag",
+                "list",
+                "--custom",
+                "--category",
+                "mood"
+            ])
+            .is_err()
+        );
+        let Cmd::Import { paths, .. } = Cli::try_parse_from(["weave-player", "import", "/a", "/b"])
+            .unwrap()
+            .command
+        else {
+            panic!("import")
+        };
+        assert_eq!(paths.len(), 2);
     }
 
     #[test]
