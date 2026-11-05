@@ -44,6 +44,7 @@ const WINDOW: (f32, f32) = (1120.0, 720.0);
 const MINIMAL: (f32, f32) = (560.0, 72.0);
 /// The narrowest minimal mode goes.
 const MINIMAL_MIN_WIDTH: f32 = 360.0;
+const MINIMAL_MAX_WIDTH: f32 = 900.0;
 
 /// `WEAVE_GUI_SIZE=WxH` starts the window at that size (to judge the narrow layout).
 fn window_size() -> (f32, f32) {
@@ -249,6 +250,8 @@ pub enum Message {
     Minimal(bool),
     /// A new reading of the spectrum, while minimal mode draws it.
     SpectrumTick,
+    /// The cover in minimal mode: switch between the spectrum and the song with its controls.
+    MinimalDetails,
     /// The volume button: mute, or back to the volume before.
     ToggleMute,
     Queue(ReorderEvent),
@@ -409,6 +412,8 @@ pub struct App {
     pub minimal: bool,
     /// The window size to come back to when minimal mode ends.
     pub restore_size: Option<(f32, f32)>,
+    /// Minimal mode shows the song, artist and controls instead of the spectrum.
+    pub minimal_details: bool,
     /// The spectrum of what plays, as last read (drawn in minimal mode).
     pub spectrum: [f32; weave_player_lib::core::spectrum::BANDS],
     pub show_lyrics: bool,
@@ -507,6 +512,7 @@ impl App {
             win_w: window_size().0,
             minimal: false,
             restore_size: None,
+            minimal_details: false,
             spectrum: [0.0; weave_player_lib::core::spectrum::BANDS],
             show_lyrics: false,
             history: History::new(Place::home()),
@@ -569,10 +575,31 @@ impl App {
                 Message::Fullscreen(true)
             }));
         }
+        let start_minimal = matches!(
+            std::env::var("WEAVE_GUI_START").as_deref(),
+            Ok("minimal" | "minimal-details")
+        );
+        if start_minimal {
+            // After the window is on screen, as when the compact button is pressed.
+            let delayed = |ms: u64, m: Message| {
+                Task::future(async move {
+                    let (tx, rx) = iced::futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(ms));
+                        let _ = tx.send(());
+                    });
+                    let _ = rx.await;
+                    m
+                })
+            };
+            tasks.push(delayed(1500, Message::Minimal(true)));
+            if std::env::var("WEAVE_GUI_START").as_deref() == Ok("minimal-details") {
+                tasks.push(delayed(2200, Message::MinimalDetails));
+            }
+        }
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
                 "jam" => vec![Message::ToggleJam],
-                "minimal" => vec![Message::Minimal(true)],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
                 "search" => vec![Message::SearchOpen(true), Message::SearchText("a".into())],
                 "library" => vec![Message::Go(Dest::Tracks)],
@@ -631,8 +658,23 @@ impl App {
         }
         // Development switches (screenshot, holding animations) are iad's, from the environment.
         if dev.screenshot.is_some() {
-            tasks.push(
+            // Minimal mode opens a window of its own, so the shot is of the newest one, taken
+            // after that has happened.
+            let window = if start_minimal {
+                Task::future(async {
+                    let (tx, rx) = iced::futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(3000));
+                        let _ = tx.send(());
+                    });
+                    let _ = rx.await;
+                })
+                .then(|_| iced::window::latest())
+            } else {
                 iced::window::oldest()
+            };
+            tasks.push(
+                window
                     .and_then(move |id| dev.capture(id).unwrap_or_else(Task::none))
                     .map(Message::Captured),
             );
@@ -1009,22 +1051,37 @@ impl App {
                     return Task::none();
                 }
                 self.minimal = on;
-                let (size, min) = if on {
+                self.minimal_details = false;
+                let settings = if on {
                     // Overlays go; the player stays.
                     self.now_playing = false;
                     self.queue_open = false;
                     self.restore_size = Some((self.win_w, self.win_h));
-                    (
-                        iced::Size::new(MINIMAL.0, MINIMAL.1),
-                        iced::Size::new(MINIMAL_MIN_WIDTH, MINIMAL.1),
-                    )
+                    iced::window::Settings {
+                        size: iced::Size::new(MINIMAL.0, MINIMAL.1),
+                        min_size: Some(iced::Size::new(MINIMAL_MIN_WIDTH, MINIMAL.1)),
+                        // As high as the strip, and as wide as the user pulls it.
+                        max_size: Some(iced::Size::new(MINIMAL_MAX_WIDTH, MINIMAL.1)),
+                        ..iad::windows::settings_for(platforms::APP_ID)
+                    }
                 } else {
                     let (w, h) = self.restore_size.take().unwrap_or_else(window_size);
-                    (iced::Size::new(w, h), iad::windows::min_size())
+                    iced::window::Settings {
+                        size: iced::Size::new(w, h),
+                        ..iad::windows::settings_for(platforms::APP_ID)
+                    }
                 };
-                return iced::window::oldest().and_then(move |id| {
-                    iced::window::set_min_size(id, Some(min)).chain(iced::window::resize(id, size))
+                // A new window of the size wanted, then the old one closes: on Wayland a window
+                // cannot be told its new size (winit sends no resize event for a request, so the
+                // app would keep drawing at the old size).
+                return iced::window::oldest().and_then(move |old| {
+                    let (_, open) = iced::window::open(settings.clone());
+                    open.then(move |_| iced::window::close(old))
                 });
+            }
+            Message::MinimalDetails => {
+                self.minimal_details = !self.minimal_details;
+                Vec::new()
             }
             Message::SpectrumTick => {
                 self.spectrum = weave_player_lib::core::spectrum::bands();
@@ -2417,8 +2474,14 @@ mod tests {
         let _ = a.update(Message::Minimal(true));
         assert!(a.minimal && !a.now_playing, "overlays close");
         assert_eq!(a.restore_size, Some((900.0, 640.0)));
-        // The strip builds, playing or not.
+        // The strip builds in both views, and the cover switches between them.
         let _ = a.view();
+        assert!(!a.minimal_details, "the spectrum first");
+        let _ = a.update(Message::MinimalDetails);
+        assert!(a.minimal_details);
+        let _ = a.view();
+        let _ = a.update(Message::MinimalDetails);
+        assert!(!a.minimal_details);
         let _ = a.update(Message::Resized(560.0, 72.0));
         let _ = a.update(Message::Minimal(false));
         assert!(!a.minimal);
