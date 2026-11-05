@@ -10,10 +10,14 @@ use iced_adaptive_design as iad;
 use crate::components::tag_badge::{tag_chip_removable, tag_pill, value_of};
 use crate::data::{self, Filter};
 use crate::icons::{cover, playlist_avatar};
+use crate::ui_lists::RowOpts;
 use crate::{App, Dest, Element, Message};
 use iad::prelude::surface;
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
 use iad::primitives::histogram::Histogram;
+
+/// The id of the Jam search row's first entry, which takes focus as the row opens.
+const JAM_ARTIST_ID: &str = "jam-artist";
 
 impl App {
     /// The vocabulary as chip options: each tag's value as the label, with its own icon and colour.
@@ -121,35 +125,32 @@ impl App {
 
     // ---- jam ----------------------------------------------------------------------------
 
-    /// The jam is a page: the filter button with Surprise me and Clear filters beside it, the active
-    /// filters as chips that clear one by one, the round play button, and the virtualised list of
-    /// what the filters match. The filters themselves are edited in a dialog (a full-screen sheet
-    /// on narrow), see [`jam_filters_dialog`](Self::jam_filters_dialog).
-    pub fn jam_page(&self) -> Element<'_> {
-        let n = self.lib.filtered(&self.filter).len();
-        let count = self.filter.count();
-        let mut filters_label = row![Icon::Filter.view(16.0), ty::label("Filters")]
-            .spacing(6)
+    /// An icon button with a tooltip, and a count badge when `count` is more than none.
+    fn badged_icon(
+        &self,
+        icon: Icon,
+        tip: &'static str,
+        count: usize,
+        on_press: Message,
+    ) -> Element<'_> {
+        let mut r = row![w::icon_button(icon).on_press(on_press)]
+            .spacing(2)
             .align_y(Alignment::Center);
         if count > 0 {
-            filters_label = filters_label.push(
+            r = r.push(
                 w::Badge::count(count as u32, 99)
                     .role(iad::Role::Accent)
                     .solid(true),
             );
         }
-        let actions = row![
-            w::flat_button(filters_label).on_press(Message::JamFilters(true)),
-            space::horizontal(),
-            w::flat_button(ty::label("🎲 Surprise me")).on_press(Message::Surprise),
-            w::flat_button(ty::label("Clear filters"))
-                .on_press_maybe((!self.filter.is_empty()).then_some(Message::ClearFilter)),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
-        // Only what is active, each removable on its own.
-        let mut chips: Vec<Element<'_>> = self
-            .filter
+        w::tooltip(r, tip, w::TooltipPosition::Bottom)
+    }
+
+    /// The active filters as chips, each clearing itself; a generic search is marked as not
+    /// saved. `None` when nothing is active.
+    fn active_chips(&self) -> Option<Element<'_>> {
+        let f = &self.filter;
+        let mut chips: Vec<Element<'_>> = f
             .tags
             .iter()
             .map(|t| {
@@ -161,8 +162,8 @@ impl App {
                 )
             })
             .collect();
-        if self.filter.bpm != data::BPM {
-            let (lo, hi) = self.filter.bpm;
+        if f.bpm != data::BPM {
+            let (lo, hi) = f.bpm;
             chips.push(
                 w::Chip::new(format!("{lo:.0}–{hi:.0} BPM"))
                     .icon(Icon::Clock)
@@ -171,15 +172,88 @@ impl App {
                     .into(),
             );
         }
-        let active: Element<'_> = if chips.is_empty() {
-            ty::caption("No filters: every track matches.").into()
-        } else {
-            row(chips).spacing(6).wrap().into()
+        let text_chip = |label: String, icon: Icon, clear: Message| -> Element<'_> {
+            w::Chip::new(label)
+                .icon(icon)
+                .size(ChipSize::Medium)
+                .on_remove(clear)
+                .into()
         };
-        let top = column![actions, active].spacing(8);
-        // The same round play button as every track list, right after the filters, with the number
-        // of matches beside it and some air above.
-        // Saving stores the filters as a dynamic playlist (a jam is a query, not a list of tracks).
+        if !f.artist.trim().is_empty() {
+            chips.push(text_chip(
+                format!("artist: {}", f.artist.trim()),
+                Icon::MusicNote,
+                Message::JamArtist(String::new()),
+            ));
+        }
+        if !f.album.trim().is_empty() {
+            chips.push(text_chip(
+                format!("album: {}", f.album.trim()),
+                Icon::MusicNote,
+                Message::JamAlbum(String::new()),
+            ));
+        }
+        if !f.q.trim().is_empty() {
+            chips.push(w::tooltip(
+                text_chip(
+                    format!("“{}”", f.q.trim()),
+                    Icon::Search,
+                    Message::JamQuery(String::new()),
+                ),
+                "Not saved with a playlist",
+                w::TooltipPosition::Bottom,
+            ));
+        }
+        (!chips.is_empty()).then(|| row(chips).spacing(6).wrap().into())
+    }
+
+    /// The search row of the Jam page: artist and album (kept in a saved playlist) and anything
+    /// (title, artist or album; not kept).
+    fn jam_search_row(&self) -> Element<'_> {
+        let entry = |placeholder: &'static str,
+                     value: &str,
+                     on_input: fn(String) -> Message,
+                     id: Option<&'static str>| {
+            let mut input = iced::widget::text_input(placeholder, value)
+                .on_input(on_input)
+                .width(Length::Fill);
+            if let Some(id) = id {
+                input = input.id(id);
+            }
+            let clear = w::icon_button(Icon::WindowClose)
+                .on_press_maybe((!value.is_empty()).then(|| on_input(String::new())));
+            row![input, clear]
+                .spacing(2)
+                .align_y(Alignment::Center)
+                .width(Length::FillPortion(1))
+        };
+        let f = &self.filter;
+        let entries = [
+            entry("Artist", &f.artist, Message::JamArtist, Some(JAM_ARTIST_ID)),
+            entry("Album", &f.album, Message::JamAlbum, None),
+            entry("Anything", &f.q, Message::JamQuery, None),
+        ];
+        let body: Element<'_> = if self.is_narrow() {
+            column(entries.into_iter().map(Element::from))
+                .spacing(6)
+                .into()
+        } else {
+            row(entries.into_iter().map(Element::from))
+                .spacing(12)
+                .into()
+        };
+        w::FocusScope::new(body)
+            .trap(false)
+            .initial_focus(JAM_ARTIST_ID)
+            .into()
+    }
+
+    /// The Jam page, with the look of an Album or Playlist page: a header with the active filters,
+    /// icon buttons (Play, Tag filters, Search) and at the far corner the match count and Save as
+    /// playlist; then the matching tracks in a sortable table, as Search showed them.
+    pub fn jam_page(&self) -> Element<'_> {
+        let narrow = self.is_narrow();
+        let n = self.rows.len();
         let saved = self
             .jam_saved
             .as_ref()
@@ -204,24 +278,63 @@ impl App {
             .on_press_maybe((n > 0).then_some(Message::SaveJamAsPlaylist))
             .into(),
         };
-        let play = column![
-            space::vertical().height(Length::Fixed(14.0)),
-            row![
-                w::suggested_circular_button(Icon::Play.view(20.0))
-                    .size(44.0)
-                    .on_press_maybe((n > 0).then_some(Message::StartJam)),
-                ty::caption(format!("{n} matches")),
-                space::horizontal(),
-                save,
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-        ];
-        let page: Element<'_> = column![top, play, self.jam_list()]
-            .spacing(8)
-            .height(Length::Fill)
+        let matches = ty::caption(format!("{n} matches")).style(iad::styles::text::dim);
+        let chips = self.active_chips().unwrap_or_else(|| {
+            ty::caption("No filters: every track matches.")
+                .style(iad::styles::text::dim)
+                .into()
+        });
+        let play = w::suggested_circular_button(Icon::Play.view(20.0))
+            .size(44.0)
+            .on_press_maybe((n > 0).then_some(Message::StartJam));
+        let tag_filters = self.badged_icon(
+            Icon::Filter,
+            "Tag filters",
+            self.filter.tag_count(),
+            Message::JamFilters(true),
+        );
+        let search = self.badged_icon(
+            Icon::Search,
+            "Search",
+            self.filter.search_count(),
+            Message::JamSearchOpen(!self.jam_search_open),
+        );
+        let cover: Element<'_> = w::avatar(96.0, "Jam")
+            .icon(Icon::Sparkle)
+            .shape(w::AvatarShape::Rounded)
             .into();
-        surface::full(page)
+        let mut header = w::DetailHeader::new("Jam")
+            .kind("Tracks by filters")
+            .cover(cover)
+            .primary(play)
+            .action(tag_filters)
+            .action(search)
+            .tint(iad::color::from_index(7))
+            .narrow(narrow);
+        if narrow {
+            header = header.facts(
+                column![
+                    chips,
+                    row![matches, space::horizontal(), save].align_y(Alignment::Center),
+                ]
+                .spacing(6),
+            );
+        } else {
+            header = header
+                .facts(chips)
+                .end(row![matches, save].spacing(12).align_y(Alignment::Center));
+        }
+        let header: Element<'_> = header.into();
+        let mut page = column![header].spacing(8).height(Length::Fill);
+        if self.jam_search_open {
+            page = page.push(surface::band(self.jam_search_row()));
+        }
+        page = page.push(self.virtual_tracks(RowOpts {
+            album: true,
+            bpm: true,
+            menu: true,
+        }));
+        page.into()
     }
 
     // ---- jam filters --------------------------------------------------------------------
@@ -233,11 +346,21 @@ impl App {
         let n = self.lib.filtered(&self.filter).len();
         column![
             row![
-                ty::title_3("Filters"),
+                ty::title_3("Tag filters"),
                 ty::caption(format!("{n} matches")),
                 space::horizontal(),
-                w::flat_button(ty::label("Clear filters"))
-                    .on_press_maybe((!self.filter.is_empty()).then_some(Message::ClearFilter)),
+                w::tooltip(
+                    w::flat_button(ty::label("🎲")).on_press(Message::Surprise),
+                    "Surprise me",
+                    w::TooltipPosition::Bottom,
+                ),
+                w::tooltip(
+                    w::icon_button(Icon::Delete).on_press_maybe(
+                        (self.filter.tag_count() > 0).then_some(Message::ClearTagFilters)
+                    ),
+                    "Clear tag filters",
+                    w::TooltipPosition::Bottom,
+                ),
                 w::suggested_button(ty::label("Done")).on_press(Message::JamFilters(false)),
             ]
             .spacing(8)
@@ -402,6 +525,15 @@ impl App {
                 ty::caption(
                     "The playlist holds every track that matches these rules, now and as the library changes."
                 ),
+                row![
+                    iced::widget::text_input("Artist", &draft.artist)
+                        .on_input(Message::DraftArtist)
+                        .width(Length::Fill),
+                    iced::widget::text_input("Album", &draft.album)
+                        .on_input(Message::DraftAlbum)
+                        .width(Length::Fill),
+                ]
+                .spacing(8),
                 self.filter_fields(draft, Message::DraftToggle, Message::DraftBpm, None),
                 row![
                     space::horizontal(),

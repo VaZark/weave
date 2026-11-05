@@ -7,13 +7,11 @@ use iad::adaptive::adaptive;
 use iad::prelude::{self as w, typography as ty};
 use iad::windows::{Chrome, State as WindowState};
 use iad::{Icon, styles as style};
-use iced::widget::{column, container, row, text, text_input};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
 use crate::{App, DensityPref, Dest, Element, Layout, Message};
-
-const SEARCH_ID: &str = "search";
 
 /// Rough heights of the fixed parts of a layout, to know how far a sliding layer travels.
 pub const HEADER_H: f32 = 47.0;
@@ -111,9 +109,6 @@ impl App {
         if self.jam_open {
             return "Jam".into();
         }
-        if self.searching {
-            return "Search".into();
-        }
         match self.dest {
             Dest::Home => "Home".into(),
             Dest::Explore => "Explore".into(),
@@ -137,12 +132,7 @@ impl App {
         if self.history.can_back() {
             h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::Back));
         }
-        h = if self.searching && !narrow {
-            h.pack_start(w::icon_button(Icon::WindowClose).on_press(Message::SearchOpen(false)))
-                .title_widget(container(self.search_entry()).max_width(560))
-        } else {
-            h.title(self.page_title())
-        };
+        h = h.title(self.page_title());
         // The later a button is packed, the further from the window controls it sits.
         h = h.pack_end(self.main_menu());
         if !narrow {
@@ -151,13 +141,10 @@ impl App {
                 .pack_end(
                     w::IconToggleButton::new(
                         Icon::Compass,
-                        self.dest == Dest::Explore && !self.jam_open && !self.searching,
+                        self.dest == Dest::Explore && !self.jam_open,
                     )
                     .size(16.0)
                     .on_toggle(move |_| Message::ToggleExplore),
-                )
-                .pack_end(
-                    w::icon_button(Icon::Search).on_press(Message::SearchOpen(!self.searching)),
                 )
                 .pack_end(
                     w::IconToggleButton::new(Icon::Sparkle, self.jam_open)
@@ -186,57 +173,6 @@ impl App {
                 w::MenuItem::action("Import folder…", Message::Import(false)).icon(Icon::Folder),
             ]);
         self.menu_button(Icon::OpenMenu, "Main menu", menu)
-    }
-
-    fn filter_badge(&self) -> Element<'_> {
-        let n = self.filter.count();
-        let mut r = row![Icon::Filter.view(16.0), text("Filters")]
-            .spacing(6)
-            .align_y(Alignment::Center);
-        if n > 0 {
-            r = r.push(
-                w::Badge::count(n as u32, 99)
-                    .role(iad::Role::Accent)
-                    .solid(true),
-            );
-        }
-        r.into()
-    }
-
-    /// The filter button: the filter page in a popover, applying live as it is edited.
-    fn filter_button(&self) -> Element<'_> {
-        // The popover supplies the placement; the surface (background, border, padding) is ours.
-        let surface = container(self.filter_fields(
-            &self.filter,
-            Message::ToggleTag,
-            Message::Bpm,
-            Some(Message::ClearFilter),
-        ))
-        .padding(12) // gutter-ok: a component's own padding, not a page gutter
-        .style(style::container::popover);
-        w::Popover::new(self.filter_badge(), surface)
-            .popover_width(420.0)
-            .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("popover"))
-            .into()
-    }
-
-    /// The search field takes focus as it appears: a focus scope that does not trap Tab, so the
-    /// header's other controls stay reachable.
-    pub fn search_entry(&self) -> Element<'_> {
-        w::FocusScope::new(
-            row![
-                text_input("Search tracks, artists, albums", &self.query)
-                    .id(SEARCH_ID)
-                    .on_input(Message::SearchText)
-                    .width(Length::Fill),
-                self.filter_button(),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        )
-        .trap(false)
-        .initial_focus(SEARCH_ID)
-        .into()
     }
 
     // ---- sheets -----------------------------------------------------------------------
@@ -332,9 +268,8 @@ impl App {
 
     fn tab_bar(&self) -> Element<'_> {
         let jam = self.jam_open;
-        let search = self.searching && !jam;
-        let explore = !jam && !self.searching && self.dest == Dest::Explore;
-        let home = !jam && !self.searching && !explore;
+        let explore = !jam && self.dest == Dest::Explore;
+        let home = !jam && !explore;
         container(
             row![
                 self.tab(
@@ -342,12 +277,6 @@ impl App {
                     "Home",
                     home,
                     Message::Go(Dest::Home)
-                ),
-                self.tab(
-                    Icon::Search.view(16.0).into(),
-                    "Search",
-                    search,
-                    Message::SearchOpen(!self.searching),
                 ),
                 self.tab(
                     Icon::Compass.view(16.0).into(),

@@ -26,7 +26,11 @@ A jam is a dynamic listening mode: pick some filters, press Start, and Weave pla
 
 ## The jam page
 
-The jam page itself is short: the **Filters** button (with the number of active filters as a badge), **Surprise me** and **Clear filters** side by side, then **only the active filters** as chips, each with a cross that clears it (a tag, or the tempo range), then the round play button and the matches. Pressing Filters opens the filter page in a **dialog** (wide) or a **full-screen bottom sheet** (narrow); it applies live and closes with Done.
+Search is part of Jam. The page has the look of an Album or Playlist page: a **header** with the title, the **active filters** as chips (each with a cross that clears it: a tag, the tempo, the artist, the album, the generic search), and a row of **icon buttons**: the round **Play**, **Tag filters** and **Search**, each with a tooltip and a badge counting its active filters. At the far corner are the match count and **+ Save as playlist**. Under the header comes the sortable table of matches (Title, Album, BPM, Time).
+
+- **Tag filters** opens the filter page in a **dialog** (wide) or a **full-screen bottom sheet** (narrow). It applies live, and its header has a **Surprise me** icon and a clear icon, and Done.
+- **Search** opens a row of three entries: **Artist**, **Album** and **Anything** (a generic search over title, artist and album).
+- **Save as playlist** stores a real dynamic playlist from the tags, the tempo, the artist and the album. **The generic search ("Anything") is not saved**, and the notice says so when it has text; its chip also says it is not saved.
 
 ## The filter page
 

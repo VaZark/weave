@@ -23,12 +23,11 @@ Pressing a trigger sends the action to the application. The application updates 
 | Recently played         | Sidebar row                           | A shelf on Home                             |
 | Tracks, Artists, Albums | Sidebar rows                          | Pills on the Library tab                    |
 | Playlists               | Sidebar section                       | Pill on the Library tab                     |
-| Search                  | Header 🔍                             | Search tab                                  |
-| Open jam                | Header ✦                              | Jam tab                                     |
+| Open jam (and search)   | Header ✦                              | Jam tab                                     |
 | Queue                   | Player bar button, opens a side panel | Toggle in Now Playing                       |
 | Now Playing             | Player bar ⌃, expands in place        | Tap the mini player, expands to full height |
 
-A trigger can show state as well as fire. The Jam tab is highlighted while the jam sheet is open, and the search button carries the filter badge.
+A trigger can show state as well as fire. The Jam tab is highlighted while the jam page is open, and its Tag filters and Search buttons carry badges counting their active filters.
 
 ## Views
 
@@ -51,7 +50,7 @@ A view is a function of application state. It sends actions and messages and has
 
 ### Search and jam
 
-See [jam](jam.md). Search is a header mode in the wide layout and a tab in the narrow one; both use the same filter page.
+See [jam](jam.md). Search is part of Jam: the Jam page has a Search button (artist, album, anything) beside its Tag filters, and one table of matches.
 
 ## Adaptive
 
@@ -86,7 +85,6 @@ adaptive
 ```
 
 - **Home** shows [recent jams, playlists, artists and usage](home.md).
-- **Search** is the search entry with its filter button. Its empty state shows recent searches.
 - **Library** has a row of pills (a toggle group) for Tracks, Artists, Albums and Playlists.
 - **Jam** is a tab that fires the Jam action. It is not a page: the [jam sheet](jam.md) opens over the content area with the mini player still visible, and closing it returns to the tab the user was on.
 - Tapping the mini player expands Now Playing to full height.
@@ -114,8 +112,7 @@ adaptive
 ```
 
 - **Sidebar:** Home and Recently played first, then Tracks, Artists, Albums, then the playlists (⚡ dynamic, ☰ manual). The sidebar holds no tags.
-- **Header, right corner:** 🔍 Search and ✦ Jam.
-- **Search:** firing the Search action turns the centred title into a search entry with a filter button; the button opens the filter popover (see [jam](jam.md#the-filter-page)). Escape or ✕ restores the title and clears the search and its filters. A badge on the filter button counts the active filters.
+- **Header, right corner:** ✦ Jam (search lives on the Jam page).
 - **Jam:** the [jam sheet](jam.md) opens over the content area. The player bar stays visible and keeps playing.
 - **Queue:** page content, in both layouts: it replaces the page, the now-playing bar moves to the top, and "Up next" (what follows the playing track) scrolls below it, with drag to reorder and a delete button on each row.
 
@@ -129,8 +126,6 @@ Opening and closing is ordered with the transition protocol from [iced-libadwait
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
 | Window crosses 768 px     | `Close(Wide, 30 ms)` → `Open(Narrow, 30 ms)` (run by `adaptive`)                                |
 | Start a jam               | `Close(JamSheet, 200 ms)` → show the first track in the player bar                              |
-| Escape from header search | `Close(SearchEntry, 100 ms)` → restore the title                                                |
-| Open the jam from search  | `Close(SearchPopover, 100 ms)` → `Open(JamSheet, 200 ms)`, with the search filters carried over |
 
 The frontend's own views (jam sheet, queue panel, header search) report through the same events when their animation ends. A new sequence replaces the steps that have not started and lets the step in flight finish, so nothing is left half-closed.
 
