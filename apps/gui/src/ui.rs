@@ -11,7 +11,7 @@ use iced::widget::{column, container, row};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
-use crate::{App, DensityPref, Dest, Element, Layout, Message};
+use crate::{App, DensityPref, Dest, Element, Layout, Message, Sheet};
 
 /// Rough heights of the fixed parts of a layout, to know how far a sliding layer travels.
 pub const HEADER_H: f32 = 47.0;
@@ -103,8 +103,48 @@ impl App {
         .edges(left, right)
     }
 
+    /// The header line: flat, so the page under it (and its colour wash) runs to the top of the
+    /// window. It is shared by every page rather than a bar of its own.
     pub fn bar(&self, left: bool, right: bool) -> w::HeaderBar<'_, Message> {
-        w::header_bar().chrome(&self.chrome(left, right), Message::Window)
+        w::header_bar()
+            .chrome(&self.chrome(left, right), Message::Window)
+            .flat(true)
+    }
+
+    /// The colour of the page's wash, when it has one: a detail page's (playlist, artist, album)
+    /// or the jam's.
+    pub fn page_tint(&self) -> Option<iced::Color> {
+        use iad::color::{from_index, from_seed};
+        if self.jam_open {
+            return Some(from_index(7));
+        }
+        match self.dest {
+            Dest::Playlist(i) => self.lib.playlists.get(i).map(|p| from_seed(&p.name)),
+            Dest::Artist(i) | Dest::Album(i) => Some(from_index(i)),
+            _ => None,
+        }
+    }
+
+    /// `body` with the page's colour wash behind it, fading down from the top of the window
+    /// through the header line and the top of the page.
+    fn with_wash<'a>(&'a self, body: Element<'a>) -> Element<'a> {
+        match self.page_tint() {
+            // The bottom layer fills the window (a stack takes the size of its first layer), with
+            // the wash at its top.
+            Some(tint) => iced::widget::stack![
+                column![
+                    container(iced::widget::space())
+                        .width(Length::Fill)
+                        .height(Length::Fixed(HEADER_H + 300.0))
+                        .style(style::container::wash(tint)),
+                ]
+                .width(Length::Fill)
+                .height(Length::Fill),
+                body,
+            ]
+            .into(),
+            None => body,
+        }
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -163,22 +203,33 @@ impl App {
 
     /// The main menu: the density switch, and importing files or a folder.
     fn main_menu(&self) -> Element<'_> {
+        if self.is_narrow() {
+            return w::icon_button(Icon::OpenMenu)
+                .on_press(Message::OpenSheet(Some(Sheet::Main)))
+                .into();
+        }
+        self.menu_button(Icon::OpenMenu, "Main menu", self.main_menu_def(|m| m))
+    }
+
+    /// Share the contents and checks between the desktop popover and narrow bottom sheet.
+    pub fn main_menu_def(&self, wrap: impl Fn(Message) -> Message) -> w::Menu<Message> {
         let compact = self.compact();
-        let menu = w::Menu::new("Menu")
+        w::Menu::new("Menu")
             .section([w::MenuItem::check(
                 "Compact",
                 compact,
-                Message::SetDensity(if compact {
+                wrap(Message::SetDensity(if compact {
                     DensityPref::Default
                 } else {
                     DensityPref::Compact
-                }),
+                })),
             )])
             .section([
-                w::MenuItem::action("Import files…", Message::Import(true)).icon(Icon::Document),
-                w::MenuItem::action("Import folder…", Message::Import(false)).icon(Icon::Folder),
-            ]);
-        self.menu_button(Icon::OpenMenu, "Main menu", menu)
+                w::MenuItem::action("Import files…", wrap(Message::Import(true)))
+                    .icon(Icon::Document),
+                w::MenuItem::action("Import folder…", wrap(Message::Import(false)))
+                    .icon(Icon::Folder),
+            ])
     }
 
     // ---- sheets -----------------------------------------------------------------------
@@ -240,12 +291,14 @@ impl App {
         }
         // Now Playing takes over the whole window: the header and the bar go under it.
         self.np_dock(
-            column![
-                self.header(),
-                container(self.content()).height(Length::Fill),
-                self.player_bar(),
-            ]
-            .into(),
+            self.with_wash(
+                column![
+                    self.header(),
+                    container(self.content()).height(Length::Fill),
+                    self.player_bar(),
+                ]
+                .into(),
+            ),
         )
     }
 
@@ -315,7 +368,7 @@ impl App {
                 self.tab_bar(),
             ]
         };
-        let base = self.np_dock(body.into());
+        let base = self.np_dock(self.with_wash(body.into()));
         let base = match self.sheet {
             Some(sheet) => w::Dock::new(base, self.sheet_view(sheet))
                 .scope(w::DockScope::Window)

@@ -385,7 +385,6 @@ impl App {
             .primary(play)
             .action(tag_filters)
             .facts(chips)
-            .tint(iad::color::from_index(7))
             .narrow(narrow);
         // Wide: at the far corner of the header. Narrow: below the buttons, as its own row.
         let mut below = None;

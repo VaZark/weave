@@ -282,6 +282,8 @@ pub struct TrackEdit {
 /// What the bottom sheet (narrow) shows: a menu that is a dropdown on desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sheet {
+    /// The top-bar settings and import menu.
+    Main,
     /// A track's actions: the track, and whether "View album" shows.
     Track(usize, bool),
     /// A detail page's options: whether the page is a dynamic playlist.
@@ -3294,6 +3296,29 @@ mod tests {
                 .artists
                 .contains(&data::UNKNOWN.to_string())
         );
+    }
+
+    #[test]
+    fn main_menu_sheet_closes_before_applying_settings_or_importing() {
+        let mut a = app();
+        let _ = a.view();
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.view();
+        assert_eq!(a.sheet, Some(Sheet::Main));
+        let _ = a.update(Message::SheetAction(Box::new(Message::SetDensity(
+            DensityPref::Compact,
+        ))));
+        assert!(a.sheet.is_none());
+        assert!(a.compact());
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.view();
+        // Creating the picker task does not run the OS dialog in this test.
+        let _ = a.update(Message::SheetAction(Box::new(Message::Import(true))));
+        assert!(a.sheet.is_none());
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::OpenSheet(None));
+        assert!(a.sheet.is_none());
     }
 
     #[test]

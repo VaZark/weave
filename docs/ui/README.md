@@ -50,8 +50,3 @@ Our own widgets live in `apps/gui/src/components`, with their headless logic in 
 ## Developing against a local iced-adaptive-design
 
 The GUI pins a revision of iced-adaptive-design. To build against a sibling checkout that is ahead of it, create `.cargo/config.toml` (ignored by git) with a `[patch."https://github.com/VaZark/iced-libadwaita"]` entry pointing at `../iced-libadwaita`. The tempo picker is iad's `ComposedComponent` (a `BarChart::histogram` over a `range_slider`), so it needs a revision with the composed component.
-
-## TODO
-
-- **Karaoke mode:** large synced lyrics with vocal level, key and tempo shift, on Home and Now Playing. Needs the engine to duck or separate vocals.
-- Play history and favourites in the engine (Home, the artist page and "It's been a while" use sample data).

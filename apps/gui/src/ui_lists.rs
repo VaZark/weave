@@ -13,7 +13,6 @@ use crate::data::{Filter, RecentOrder, Track};
 use crate::icons::{cover, playlist_avatar};
 use crate::ui::card;
 use crate::{App, Col, Dest, Element, Message, Sheet};
-use iad::color::{from_index, from_seed};
 use iad::prelude::surface;
 
 /// The album column of a wide track list; the title takes what the others leave.
@@ -850,6 +849,10 @@ impl App {
     /// What the bottom sheet shows.
     pub fn sheet_view(&self, sheet: Sheet) -> Element<'_> {
         match sheet {
+            Sheet::Main => {
+                let menu = self.main_menu_def(|m| Message::SheetAction(Box::new(m)));
+                Menu::sheet(&menu, None).into()
+            }
             Sheet::Recent => {
                 let menu = self.recent_menu_def("Order", |m| Message::SheetAction(Box::new(m)));
                 Menu::sheet(&menu, None).into()
@@ -876,13 +879,12 @@ impl App {
                 .into(),
             None => space::vertical().height(0).into(),
         };
-        let (cover_el, kind, title, facts, actions, tint): (
+        let (cover_el, kind, title, facts, actions): (
             Element<'_>,
             String,
             String,
             Element<'_>,
             Vec<Element<'_>>,
-            iced::Color,
         ) = match self.dest {
             Dest::Playlist(i) => {
                 let p = &self.lib.playlists[i];
@@ -901,7 +903,6 @@ impl App {
                         .into_iter()
                         .chain([self.options_menu(p.filter.is_some())])
                         .collect(),
-                    from_seed(&p.name),
                 )
             }
             Dest::Artist(i) => {
@@ -935,7 +936,6 @@ impl App {
                             .into(),
                         self.options_menu(false),
                     ],
-                    from_index(i),
                 )
             }
             Dest::Album(i) => {
@@ -950,7 +950,6 @@ impl App {
                         .into_iter()
                         .chain([self.options_menu(false)])
                         .collect(),
-                    from_index(i),
                 )
             }
             _ => unreachable!("detail_page is for playlists, artists and albums"),
@@ -965,7 +964,6 @@ impl App {
             .description(description)
             .facts(facts)
             .primary(self.play_all())
-            .tint(tint)
             .narrow(narrow);
         for a in actions {
             header = header.action(a);
