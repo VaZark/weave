@@ -583,6 +583,7 @@ impl App {
                 Dest::Albums,
             ),
             link("All tracks", Icon::Queue.view(18.0).into(), Dest::Tracks),
+            link("About me", Icon::MusicNote.view(18.0).into(), Dest::AboutMe),
         ])
         .max_width(260.0)
         .spacing(12.0);
@@ -829,6 +830,7 @@ impl App {
         match self.dest {
             Dest::Home => self.home(),
             Dest::Explore => self.explore(),
+            Dest::AboutMe => self.about_me(),
             Dest::Recent | Dest::Tracks => self.track_page(),
             Dest::Artists => self.artists(),
             Dest::Albums => self.albums(),
