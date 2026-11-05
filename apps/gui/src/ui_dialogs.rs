@@ -7,7 +7,7 @@ use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
 
-use crate::components::tag_badge::{tag_pill, value_of};
+use crate::components::tag_badge::{tag_chip_removable, tag_pill, value_of};
 use crate::data::{self, Filter};
 use crate::icons::{cover, playlist_avatar};
 use crate::{App, Dest, Element, Message};
@@ -121,33 +121,62 @@ impl App {
 
     // ---- jam ----------------------------------------------------------------------------
 
-    /// The jam is a page: Surprise me, the filters (open by default, folded on request), the round
-    /// play button, and the virtualised list of what the filters match.
+    /// The jam is a page: the filter button with Surprise me and Clear filters beside it, the active
+    /// filters as chips that clear one by one, the round play button, and the virtualised list of
+    /// what the filters match. The filters themselves are edited in a dialog (a full-screen sheet
+    /// on narrow), see [`jam_filters_dialog`](Self::jam_filters_dialog).
     pub fn jam_page(&self) -> Element<'_> {
         let n = self.lib.filtered(&self.filter).len();
-        let wide = !self.is_narrow();
-        let open = self.jam_filters_open;
-        let header = row![
-            w::flat_button(
-                row![
-                    ty::heading("Filters"),
-                    if open { Icon::GoUp } else { Icon::GoDown }.view(16.0),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::JamFilters(!open)),
+        let count = self.filter.count();
+        let mut filters_label = row![Icon::Filter.view(16.0), ty::label("Filters")]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        if count > 0 {
+            filters_label = filters_label.push(
+                w::Badge::count(count as u32, 99)
+                    .role(iad::Role::Accent)
+                    .solid(true),
+            );
+        }
+        let actions = row![
+            w::flat_button(filters_label).on_press(Message::JamFilters(true)),
             space::horizontal(),
-            w::icon_button(Icon::Delete)
+            w::flat_button(ty::label("🎲 Surprise me")).on_press(Message::Surprise),
+            w::flat_button(ty::label("Clear filters"))
                 .on_press_maybe((!self.filter.is_empty()).then_some(Message::ClearFilter)),
         ]
+        .spacing(4)
         .align_y(Alignment::Center);
-        let filters = w::Collapsible::new(
-            header,
-            self.filter_fields(&self.filter, Message::ToggleTag, Message::Bpm, None),
-            open,
-        );
-        let top = row![w::flat_button(ty::label("🎲 Surprise me")).on_press(Message::Surprise),];
+        // Only what is active, each removable on its own.
+        let mut chips: Vec<Element<'_>> = self
+            .filter
+            .tags
+            .iter()
+            .map(|t| {
+                tag_chip_removable(
+                    t,
+                    &self.lib.style_of(t),
+                    ChipSize::Medium,
+                    Message::ToggleTag(t.clone()),
+                )
+            })
+            .collect();
+        if self.filter.bpm != data::BPM {
+            let (lo, hi) = self.filter.bpm;
+            chips.push(
+                w::Chip::new(format!("{lo:.0}–{hi:.0} BPM"))
+                    .icon(Icon::Clock)
+                    .size(ChipSize::Medium)
+                    .on_remove(Message::Bpm(data::BPM))
+                    .into(),
+            );
+        }
+        let active: Element<'_> = if chips.is_empty() {
+            ty::caption("No filters: every track matches.").into()
+        } else {
+            row(chips).spacing(6).wrap().into()
+        };
+        let top = column![actions, active].spacing(8);
         // The same round play button as every track list, right after the filters, with the number
         // of matches beside it and some air above.
         // Saving stores the filters as a dynamic playlist (a jam is a query, not a list of tracks).
@@ -188,26 +217,56 @@ impl App {
             .spacing(12)
             .align_y(Alignment::Center),
         ];
-        let page: Element<'_> = if wide {
-            row![
-                scrollable(column![top, filters].spacing(10))
-                    .width(Length::FillPortion(1))
-                    .height(Length::Fill),
-                // The play row sits on top of the list it plays.
-                column![play, self.jam_list()]
-                    .spacing(8)
-                    .width(Length::FillPortion(1)),
-            ]
-            .spacing(24)
+        let page: Element<'_> = column![top, play, self.jam_list()]
+            .spacing(8)
             .height(Length::Fill)
-            .into()
-        } else {
-            column![top, filters, play, self.jam_list()]
-                .spacing(8)
-                .height(Length::Fill)
-                .into()
-        };
+            .into();
         surface::full(page)
+    }
+
+    // ---- jam filters --------------------------------------------------------------------
+
+    /// The jam's filters, edited live: a header with the matches, Clear filters and Done, then the
+    /// shared filter fields. The same content in the dialog (wide) and the full-screen sheet
+    /// (narrow).
+    fn jam_filters_form(&self) -> Element<'_> {
+        let n = self.lib.filtered(&self.filter).len();
+        column![
+            row![
+                ty::title_3("Filters"),
+                ty::caption(format!("{n} matches")),
+                space::horizontal(),
+                w::flat_button(ty::label("Clear filters"))
+                    .on_press_maybe((!self.filter.is_empty()).then_some(Message::ClearFilter)),
+                w::suggested_button(ty::label("Done")).on_press(Message::JamFilters(false)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            scrollable(self.filter_fields(&self.filter, Message::ToggleTag, Message::Bpm, None))
+                .height(Length::Fill),
+        ]
+        .spacing(12)
+        .into()
+    }
+
+    /// The jam's filters as a dialog (wide).
+    pub fn jam_filters_dialog(&self) -> Element<'_> {
+        container(self.jam_filters_form())
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fixed(560.0))
+            .height(Length::Fixed(520.0))
+            .style(iad::styles::container::popover)
+            .into()
+    }
+
+    /// The jam's filters as a full-screen bottom sheet (narrow).
+    pub fn jam_filters_sheet(&self) -> Element<'_> {
+        container(self.jam_filters_form())
+            .padding(20) // gutter-ok: a component's own padding, not a page gutter
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(iad::styles::container::window)
+            .into()
     }
 
     // ---- dialogs ------------------------------------------------------------------------

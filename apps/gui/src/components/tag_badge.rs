@@ -28,3 +28,13 @@ pub fn tag_pill<'a, M: Clone + 'a>(name: &str, style: &TagStyle, size: ChipSize)
     .gap(4)
     .into()
 }
+
+/// A tag chip with a remove cross: an active filter.
+pub fn tag_chip_removable<'a, M: Clone + 'a>(
+    name: &str,
+    style: &TagStyle,
+    size: ChipSize,
+    on_remove: M,
+) -> Element<'a, M> {
+    Element::from(chip::<M>(name, style).size(size).on_remove(on_remove))
+}

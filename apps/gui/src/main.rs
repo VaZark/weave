@@ -433,6 +433,8 @@ pub struct App {
     pub desc_expanded: bool,
     /// The jam sheet's matches as a virtualised list: the window of rows built, and where it
     /// starts in the full list.
+    /// The jam's filters are open: a dialog wide, a full-screen sheet narrow. Closed by default;
+    /// the jam page lists only the active filters.
     pub jam_filters_open: bool,
     /// The playlist the jam was last saved as, and the filters it was saved with.
     pub jam_saved: Option<(usize, Filter)>,
@@ -516,7 +518,7 @@ impl App {
             descriptions: std::collections::HashMap::new(),
             edit: None,
             desc_expanded: false,
-            jam_filters_open: true,
+            jam_filters_open: false,
             jam_saved: None,
             jam_vp: Viewport::new(JAM_LIST),
             rng: 0x9e37_79b9_7f4a_7c15,
@@ -2315,6 +2317,30 @@ mod tests {
         // Already paused (or never started): nothing changes.
         a.backend.start_paused();
         assert!(!a.backend.snapshot().playing);
+    }
+
+    #[test]
+    fn the_jam_page_lists_only_active_filters_and_edits_them_in_a_dialog() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        let _ = a.update(Message::ToggleJam);
+        assert!(
+            a.jam_open && !a.jam_filters_open,
+            "the filters start closed"
+        );
+        assert!(!a.dialog_open_for_test());
+        let _ = a.update(Message::JamFilters(true));
+        assert!(a.dialog_open_for_test(), "wide: a dialog");
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let _ = a.update(Message::Bpm((90.0, 120.0)));
+        assert_eq!(a.filter.count(), 2);
+        let _ = a.update(Message::JamFilters(false));
+        assert!(!a.dialog_open_for_test());
+        // An active chip clears on its own: a tag by toggling it, the tempo by resetting it.
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        assert_eq!(a.filter.count(), 1);
+        let _ = a.update(Message::Bpm(data::BPM));
+        assert!(a.filter.is_empty());
     }
 
     #[test]

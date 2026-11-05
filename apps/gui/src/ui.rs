@@ -35,7 +35,13 @@ impl App {
             .layout(Layout::Wide, || self.wide());
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
-        let dialog = w::present_dialog(framed, self.dialog(), None, 0.0);
+        let jam_filters = self.jam_filters_showing() && !self.is_narrow();
+        let dialog = w::present_dialog(
+            framed,
+            self.dialog(),
+            jam_filters.then_some(Message::JamFilters(false)),
+            0.0,
+        );
         // A line for a moment: what an import did.
         w::toast_stack(
             dialog,
@@ -51,7 +57,15 @@ impl App {
         self.dialog().is_some()
     }
 
+    /// Whether the jam's filters are open (a dialog wide, a sheet narrow).
+    fn jam_filters_showing(&self) -> bool {
+        self.jam_open && self.jam_filters_open
+    }
+
     fn dialog(&self) -> Option<Element<'_>> {
+        if self.jam_filters_showing() && !self.is_narrow() {
+            return Some(self.jam_filters_dialog());
+        }
         self.draft
             .as_ref()
             .map(|f| self.filter_dialog(f))
@@ -361,6 +375,17 @@ impl App {
                 .on_outside(Message::OpenSheet(None))
                 .into(),
             None => base,
+        };
+        // The jam's filters: a full-screen bottom sheet over the page.
+        let base = if self.jam_filters_showing() {
+            w::Dock::new(base, self.jam_filters_sheet())
+                .scope(w::DockScope::Window)
+                .size(w::DockSize::FullScreen)
+                .mode(w::DockMode::Overlay)
+                .scrim(false)
+                .into()
+        } else {
+            base
         };
         // Edit details: a bottom sheet over everything, with the page behind it.
         match &self.edit {
