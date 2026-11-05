@@ -163,6 +163,11 @@ pub enum Message {
     InfoTrack(usize),
     CloseInfo,
     QueueRemove(usize),
+    /// The queue's Clear: drops what follows the playing track.
+    ClearQueue,
+    /// A history entry of the queue: play it again (its place in the whole queue).
+    QueueJump(usize),
+    ToggleQueueHistory,
     NowPlaying(bool),
     ToggleQueue,
     ToggleLyrics,
@@ -365,6 +370,8 @@ pub struct App {
     pub tag_query: String,
     pub jam_open: bool,
     pub now_playing: bool,
+    /// Whether the queue lists the tracks already played (collapsed until asked for).
+    pub history_open: bool,
     /// The volume before the volume button muted, to go back to.
     pub muted_from: Option<f32>,
     pub queue_open: bool,
@@ -454,6 +461,7 @@ impl App {
             tag_query: String::new(),
             jam_open: false,
             now_playing: false,
+            history_open: false,
             muted_from: None,
             queue_open: false,
             queue_slide: Slide::default(),
@@ -1106,6 +1114,20 @@ impl App {
             }
             Message::CloseInfo => {
                 self.info_track = None;
+                Vec::new()
+            }
+            Message::ClearQueue => {
+                let s = self.backend.clear_up_next();
+                self.apply(s);
+                Vec::new()
+            }
+            Message::QueueJump(at) => {
+                let s = self.backend.jump(at);
+                self.apply(s);
+                Vec::new()
+            }
+            Message::ToggleQueueHistory => {
+                self.history_open = !self.history_open;
                 Vec::new()
             }
             Message::QueueRemove(i) => {
@@ -2079,6 +2101,25 @@ mod tests {
         let _ = a.update(Message::SetVolume(0.0));
         let _ = a.update(Message::ToggleMute);
         assert!(a.player.volume > 0.0);
+    }
+
+    #[test]
+    fn the_queue_clears_what_follows_and_history_is_the_played_part() {
+        let (backend, lib) = backend::sample::backend();
+        let mut a = App::with(backend, lib).0;
+        a.play(vec![10, 11, 12, 13, 14], 2);
+        assert!(!a.history_open, "collapsed by default");
+        let _ = a.update(Message::ClearQueue);
+        // The playing track and what was played stay; only up next goes.
+        assert_eq!(a.player.queue, vec![10, 11, 12]);
+        assert_eq!(a.player.current, Some(2));
+        assert!(a.player.up_next.items().is_empty());
+        // A history entry plays again, and the queue keeps its tracks.
+        let _ = a.update(Message::QueueJump(0));
+        assert_eq!(a.player.current, Some(0));
+        assert_eq!(a.player.queue, vec![10, 11, 12]);
+        let _ = a.update(Message::ToggleQueueHistory);
+        assert!(a.history_open);
     }
 
     #[test]

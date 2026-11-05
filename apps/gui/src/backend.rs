@@ -323,6 +323,25 @@ impl Backend {
         self.run(|e| e.set_volume(volume))
     }
 
+    /// Clears what follows the playing track; the playing track and the history stay.
+    pub fn clear_up_next(&mut self) -> Snapshot {
+        let snap = self.snapshot();
+        let from = snap.current.map_or(0, |c| c + 1);
+        let positions: Vec<usize> = snap.list_at.iter().skip(from).map(|l| l + 1).collect();
+        if positions.is_empty() {
+            return snap;
+        }
+        self.run(|e| e.queue_remove(&positions))
+    }
+
+    /// Plays the track at `at` (0-based) of the queue as shown: a history entry goes back to it.
+    pub fn jump(&mut self, at: usize) -> Snapshot {
+        let Some(list) = self.snapshot().list_at.get(at).copied() else {
+            return self.snapshot();
+        };
+        self.run(|e| e.queue_jump(list + 1))
+    }
+
     /// Removes the track at `at` (0-based) of the queue.
     pub fn remove(&mut self, at: usize) -> Snapshot {
         let Some(list) = self.snapshot().list_at.get(at).copied() else {

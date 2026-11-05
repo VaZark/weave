@@ -243,11 +243,13 @@ impl App {
         .on_event(Message::Queue);
         let mut controls = row![
             w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue),
-            ty::heading("Up next"),
-            ty::caption(format!("{} tracks", self.player.up_next.items().len())),
+            ty::heading("Queue"),
             space::horizontal(),
             sleep,
             timer,
+            w::icon_button(Icon::Delete).on_press_maybe(
+                (!self.player.up_next.items().is_empty()).then_some(Message::ClearQueue)
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -264,7 +266,63 @@ impl App {
                         .on_toggle(move |_| Message::Repeat),
                 );
         }
-        column![surface::toolbar(controls), surface::scrolling(list)]
+        let played = self
+            .player
+            .current
+            .unwrap_or(0)
+            .min(self.player.queue.len());
+        let mut history = column![
+            button(
+                row![
+                    if self.history_open {
+                        Icon::GoDown.view(14.0)
+                    } else {
+                        Icon::GoNext.view(14.0)
+                    },
+                    ty::heading("History"),
+                    ty::caption(format!("{played} tracks")),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+            )
+            .style(style::button::flat)
+            .on_press(Message::ToggleQueueHistory)
+        ];
+        if self.history_open {
+            for (at, id) in self.player.queue[..played].iter().enumerate() {
+                let t = &self.lib.tracks[*id];
+                history = history.push(
+                    button(
+                        row![
+                            column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
+                                .width(Length::Fill),
+                            ty::caption(t.duration()),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    )
+                    .style(style::button::flat)
+                    .width(Length::Fill)
+                    .on_press(Message::QueueJump(at)),
+                );
+            }
+        }
+        let playing: Element<'_> = match self.now() {
+            Some(t) => column![
+                ty::heading("Now playing"),
+                row![
+                    cover(t.id, 32.0),
+                    column![ty::body(t.title.clone()), ty::caption(t.artist.clone())],
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(4)
+            .into(),
+            None => space::vertical().height(0).into(),
+        };
+        let stack = column![history, playing, ty::heading("Up next"), list].spacing(8);
+        column![surface::toolbar(controls), surface::scrolling(stack)]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
