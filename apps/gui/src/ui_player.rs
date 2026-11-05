@@ -102,7 +102,7 @@ impl App {
         .padding(8) // gutter-ok: a component's own padding, not a page gutter
         .style(style::container::popover);
         w::Popover::new(icon.view(16.0), panel)
-            .popover_width(64.0)
+            .fit_content()
             .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("volume"))
             .into()
     }
