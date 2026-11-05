@@ -3,7 +3,7 @@
 //! this page are explicitly illustrative until the engine exposes playback history.
 
 use iced::widget::{button, column, container, row, scrollable, svg, text, text_input};
-use iced::{Length, alignment::Horizontal};
+use iced::Length;
 use iced_adaptive_design as iad;
 use iad::prelude::typography as ty;
 
@@ -24,7 +24,7 @@ fn chart_svg(kind: &str, values: &[f32], labels: &[&str]) -> String {
         let y2 = cy + r * end.sin();
         let large = if sweep > std::f32::consts::PI { 1 } else { 0 };
         paths.push_str(&format!(
-            r#"<path d="M {cx:.2} {cy:.2} L {x1:.2} {y1:.2} A {r} {r} 0 {large} 1 {x2:.2} {y2:.2} Z" fill="{}" stroke="#242424" stroke-width="1"/>"#,
+            r##"<path d="M {cx:.2} {cy:.2} L {x1:.2} {y1:.2} A {r} {r} 0 {large} 1 {x2:.2} {y2:.2} Z" fill="{}" stroke="#242424" stroke-width="1"/>"##,
             colors[i % colors.len()]
         ));
         start = end;
@@ -35,7 +35,7 @@ fn chart_svg(kind: &str, values: &[f32], labels: &[&str]) -> String {
             if kind == "sunburst" { 8 } else { 0 }, 8 + i * 17, colors[i % colors.len()],
             if kind == "sunburst" { 22 } else { 14 }, 17 + i * 17, label)
     }).collect::<String>();
-    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="{viewbox}">{paths}{legend}</svg>"#)
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="{viewbox}">{paths}{legend}</svg>"##)
 }
 
 fn line_svg(days: usize) -> String {
@@ -49,7 +49,7 @@ fn line_svg(days: usize) -> String {
         let y = 90.0 - v / max * 70.0;
         format!("{x:.1},{y:.1}")
     }).collect::<Vec<_>>().join(" ");
-    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="112" viewBox="0 0 300 112"><path d="M 12 92 H 288" stroke="currentColor" opacity=".2"/><polyline points="{points}" fill="none" stroke="#3584e4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"#)
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="112" viewBox="0 0 300 112"><path d="M 12 92 H 288" stroke="currentColor" opacity=".2"/><polyline points="{points}" fill="none" stroke="#3584e4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"##)
 }
 
 fn chart(svg_text: String, height: f32) -> Element<'static> {
@@ -101,7 +101,7 @@ impl App {
         let tags = self.lib.tag_names().into_iter().take(8).map(|tag| {
             container(ty::caption(tag)).padding([5, 9]).style(iad::styles::container::card)
         }).collect::<Vec<_>>();
-        let page = column![
+        let page = container(column![
             ty::title_2("About me"),
             ty::caption("Your listening habits, taste and discoveries"),
             range,
@@ -128,7 +128,7 @@ impl App {
                 ty::caption("Next: completion rate, skips, repeats, session length, album completion and rediscovery.")
             ].spacing(6),
             ty::caption("Demo analytics: the current GUI fixture has lifetime play counts and last-played age, not timestamped playback events. Period totals and charts are illustrative; real period-accurate analytics require engine playback events.")
-        ].spacing(16).padding(12);
+        ].spacing(16)).padding(12);
         scrollable(page).height(Length::Fill).into()
     }
 }
