@@ -1,0 +1,37 @@
+# Local Flatpak build of the GUI (see scripts/flatpak-install.sh). Wayland only.
+app-id: io.github.vazark.Weave
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: weave-player-gui
+finish-args:
+  - --socket=wayland
+  - --device=dri
+  - --socket=pulseaudio
+  # The library: music to read, and the database the CLI and the GUI share (see docs/ui).
+  - --filesystem=xdg-music:ro
+  - --filesystem=xdg-data/weave
+  # Media keys and the shell's player widget.
+  - --own-name=org.mpris.MediaPlayer2.weave
+modules:
+  - name: weave
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/weave/cargo
+    build-commands:
+      - cargo build --release --locked -p weave-player-gui
+      - install -Dm755 target/release/weave-player-gui /app/bin/weave-player-gui
+      - install -Dm644 platforms/linux/icon/io.github.vazark.Weave.svg /app/share/icons/hicolor/scalable/apps/io.github.vazark.Weave.svg
+      - mkdir -p /app/share/applications && target/release/weave-player-gui --print-desktop-entry > /app/share/applications/io.github.vazark.Weave.desktop
+      - install -Dm644 platforms/linux/flatpak/io.github.vazark.Weave.metainfo.xml /app/share/metainfo/io.github.vazark.Weave.metainfo.xml
+    sources:
+      - type: dir
+        path: ../../..
+        # .cargo holds a local-only patch to a sibling checkout the sandbox does not have.
+        skip: [target, .git, .cargo]
