@@ -22,4 +22,5 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # iced-adaptive-design` moves it). To develop both together, add a
 # `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
 iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", branch = "main" }
-iced = { version = "0.14", features = ["advanced", "svg", "image", "tokio", "canvas"] }
+# Wayland only: no `x11` feature (the toolkit does not support X11 either).
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "advanced", "svg", "image", "tokio", "canvas"] }

@@ -9,6 +9,7 @@ mod backend;
 mod components;
 mod data;
 mod icons;
+mod platforms;
 mod ui;
 mod ui_dialogs;
 mod ui_lists;
@@ -116,6 +117,8 @@ pub enum Col {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The desktop switched between light and dark; the theme is read again on redraw.
+    SystemScheme(iad::Scheme),
     // Resizing and the transitions between layouts.
     Resized(f32, f32),
     /// An animation frame (while a sheet or the queue slides).
@@ -561,6 +564,7 @@ impl App {
                     .map(Message::Captured),
             );
         }
+        tasks.push(iad::system::detect_color_scheme().map(Message::SystemScheme));
         (app, Task::batch(tasks))
     }
 
@@ -1427,6 +1431,7 @@ impl App {
                 }
                 Vec::new()
             }
+            Message::SystemScheme(_) => Vec::new(),
             Message::Poll => {
                 // The session as it is now: the position, and what another handle changed.
                 let s = self.backend.snapshot();
@@ -1523,6 +1528,7 @@ impl App {
         let mut subs = vec![
             iced::window::resize_events().map(|(_, s)| Message::Resized(s.width, s.height)),
             self.adaptive.subscription(Message::Tick),
+            iad::system::follow_color_scheme().map(Message::SystemScheme),
         ];
         if self.animating() {
             subs.push(iced::window::frames().map(Message::Frame));
@@ -1630,6 +1636,11 @@ fn fake_lyrics(title: &str, secs: u32) -> Vec<Line> {
 }
 
 fn main() -> iced::Result {
+    // Used by platforms/linux/install.sh, so the .desktop text comes from the toolkit.
+    if std::env::args().nth(1).as_deref() == Some("--print-desktop-entry") {
+        print!("{}", platforms::DESKTOP_ENTRY.render());
+        return Ok(());
+    }
     // Shared desktop behavior: ~/.config/iced-adaptive-design/desktop.conf (+ system files).
     iad::config::install(iad::config::Config::load());
     iced::application(App::new, App::update, App::view)
@@ -1638,7 +1649,7 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(window_size().0, window_size().1),
-            ..iad::windows::settings()
+            ..iad::windows::settings_for(platforms::APP_ID)
         })
         .settings(iced::Settings {
             default_text_size: 14.67.into(),
