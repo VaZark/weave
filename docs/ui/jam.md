@@ -26,11 +26,11 @@ A jam is a dynamic listening mode: pick some filters, press Start, and Weave pla
 
 ## The jam page
 
-Search is part of Jam. The page has the look of an Album or Playlist page: a **header** with the title, the **active filters** as chips (each with a cross that clears it: a tag, the tempo, the artist, the album, the generic search), and a row of **icon buttons**: the round **Play**, **Tag filters** and **Search**, each with a tooltip and a badge counting its active filters. At the far corner are the match count and **+ Save as playlist**. Under the header comes the sortable table of matches (Title, Album, BPM, Time).
+Search is part of Jam. The page has the look of an Album or Playlist page: a **header** with the title and the **active filters** as chips (a tag, the tempo, an artist, an album; each has a cross that clears it), and a row of **icon buttons**: the round **Play** and **Tag filters** (a tooltip, and a badge counting its active filters). At the far corner are the match count and **+ Save as playlist**; on narrow they sit in a row of their own **below** the buttons. Under the header comes the sortable table of matches (Title, Album, BPM, Time).
 
-- **Tag filters** opens the filter page in a **dialog** (wide) or a **full-screen bottom sheet** (narrow). It applies live, and its header has a **Surprise me** icon and a clear icon, and Done.
-- **Search** opens a row of three entries: **Artist**, **Album** and **Anything** (a generic search over title, artist and album).
-- **Save as playlist** stores a real dynamic playlist from the tags, the tempo, the artist and the album. **The generic search ("Anything") is not saved**, and the notice says so when it has text; its chip also says it is not saved.
+- **Search** is an icon at the top right of the page that opens a pill-shaped search bar (title, artist or album contains the text). It only narrows the table to find something: closing the bar or leaving Jam clears it, and it is never saved.
+- **Tag filters** opens the filter page in a **dialog** (wide) or a **full-screen bottom sheet** (narrow). It applies live; its header has a **Surprise me** icon, a clear icon and Done. It holds the tag chips (a track needs all the chosen tags), then **Artists** and **Albums** as chips with a search entry each: only the top two lines are shown (the chosen ones first, then those with the most tracks) and typing finds the rest. Several chosen artists are *any of*, likewise albums; artists, albums, tags and tempo are then *all of*. An **Unknown artist** / **No album** chip picks the tracks without one.
+- **Save as playlist** asks for a name (a dialog on wide, a bottom sheet on narrow; prefilled, must be unique) and stores a real dynamic playlist from the tags, the tempo, the artists and the albums. A playlist needs at least one of those: with none (or with only a search) the button is disabled and says why. The search text is not saved, and the dialog and the notice say so when there is some.
 
 ## The filter page
 

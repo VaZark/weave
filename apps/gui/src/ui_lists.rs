@@ -1021,6 +1021,21 @@ impl App {
         if f.bpm != crate::data::BPM {
             parts.push(format!("{:.0}–{:.0} BPM", f.bpm.0, f.bpm.1));
         }
+        for (names, none) in [(&f.artists, "Unknown artist"), (&f.albums, "No album")] {
+            if !names.is_empty() {
+                let shown: Vec<&str> = names
+                    .iter()
+                    .map(|n| {
+                        if n == crate::data::UNKNOWN {
+                            none
+                        } else {
+                            n.as_str()
+                        }
+                    })
+                    .collect();
+                parts.push(shown.join(" or "));
+            }
+        }
         if parts.is_empty() {
             "everything".into()
         } else {

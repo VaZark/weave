@@ -682,6 +682,44 @@ impl Library {
         }
     }
 
+    /// The artists a filter can pick, most tracks first, and how many tracks have none.
+    pub fn artist_choices(&self) -> (Vec<(String, usize)>, usize) {
+        Self::choices(
+            self.tracks
+                .iter()
+                .map(|t| t.artist_known.then_some(t.artist.as_str())),
+        )
+    }
+
+    /// The albums a filter can pick, most tracks first, and how many tracks have none.
+    pub fn album_choices(&self) -> (Vec<(String, usize)>, usize) {
+        Self::choices(
+            self.tracks
+                .iter()
+                .map(|t| (!t.album.is_empty()).then_some(t.album.as_str())),
+        )
+    }
+
+    fn choices<'a>(names: impl Iterator<Item = Option<&'a str>>) -> (Vec<(String, usize)>, usize) {
+        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut unknown = 0;
+        for n in names {
+            match n {
+                Some(n) => *counts.entry(n).or_default() += 1,
+                None => unknown += 1,
+            }
+        }
+        let mut out: Vec<(String, usize)> = counts
+            .into_iter()
+            .map(|(n, c)| (n.to_string(), c))
+            .collect();
+        out.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+        });
+        (out, unknown)
+    }
+
     pub fn artists(&self) -> Vec<(String, usize)> {
         let mut out: Vec<(String, usize)> = Vec::new();
         for t in &self.tracks {

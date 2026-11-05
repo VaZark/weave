@@ -39,12 +39,15 @@ impl App {
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
         let jam_filters = self.jam_filters_showing() && !self.is_narrow();
-        let dialog = w::present_dialog(
-            framed,
-            self.dialog(),
-            jam_filters.then_some(Message::JamFilters(false)),
-            0.0,
-        );
+        let saving = self.save_name.is_some() && !self.is_narrow();
+        let backdrop = if jam_filters {
+            Some(Message::JamFilters(false))
+        } else if saving {
+            Some(Message::CancelSaveJam)
+        } else {
+            None
+        };
+        let dialog = w::present_dialog(framed, self.dialog(), backdrop, 0.0);
         // A line for a moment: what an import did.
         w::toast_stack(
             dialog,
@@ -66,6 +69,9 @@ impl App {
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
+        if self.save_name.is_some() && !self.is_narrow() {
+            return Some(self.save_dialog());
+        }
         if self.jam_filters_showing() && !self.is_narrow() {
             return Some(self.jam_filters_dialog());
         }
@@ -337,6 +343,16 @@ impl App {
                 .on_outside(Message::CancelDeletePlaylist)
                 .into(),
             None => base,
+        };
+        // Save as playlist: a bottom sheet over everything.
+        let base = if self.save_name.is_some() {
+            w::Dock::new(base, self.save_sheet())
+                .scope(w::DockScope::Window)
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::CancelSaveJam)
+                .into()
+        } else {
+            base
         };
         // Edit details: a bottom sheet over everything, with the page behind it.
         match &self.edit {
