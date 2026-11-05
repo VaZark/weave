@@ -368,29 +368,42 @@ impl App {
         ]
         .spacing(6)
         .align_x(Alignment::Center);
-        let lyrics = w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
-            .size(16.0)
-            .on_toggle(move |_| Message::ToggleLyrics);
-        let body: Element<'_> = if beside {
+        // The window's player: there is no bar under Now Playing, so the transport is here, in
+        // both layouts.
+        let transport = column![
+            self.seek(t),
+            self.controls(20.0),
+            self.volume_control(),
+            row![
+                w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Shuffle),
+                w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::Repeat),
+                w::IconToggleButton::new(Icon::Lyrics, self.show_lyrics)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleLyrics),
+                w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                    .size(16.0)
+                    .on_toggle(move |_| Message::ToggleQueue),
+            ]
+            .spacing(8),
+        ]
+        .spacing(12)
+        .align_x(Alignment::Center);
+        let stage: Element<'_> = if beside {
             // The cover and what it is on the left, the lyrics on the right.
-            container(
-                row![
-                    column![
-                        container(cover(t.id, 300.0)).center(Length::Fill),
-                        info,
-                        lyrics,
-                    ]
+            row![
+                column![container(cover(t.id, 300.0)).center(Length::Fill), info]
                     .spacing(12)
                     .align_x(Alignment::Center)
                     .width(Length::FillPortion(1)),
-                    container(synced())
-                        .width(Length::FillPortion(1))
-                        .height(Length::Fill),
-                ]
-                .spacing(48)
-                .height(Length::Fill),
-            )
-            .max_width(1040)
+                container(synced())
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill),
+            ]
+            .spacing(48)
             .height(Length::Fill)
             .into()
         } else {
@@ -399,44 +412,30 @@ impl App {
             } else {
                 container(cover(t.id, 260.0)).center(Length::Fill).into()
             };
-            let mut body = column![
+            column![
                 container(art).height(Length::Fill).width(Length::Fill),
                 info
             ]
             .spacing(12)
             .align_x(Alignment::Center)
-            .max_width(640)
-            .height(Length::Fill);
-            if narrow {
-                body = body
-                    .push(self.seek(t))
-                    .push(self.controls(20.0))
-                    .push(self.volume_control())
-                    .push(
-                        row![
-                            w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
-                                .size(16.0)
-                                .on_toggle(move |_| Message::Shuffle),
-                            w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
-                                .size(16.0)
-                                .on_toggle(move |_| Message::Repeat),
-                            lyrics,
-                            w::IconToggleButton::new(Icon::Queue, self.queue_open)
-                                .size(16.0)
-                                .on_toggle(move |_| Message::ToggleQueue),
-                        ]
-                        .spacing(8),
-                    );
-            } else {
-                body = body.push(lyrics);
-            }
-            body.into()
+            .height(Length::Fill)
+            .into()
         };
+        let body = container(
+            column![stage, transport]
+                .spacing(12)
+                .align_x(Alignment::Center),
+        )
+        .max_width(if beside { 1040 } else { 640 })
+        .height(Length::Fill);
+        // The top row is also the window's handle: with the header gone it is what drags it.
         let close = row![
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
-            space::horizontal(),
+            mouse_area(space::horizontal().height(Length::Fixed(32.0)))
+                .on_press(Message::Window(iad::windows::Action::Drag)),
             self.fullscreen_button(),
-        ];
+        ]
+        .align_y(Alignment::Center);
         let backdrop = iad::color::from_index(t.id);
         container(column![
             close,

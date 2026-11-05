@@ -291,12 +291,15 @@ impl App {
         if self.queue_slide.mounted() {
             return column![self.header(), self.queue_area()].into();
         }
-        column![
-            self.header(),
-            container(self.np_dock(self.content())).height(Length::Fill),
-            self.player_bar(),
-        ]
-        .into()
+        // Now Playing takes over the whole window: the header and the bar go under it.
+        self.np_dock(
+            column![
+                self.header(),
+                container(self.content()).height(Length::Fill),
+                self.player_bar(),
+            ]
+            .into(),
+        )
     }
 
     fn tab(
