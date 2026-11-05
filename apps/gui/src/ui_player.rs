@@ -4,7 +4,7 @@ use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
 use iad::{Icon, styles as style};
-use iced::widget::{button, column, container, mouse_area, row, space, tooltip, vertical_slider};
+use iced::widget::{button, column, container, mouse_area, row, space, vertical_slider};
 use iced::{Alignment, Background, Color, Length};
 use iced_adaptive_design as iad;
 
@@ -84,25 +84,19 @@ impl App {
         };
         let percent = (volume * 100.0).round() as u32;
         // A vertical slider; hovering it (and dragging) shows the percentage it is at.
-        let slider = tooltip(
+        let slider = w::tooltip(
             vertical_slider(0.0..=1.0, volume, Message::SetVolume)
                 .step(0.01f32)
                 .height(Length::Fixed(120.0)),
-            container(ty::caption(format!("{percent}%")))
-                .padding([2, 8]) // gutter-ok: a tooltip's own padding
-                .style(style::container::popover),
-            tooltip::Position::Left,
-        )
-        .gap(8);
-        let panel = container(
-            column![slider, w::icon_button(icon).on_press(Message::ToggleMute),]
-                .spacing(8)
-                .align_x(Alignment::Center),
-        )
-        .padding(8) // gutter-ok: a component's own padding, not a page gutter
-        .style(style::container::popover);
+            format!("{percent}%"),
+            w::TooltipPosition::Left,
+        );
+        let panel = container(slider)
+            .padding(8) // gutter-ok: a component's own padding, not a page gutter
+            .style(style::container::popover);
         w::Popover::new(icon.view(16.0), panel)
             .fit_content()
+            .align(w::PopoverAlign::Center)
             .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("volume"))
             .into()
     }
