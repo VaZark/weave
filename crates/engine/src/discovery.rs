@@ -51,6 +51,20 @@ impl Library {
         keys.dedup();
         Ok(keys)
     }
+    /// Search category names and their tag names. Unkeyed tags use the display label Custom.
+    /// Returning keys rather than display labels keeps a named `custom` category distinct.
+    pub fn search_tag_categories(&self, query: &str) -> Result<Vec<Option<String>>> {
+        let matching = self.browse_tags(query, None, None)?;
+        Ok(self
+            .tag_categories()?
+            .into_iter()
+            .filter(|category| {
+                contains(category.as_deref().unwrap_or("Custom"), query)
+                    || matching.iter().any(|tag| &tag.key == category)
+            })
+            .collect())
+    }
+
     /// Category filters the tag key, parent limits to direct children; neither changes selection.
     /// An empty parent selects roots. An omitted parent searches all levels.
     pub fn browse_tags(
@@ -87,6 +101,30 @@ impl Library {
             })
             .collect())
     }
+    /// Albums ordered by lifetime track starts. These are not measured listening durations.
+    pub fn most_listened_albums(&self, limit: usize) -> Result<Vec<(AlbumEntry, u64)>> {
+        let plays: std::collections::HashMap<_, _> = self
+            .play_history()?
+            .into_iter()
+            .map(|h| (h.track, u64::from(h.plays)))
+            .collect();
+        let mut albums = Vec::new();
+        for album in self.albums(&FilterSpec::default(), None)? {
+            let total = self
+                .album(&album.id)?
+                .tracks
+                .iter()
+                .map(|t| plays.get(&t.id.0).copied().unwrap_or(0))
+                .sum::<u64>();
+            if total > 0 {
+                albums.push((album, total));
+            }
+        }
+        albums.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
+        albums.truncate(limit);
+        Ok(albums)
+    }
+
     /// Default Rediscover: tracks started before, inactive for 180 days, rating/completion/start ranking.
     /// Callers override the duration or sort using the same serializable filter as saved playlists.
     pub fn rediscover(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
@@ -132,6 +170,38 @@ mod tests {
         .unwrap();
         lib
     }
+    #[test]
+    fn category_search_matches_names_and_child_tags_without_merging_custom_keys() {
+        let mut lib = library();
+        lib.create_tag("genre:latin", None).unwrap();
+        lib.create_tag("genre:sensual", Some("genre:latin"))
+            .unwrap();
+        lib.create_tag("mood:calm", None).unwrap();
+        lib.create_tag("practice", None).unwrap();
+        lib.create_tag("custom:labelled", None).unwrap();
+        assert_eq!(
+            lib.search_tag_categories("SENSUAL").unwrap(),
+            [Some("genre".into())]
+        );
+        assert_eq!(
+            lib.search_tag_categories("MOOD").unwrap(),
+            [Some("mood".into())]
+        );
+        assert_eq!(lib.search_tag_categories("practice").unwrap(), [None]);
+        assert_eq!(
+            lib.search_tag_categories("Custom").unwrap(),
+            [None, Some("custom".into())]
+        );
+        assert!(lib.search_tag_categories("no such tag").unwrap().is_empty());
+        assert_eq!(
+            lib.browse_tags("genre:sensual", Some("genre"), None)
+                .unwrap()[0]
+                .parent
+                .as_deref(),
+            Some("genre:latin")
+        );
+    }
+
     #[test]
     fn all_collection_search_and_tag_browsing_are_shared() {
         let mut lib = library();

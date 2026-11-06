@@ -2,6 +2,7 @@
 
 mod analytics;
 mod autoplay;
+mod collection_order;
 mod discovery;
 mod player;
 
@@ -297,6 +298,47 @@ impl Library {
         self.storage.create_manual_playlist(name, description)
     }
 
+    /// An empty curated playlist with rules for finding tracks to add.
+    pub fn create_manual_playlist_with_filter(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        filter: FilterSpec,
+    ) -> Result<Playlist> {
+        self.storage
+            .create_manual_playlist_with_filter(name, description, &filter)
+    }
+
+    /// Tracks offered by a curated playlist's addition rules; never its saved membership.
+    pub fn playlist_add_candidates(&self, name: &str, page: Page) -> Result<SearchResult> {
+        let playlist = self.storage.playlist(name)?;
+        if playlist.kind != PlaylistKind::Manual {
+            return Err(Error::InvalidInput(
+                "Only manual playlists have curated additions".into(),
+            ));
+        }
+        self.storage.search(&playlist.filter, page)
+    }
+
+    pub fn preview_manual_playlist_filter(
+        &self,
+        name: &str,
+        filter: &FilterSpec,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        self.storage.preview_manual_playlist_filter(name, filter)
+    }
+
+    pub fn update_manual_playlist_filter(
+        &mut self,
+        name: &str,
+        filter: &FilterSpec,
+        expected: &[String],
+        removed: &[String],
+    ) -> Result<Playlist> {
+        self.storage
+            .update_manual_playlist_filter(name, filter, expected, removed)
+    }
+
     pub fn playlist_add(&mut self, name: &str, track_ids: &[String]) -> Result<usize> {
         self.storage.playlist_add(name, track_ids)
     }
@@ -312,6 +354,16 @@ impl Library {
                 .ok_or_else(|| Error::InvalidInput("playlist positions start at 1".into()))
         };
         self.storage.playlist_move(name, index(from)?, index(to)?)
+    }
+
+    /// Persist a draft order for a manual playlist, rejecting stale drafts and membership changes.
+    pub fn playlist_reorder(
+        &mut self,
+        name: &str,
+        expected: &[String],
+        ordered: &[String],
+    ) -> Result<()> {
+        self.storage.playlist_reorder(name, expected, ordered)
     }
 
     pub fn playlists(&self) -> Result<Vec<Playlist>> {
@@ -333,17 +385,10 @@ impl Library {
         Ok((p, result))
     }
 
-    /// Replace a dynamic playlist's whole filter: unlike [`update_playlist`](Self::update_playlist)
-    /// this can remove conditions (a tag, an artist). The description stays. A manual playlist has
-    /// no filter and refuses.
+    /// Replace a playlist's whole filter: unlike [`update_playlist`](Self::update_playlist)
+    /// this can remove conditions (a tag, an artist). The description and curated membership stay.
     pub fn set_playlist_filter(&mut self, name: &str, filter: FilterSpec) -> Result<Playlist> {
         let mut p = self.storage.playlist(name)?;
-        if p.kind == PlaylistKind::Manual {
-            return Err(Error::InvalidInput(format!(
-                "playlist \"{}\" is manual and has no filters; use playlist add/remove",
-                p.name
-            )));
-        }
         p.filter = self
             .storage
             .update_playlist(&p.id, p.description.as_deref(), &filter)?;
@@ -351,7 +396,7 @@ impl Library {
     }
 
     /// Change the specified filters; retain the others. `description`: `None` keeps
-    /// the current one, `Some("")` clears it. Manual playlists only take a description.
+    /// the current one, `Some("")` clears it. Curated membership stays unchanged.
     pub fn update_playlist(
         &mut self,
         name: &str,
@@ -359,12 +404,6 @@ impl Library {
         update: FilterSpec,
     ) -> Result<Playlist> {
         let mut p = self.storage.playlist(name)?;
-        if p.kind == PlaylistKind::Manual && update.clone().normalized() != FilterSpec::default() {
-            return Err(Error::InvalidInput(format!(
-                "playlist \"{}\" is manual and has no filters; use playlist add/remove",
-                p.name
-            )));
-        }
         let merged = p.filter.clone().merged(update).normalized();
         merged.validate()?;
         if let Some(d) = description {
@@ -416,7 +455,7 @@ impl Library {
         self.storage.rename_playlist(name, new_name)
     }
 
-    /// The dynamic playlists that draw on this playlist.
+    /// Playlists whose membership or addition rules draw on this playlist.
     pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
         self.storage.playlist_dependents(name)
     }
@@ -433,16 +472,10 @@ impl Library {
         Ok(dependents)
     }
 
-    /// Make a dynamic playlist draw on the whole library again.
+    /// Remove source restrictions from playlist membership or addition rules.
     pub fn clear_playlist_sources(&mut self, name: &str) -> Result<Playlist> {
         let mut p = self.storage.playlist(name)?;
-        if p.kind == PlaylistKind::Manual {
-            return Err(Error::InvalidInput(format!(
-                "playlist \"{}\" is manual and has no sources",
-                p.name
-            )));
-        }
-        p.filter.sources.clear();
+        p.filter.clear_sources();
         self.storage
             .update_playlist(&p.id, p.description.as_deref(), &p.filter)?;
         Ok(p)
@@ -469,6 +502,92 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_playlist_order_is_atomic_persistent_and_rejects_stale_drafts() {
+        let directory = std::env::temp_dir().join(format!(
+            "weave-order-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let database = directory.join("library.db");
+        let mut library = Library::open(&database).unwrap();
+        let scanned: Vec<_> = ["A", "B", "C", "D"]
+            .into_iter()
+            .map(|name| ScannedTrack {
+                path: format!("/{name}.wav"),
+                metadata: weave_player_core::Metadata {
+                    title: name.into(),
+                    ..Default::default()
+                },
+            })
+            .collect();
+        library.import_scanned(&scanned).unwrap();
+        let ids: Vec<_> = library
+            .search(&Default::default(), Page::ALL)
+            .unwrap()
+            .tracks
+            .into_iter()
+            .map(|t| t.id.0)
+            .collect();
+        let original = ids[..3].to_vec();
+        library.create_manual_playlist("Order", None).unwrap();
+        library.playlist_add("Order", &original).unwrap();
+        let read = |library: &Library| {
+            library
+                .playlist_tracks("Order", Page::ALL)
+                .unwrap()
+                .1
+                .tracks
+                .into_iter()
+                .map(|t| t.id.0)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            library
+                .playlist_reorder(
+                    "Order",
+                    &original,
+                    &[ids[0].clone(), ids[0].clone(), ids[2].clone()]
+                )
+                .is_err()
+        );
+        assert_eq!(read(&library), original);
+        let mut draft = original.clone();
+        draft.rotate_left(1);
+        library
+            .playlist_reorder("Order", &original, &draft)
+            .unwrap();
+        assert_eq!(read(&library), draft);
+        assert!(
+            library
+                .playlist_reorder("Order", &original, &original)
+                .is_err()
+        );
+        assert_eq!(read(&library), draft);
+        library.playlist_add("Order", &ids[3..]).unwrap();
+        assert!(
+            library
+                .playlist_reorder("Order", &draft, &original)
+                .is_err()
+        );
+        let mut saved = draft;
+        saved.push(ids[3].clone());
+        assert_eq!(read(&library), saved);
+        library
+            .create_playlist("Generated", None, Default::default())
+            .unwrap();
+        assert!(library.playlist_reorder("Generated", &[], &[]).is_err());
+        drop(library);
+        let reopened = Library::open(&database).unwrap();
+        assert_eq!(read(&reopened), saved);
+        drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn update_playlist_retains_other_filters() {
@@ -519,9 +638,9 @@ mod tests {
         let stored = lib.playlist("P").unwrap();
         assert_eq!(stored.filter.artist, None);
         assert_eq!(stored.description.as_deref(), Some("about"));
-        // A manual playlist has no filter to replace.
+        // Manual rules can also be replaced without populating membership.
         lib.create_manual_playlist("M", None).unwrap();
-        assert!(lib.set_playlist_filter("M", FilterSpec::default()).is_err());
+        assert!(lib.set_playlist_filter("M", FilterSpec::default()).is_ok());
     }
 
     #[test]
@@ -603,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_playlists_take_a_description_but_no_filters() {
+    fn manual_playlists_take_a_description_and_addition_rules() {
         let mut lib = lib_with(&["a"]);
         lib.create_manual_playlist("Mix", None).unwrap();
         let p = lib
@@ -621,7 +740,101 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(matches!(r, Err(Error::InvalidInput(_))));
+        assert_eq!(r.unwrap().filter.rating_min, Some(4));
+        assert!(
+            lib.playlist_tracks("mix", Page::ALL)
+                .unwrap()
+                .1
+                .tracks
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn curated_addition_rules_never_populate_or_hide_membership_and_reviewed_pruning_is_atomic() {
+        let mut lib = lib_with(&["a", "b", "c"]);
+        let rules = FilterSpec {
+            query: Some("a".into()),
+            ..Default::default()
+        };
+        let p = lib
+            .create_manual_playlist_with_filter("Curated", None, rules.clone())
+            .unwrap();
+        assert_eq!(p.kind, PlaylistKind::Manual);
+        assert_eq!(
+            lib.playlist_add_candidates("Curated", Page::ALL)
+                .unwrap()
+                .tracks
+                .len(),
+            1
+        );
+        assert!(
+            lib.playlist_tracks("Curated", Page::ALL)
+                .unwrap()
+                .1
+                .tracks
+                .is_empty()
+        );
+        // Curation is explicit, and saved addition rules never filter existing membership.
+        let expected = vec!["x-c".to_string(), "x-a".to_string(), "x-b".to_string()];
+        lib.playlist_add("Curated", &expected).unwrap();
+        let read = |lib: &Library| {
+            lib.playlist_tracks("Curated", Page::ALL)
+                .unwrap()
+                .1
+                .tracks
+                .into_iter()
+                .map(|t| t.id.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read(&lib), expected);
+        let (_, removed) = lib
+            .preview_manual_playlist_filter("Curated", &rules)
+            .unwrap();
+        assert_eq!(removed, ["x-c", "x-b"]);
+        assert_eq!(read(&lib), expected, "preview never removes tracks");
+        assert!(
+            lib.update_manual_playlist_filter("Curated", &rules, &expected, &["x-c".into()])
+                .is_err()
+        );
+        assert_eq!(
+            read(&lib),
+            expected,
+            "a stale removal count cannot partially save"
+        );
+        lib.set_playlist_filter("Curated", FilterSpec::default())
+            .unwrap();
+        let proposed = FilterSpec {
+            query: Some("b".into()),
+            ..Default::default()
+        };
+        let (members, removed) = lib
+            .preview_manual_playlist_filter("Curated", &proposed)
+            .unwrap();
+        lib.update_manual_playlist_filter("Curated", &proposed, &members, &removed)
+            .unwrap();
+        assert_eq!(read(&lib), ["x-b"]);
+        assert_eq!(lib.playlist("Curated").unwrap().filter, proposed);
+        assert_eq!(
+            lib.search(&FilterSpec::default(), Page::ALL).unwrap().total,
+            3
+        );
+        // A manual source contributes curated membership, never its addition rules.
+        lib.set_playlist_filter("Curated", rules).unwrap();
+        assert_eq!(
+            lib.search(
+                &FilterSpec {
+                    sources: vec!["Curated".into()],
+                    ..Default::default()
+                },
+                Page::ALL
+            )
+            .unwrap()
+            .tracks[0]
+                .id
+                .0,
+            "x-b"
+        );
     }
 
     #[test]

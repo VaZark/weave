@@ -85,9 +85,11 @@ pub fn source_from_args() -> Source {
         {
             use weave_player_lib::mock::Mock;
             let kind = |v: &str| {
-                (v == "empty")
-                    .then_some(Mock::Empty)
-                    .unwrap_or(Mock::Seeded)
+                if v == "empty" {
+                    Mock::Empty
+                } else {
+                    Mock::Seeded
+                }
             };
             if a == "--mock-db" {
                 // `--mock-db` or `--mock-db empty` (the kind is optional).
@@ -167,6 +169,204 @@ impl Backend {
             #[cfg(feature = "audio")]
             sound: None,
         }
+    }
+
+    pub fn matching(
+        &self,
+        spec: &weave_player_lib::core::FilterSpec,
+    ) -> Result<Vec<usize>, String> {
+        self.engine
+            .search(spec, weave_player_lib::core::Page::ALL)
+            .map(|r| {
+                r.tracks
+                    .into_iter()
+                    .filter_map(|t| self.index.get(&t.id.0).copied())
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    pub fn rediscover(
+        &self,
+        spec: &weave_player_lib::core::FilterSpec,
+    ) -> Result<Vec<usize>, String> {
+        self.engine
+            .rediscover(spec, weave_player_lib::core::Page::ALL)
+            .map(|r| {
+                r.tracks
+                    .into_iter()
+                    .filter_map(|t| self.index.get(&t.id.0).copied())
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    /// Apply engine filter semantics without expanding or reordering the current page's candidates.
+    pub fn filter_indices(
+        &self,
+        candidates: &[usize],
+        filter: &weave_player_lib::core::FilterSpec,
+    ) -> Result<Vec<usize>, String> {
+        let allowed: std::collections::HashSet<_> = self.matching(filter)?.into_iter().collect();
+        Ok(candidates
+            .iter()
+            .copied()
+            .filter(|id| allowed.contains(id))
+            .collect())
+    }
+    pub fn order_indices(
+        &self,
+        ids: &[usize],
+        order: weave_player_lib::core::CollectionOrder,
+        descending: bool,
+    ) -> Result<Vec<usize>, String> {
+        let result = (|| {
+            let tracks = self
+                .slugs_of(ids)
+                .iter()
+                .map(|slug| self.engine.track(slug))
+                .collect::<weave_player_lib::core::Result<Vec<_>>>()?;
+            self.engine
+                .order_tracks_direction(tracks, order, descending)
+        })();
+        result
+            .map(|tracks| {
+                tracks
+                    .into_iter()
+                    .filter_map(|t| self.index.get(&t.id.0).copied())
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    pub fn collection_tracks(
+        &self,
+        query: &str,
+        order: Option<weave_player_lib::core::CollectionOrder>,
+        descending: bool,
+    ) -> Result<Vec<usize>, String> {
+        let result = match order {
+            Some(order) => self
+                .engine
+                .ordered_tracks_direction(query, order, descending),
+            None => self
+                .engine
+                .search(
+                    &weave_player_lib::core::FilterSpec {
+                        query: Some(query.into()),
+                        ..Default::default()
+                    },
+                    weave_player_lib::core::Page::ALL,
+                )
+                .map(|r| r.tracks),
+        };
+        result
+            .map(|tracks| {
+                tracks
+                    .into_iter()
+                    .filter_map(|t| self.index.get(&t.id.0).copied())
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    pub fn artist_names(
+        &self,
+        query: &str,
+        order: Option<weave_player_lib::core::CollectionOrder>,
+        descending: bool,
+    ) -> Result<Vec<String>, String> {
+        let result = match order {
+            Some(order) => self
+                .engine
+                .ordered_artists_direction(query, order, descending),
+            None => self.engine.search_artists(query, &Default::default()),
+        };
+        result
+            .map(|r| r.into_iter().map(|a| a.name).collect())
+            .map_err(|e| e.to_string())
+    }
+    pub fn album_names(
+        &self,
+        query: &str,
+        order: Option<weave_player_lib::core::CollectionOrder>,
+        descending: bool,
+    ) -> Result<Vec<(String, String)>, String> {
+        let result = match order {
+            Some(order) => self
+                .engine
+                .ordered_albums_direction(query, order, descending),
+            None => self.engine.search_albums(query, &Default::default(), None),
+        };
+        result
+            .map(|r| {
+                r.into_iter()
+                    .map(|a| {
+                        (
+                            a.title,
+                            a.artist
+                                .map(|a| a.name)
+                                .unwrap_or_else(|| "Unknown artist".into()),
+                        )
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+    pub fn playlist_names(
+        &self,
+        query: &str,
+        order: Option<weave_player_lib::core::CollectionOrder>,
+        descending: bool,
+    ) -> Result<Vec<String>, String> {
+        let result = match order {
+            Some(order) => self
+                .engine
+                .ordered_playlists_direction(query, order, descending),
+            None => self.engine.search_playlists(query),
+        };
+        result
+            .map(|r| r.into_iter().map(|p| p.name).collect())
+            .map_err(|e| e.to_string())
+    }
+    pub fn analytics(
+        &self,
+        query: &weave_player_lib::core::AnalyticsQuery,
+    ) -> Result<weave_player_lib::core::ListeningAnalytics, String> {
+        self.engine
+            .listening_analytics(query)
+            .map_err(|e| e.to_string())
+    }
+    pub fn top_albums(&self, limit: usize) -> Result<Vec<(String, String, u64)>, String> {
+        self.engine
+            .most_listened_albums(limit)
+            .map(|r| {
+                r.into_iter()
+                    .map(|(a, n)| {
+                        (
+                            a.title,
+                            a.artist
+                                .map(|a| a.name)
+                                .unwrap_or_else(|| "Unknown artist".into()),
+                            n,
+                        )
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tag-browser choices come from the same engine discovery API as the CLI.
+    pub fn tag_categories(&self, query: &str) -> Result<Vec<Option<String>>, String> {
+        self.engine
+            .search_tag_categories(query)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn tag_choices(
+        &self,
+        query: &str,
+        category: Option<&str>,
+    ) -> Result<Vec<weave_player_lib::core::Tag>, String> {
+        self.engine
+            .browse_tags(query, category, None)
+            .map_err(|e| e.to_string())
     }
 
     /// Makes sure the Favourites playlist exists (an empty manual one). Where the name is taken by
@@ -410,6 +610,73 @@ impl Backend {
             .map_err(|e| e.to_string())
     }
 
+    pub fn create_manual_playlist(
+        &mut self,
+        name: &str,
+        filter: &crate::data::Filter,
+    ) -> Result<(), String> {
+        self.engine
+            .create_manual_playlist_with_filter(name, None, filter.to_spec())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn set_playlist_track(
+        &mut self,
+        name: &str,
+        slug: &str,
+        include: bool,
+    ) -> Result<(), String> {
+        let ids = [slug.to_string()];
+        let result = if include {
+            self.engine.playlist_add(name, &ids)
+        } else {
+            self.engine.playlist_remove(name, &ids)
+        };
+        result.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    pub fn playlist_add_candidates(&self, name: &str, query: &str) -> Result<Vec<usize>, String> {
+        let candidates = self
+            .engine
+            .playlist_add_candidates(name, weave_player_lib::core::Page::ALL)
+            .map_err(|e| e.to_string())?
+            .tracks
+            .into_iter()
+            .filter_map(|t| self.index.get(&t.id.0).copied())
+            .collect::<Vec<_>>();
+        self.filter_indices(
+            &candidates,
+            &weave_player_lib::core::FilterSpec {
+                query: Some(query.to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn preview_manual_playlist_filter(
+        &self,
+        name: &str,
+        filter: &crate::data::Filter,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        self.engine
+            .preview_manual_playlist_filter(name, &filter.to_spec())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn update_manual_playlist_filter(
+        &mut self,
+        name: &str,
+        filter: &crate::data::Filter,
+        expected: &[String],
+        removed: &[String],
+    ) -> Result<(), String> {
+        self.engine
+            .update_manual_playlist_filter(name, &filter.to_spec(), expected, removed)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// Replaces a dynamic playlist's filter.
     pub fn set_playlist_filter(
         &mut self,
@@ -422,7 +689,28 @@ impl Backend {
             .map_err(|e| e.to_string())
     }
 
-    /// How many dynamic playlists draw on this one as a source.
+    /// The complete saved order of a curated playlist.
+    pub fn playlist_order(&self, name: &str) -> Result<Vec<String>, String> {
+        let (playlist, found) = self
+            .engine
+            .playlist_tracks(name, weave_player_lib::core::Page::ALL)
+            .map_err(|e| e.to_string())?;
+        if playlist.kind != weave_player_lib::core::PlaylistKind::Manual {
+            return Err("Only manual playlists have an editable track order".into());
+        }
+        Ok(found.tracks.into_iter().map(|t| t.id.0).collect())
+    }
+    pub fn reorder_playlist(
+        &mut self,
+        name: &str,
+        expected: &[String],
+        ordered: &[String],
+    ) -> Result<(), String> {
+        self.engine
+            .playlist_reorder(name, expected, ordered)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn playlist_dependents(&self, name: &str) -> usize {
         self.engine.playlist_dependents(name).map_or(0, |d| d.len())
     }
@@ -495,23 +783,13 @@ impl Backend {
 
 /// Indexes files and folders into the library at `db`, on a handle of its own so the window stays
 /// responsive. Nothing is moved or rewritten; what is already indexed is skipped. Returns the
-/// sentence to tell the user.
-pub fn import(db: &Path, paths: &[PathBuf]) -> Result<String, String> {
+/// structured report, including per-path issues without losing successful imports.
+pub fn import(
+    db: &Path,
+    paths: &[PathBuf],
+) -> Result<weave_player_lib::core::ImportReport, String> {
     let mut engine = Engine::open(db).map_err(|e| e.to_string())?;
-    let (mut added, mut known) = (0, 0);
-    for p in paths {
-        let stats = engine
-            .import(p)
-            .map_err(|e| format!("{}: {e}", p.display()))?;
-        added += stats.added;
-        known += stats.skipped;
-    }
-    Ok(match (added, known) {
-        (0, 0) => "No audio found".to_string(),
-        (0, k) => format!("Already in the library ({k})"),
-        (1, _) => "Imported 1 track".to_string(),
-        (n, _) => format!("Imported {n} tracks"),
-    })
+    engine.import_paths(paths).map_err(|e| e.to_string())
 }
 
 /// A small library to run the UI's tests against: the engine in memory, with deterministic tracks,
@@ -521,6 +799,43 @@ pub mod sample {
     use super::*;
     use weave_player_lib::core::{FilterSpec, Metadata, ScannedTrack};
 
+    pub fn unknown_tracks(b: &mut Backend) {
+        let items = [
+            ("Fixture no album", Some("Fixture Artist"), None),
+            (
+                "Fixture with album",
+                Some("Fixture Artist"),
+                Some("Some Album"),
+            ),
+            ("Fixture no artist", None, Some("Some Album")),
+        ];
+        b.engine
+            .import_scanned(
+                &items
+                    .into_iter()
+                    .map(|(title, artist, album)| ScannedTrack {
+                        path: format!("/{title}"),
+                        metadata: Metadata {
+                            title: title.into(),
+                            artist: artist.map(String::from),
+                            album: album.map(String::from),
+                            ..Default::default()
+                        },
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+    }
+    pub fn disk(path: &Path) -> (Backend, Library) {
+        let mut b = Backend::with(Engine::open(path).unwrap());
+        b.db = Some(path.to_path_buf());
+        b.ensure_favourites();
+        let lib = b.load().unwrap();
+        (b, lib)
+    }
+    pub fn dynamic(b: &mut Backend, name: &str, filter: FilterSpec) {
+        b.engine.create_playlist(name, None, filter).unwrap();
+    }
     /// Adds a manual playlist to the engine behind `b` (the UI's copy is read again with `load`).
     pub fn playlist(b: &mut Backend, name: &str, description: &str) {
         b.engine

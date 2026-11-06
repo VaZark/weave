@@ -712,7 +712,7 @@ fn limit_with_sort_keeps_the_top_matches() {
 }
 
 #[test]
-fn manual_playlists_keep_order_and_reject_filters_semantics() {
+fn manual_playlists_keep_their_curated_order() {
     let mut s = annotated();
     let (a, b, c, d) = (id(&s, "a"), id(&s, "b"), id(&s, "c"), id(&s, "d"));
     let p = s
@@ -1060,4 +1060,74 @@ fn import_window_combines_filters_and_saved_queries_refresh() {
     assert_eq!(s.import_tracks(&[known]).unwrap().added, 0);
     assert_eq!(s.track(&old.id.0).unwrap().added_at, 1);
     assert_eq!(names(&all(&s, &saved.filter)), ["B", "New"]);
+}
+
+#[test]
+fn reviewed_manual_rules_are_atomic_reject_changed_eligibility_and_survive_reopening() {
+    let dir = std::env::temp_dir().join(format!(
+        "weave-curated-rules-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let path = dir.join("library.db");
+    let mut s = Storage::open(&path).unwrap();
+    s.import_tracks(&[scanned("/a", "A", "X", None), scanned("/b", "B", "X", None)])
+        .unwrap();
+    let a = id(&s, "a");
+    let b = id(&s, "b");
+    let playlist = s.create_manual_playlist("Curated", None).unwrap();
+    s.playlist_add("Curated", &[b.clone(), a.clone()]).unwrap();
+    s.set_rating(&a, Some(5)).unwrap();
+    s.set_rating(&b, Some(1)).unwrap();
+    let proposed = FilterSpec {
+        rating_min: Some(4),
+        ..Default::default()
+    };
+    let (members, removed) = s
+        .preview_manual_playlist_filter("Curated", &proposed)
+        .unwrap();
+    assert_eq!(removed.len(), 1);
+    s.set_rating(&b, Some(5)).unwrap();
+    assert!(
+        s.update_manual_playlist_filter("Curated", &proposed, &members, &removed)
+            .is_err()
+    );
+    assert_eq!(s.playlist("Curated").unwrap().filter, FilterSpec::default());
+    assert_eq!(
+        s.manual_playlist_tracks(&playlist.id, Page::ALL)
+            .unwrap()
+            .total,
+        2
+    );
+    let (members, removed) = s
+        .preview_manual_playlist_filter("Curated", &proposed)
+        .unwrap();
+    assert!(removed.is_empty());
+    s.update_manual_playlist_filter("Curated", &proposed, &members, &removed)
+        .unwrap();
+    let proposed = FilterSpec {
+        query: Some("a".into()),
+        ..Default::default()
+    };
+    let (members, removed) = s
+        .preview_manual_playlist_filter("Curated", &proposed)
+        .unwrap();
+    s.update_manual_playlist_filter("Curated", &proposed, &members, &removed)
+        .unwrap();
+    drop(s);
+    let s = Storage::open(&path).unwrap();
+    assert_eq!(s.playlist("Curated").unwrap().filter, proposed);
+    assert_eq!(
+        names(
+            &s.manual_playlist_tracks(&playlist.id, Page::ALL)
+                .unwrap()
+                .tracks
+        ),
+        ["A"]
+    );
+    assert_eq!(
+        s.search(&FilterSpec::default(), Page::ALL).unwrap().total,
+        2
+    );
+    drop(s);
+    std::fs::remove_dir_all(dir).unwrap();
 }

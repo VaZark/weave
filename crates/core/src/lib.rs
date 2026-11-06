@@ -30,7 +30,9 @@ pub use entity::{
     TrackDetail, entity_norm, loose_key,
 };
 pub use error::{Error, Result};
-pub use filter::{FilterSpec, Sort, SortField, TagClause, TagFilter, TagOp};
+pub use filter::{
+    CollectionOrder, FilterJoin, FilterSpec, Sort, SortField, TagClause, TagFilter, TagOp,
+};
 pub use import::{ImportIssue, ImportReport};
 pub use instance::{Instance, default_instance_name, parse_instance_name};
 pub use lyrics::{LyricLine, Lyrics};

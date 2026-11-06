@@ -84,7 +84,7 @@ impl Storage {
         let mut filter = filter.clone().normalized();
         filter.validate()?;
         // A new playlist has no ID yet, so nothing can draw on it: no loop is possible.
-        filter.sources = self.canonical_sources(&filter, None)?;
+        self.canonical_filter_sources(&mut filter, None)?;
         self.insert_playlist(name, description, PlaylistKind::Dynamic, filter)
     }
 
@@ -93,12 +93,20 @@ impl Storage {
         name: &str,
         description: Option<&str>,
     ) -> Result<Playlist> {
-        self.insert_playlist(
-            name,
-            description,
-            PlaylistKind::Manual,
-            FilterSpec::default(),
-        )
+        self.create_manual_playlist_with_filter(name, description, &FilterSpec::default())
+    }
+
+    /// Curated membership with rules used to find tracks eligible to add.
+    pub fn create_manual_playlist_with_filter(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        filter: &FilterSpec,
+    ) -> Result<Playlist> {
+        let mut filter = filter.clone().normalized();
+        filter.validate()?;
+        self.canonical_filter_sources(&mut filter, None)?;
+        self.insert_playlist(name, description, PlaylistKind::Manual, filter)
     }
 
     fn insert_playlist(
@@ -189,7 +197,7 @@ impl Storage {
     ) -> Result<FilterSpec> {
         let mut filter = filter.clone().normalized();
         filter.validate()?;
-        filter.sources = self.canonical_sources(&filter, Some(id))?;
+        self.canonical_filter_sources(&mut filter, Some(id))?;
         self.conn
             .execute(
                 "UPDATE playlists SET description = ?1, filter_spec = ?2 WHERE id = ?3",
@@ -197,6 +205,73 @@ impl Storage {
             )
             .map_err(db_err)?;
         Ok(filter)
+    }
+
+    /// Preview which curated tracks would no longer be eligible under proposed addition rules.
+    pub fn preview_manual_playlist_filter(
+        &self,
+        name: &str,
+        filter: &FilterSpec,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let id = self.require_manual(name)?;
+        let current = self
+            .manual_playlist_tracks(&id, Page::ALL)?
+            .tracks
+            .into_iter()
+            .map(|t| t.id.0)
+            .collect::<Vec<_>>();
+        let eligible = self
+            .search(filter, Page::ALL)?
+            .tracks
+            .into_iter()
+            .map(|t| t.id.0)
+            .collect::<std::collections::HashSet<_>>();
+        let removed = current
+            .iter()
+            .filter(|id| !eligible.contains(*id))
+            .cloned()
+            .collect();
+        Ok((current, removed))
+    }
+
+    /// Save reviewed rules and prune exactly the reviewed tracks in a single transaction.
+    /// Reject a stale review if membership or matching metadata changed in the meantime.
+    pub fn update_manual_playlist_filter(
+        &mut self,
+        name: &str,
+        filter: &FilterSpec,
+        expected: &[String],
+        expected_removed: &[String],
+    ) -> Result<Playlist> {
+        let mut filter = filter.clone().normalized();
+        filter.validate()?;
+        let mut playlist = self.playlist(name)?;
+        self.require_manual(name)?;
+        self.canonical_filter_sources(&mut filter, Some(&playlist.id))?;
+        let tx = self.conn.unchecked_transaction().map_err(db_err)?;
+        let (current, removed) = self.preview_manual_playlist_filter(name, &filter)?;
+        if current != expected || removed != expected_removed {
+            return Err(Error::InvalidInput(
+                "Playlist or matching tracks changed; review the filter changes again".into(),
+            ));
+        }
+        tx.execute(
+            "UPDATE playlists SET filter_spec = ?1 WHERE id = ?2",
+            params![spec_json(&filter)?, playlist.id],
+        )
+        .map_err(db_err)?;
+        for slug in removed {
+            let id = self.resolve_id(&slug)?;
+            tx.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist.id, id],
+            )
+            .map_err(db_err)?;
+        }
+        renumber(&tx, &playlist.id)?;
+        tx.commit().map_err(db_err)?;
+        playlist.filter = filter;
+        Ok(playlist)
     }
 
     /// Change a playlist's name. Its ID (the slug) stays as it was: it is assigned once, and
@@ -231,15 +306,19 @@ impl Storage {
         Ok(p)
     }
 
-    /// The dynamic playlists that draw on this playlist.
+    /// Playlists whose membership or addition rules draw on this playlist.
     pub fn playlist_dependents(&self, name: &str) -> Result<Vec<Dependent>> {
         let p = self.playlist(name)?;
         Ok(self
             .playlists()?
             .into_iter()
-            .filter(|q| q.kind == PlaylistKind::Dynamic && q.filter.sources.contains(&p.id))
+            .filter(|q| q.filter.all_sources().contains(&&p.id))
             .map(|q| Dependent {
-                only_source: q.filter.sources.len() == 1,
+                only_source: q
+                    .filter
+                    .all_sources()
+                    .into_iter()
+                    .all(|source| source == &p.id),
                 playlist: EntityRef {
                     id: q.id,
                     name: q.name,
@@ -268,8 +347,8 @@ impl Storage {
         let mut changes = Vec::new();
         for d in dependents {
             let mut filter = self.playlist(&d.playlist.id)?.filter;
-            filter.sources.retain(|s| s != &p.id);
-            changes.push((d.playlist, spec_json(&filter)?));
+            filter.remove_source(&p.id);
+            changes.push((d.playlist, spec_json(&filter.normalized())?));
         }
         let mut detached = Vec::new();
         let tx = self.conn.transaction().map_err(db_err)?;
@@ -285,6 +364,43 @@ impl Storage {
             .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok(detached)
+    }
+
+    fn canonical_filter_sources(&self, filter: &mut FilterSpec, owner: Option<&str>) -> Result<()> {
+        filter.sources = self.canonical_sources(filter, owner)?;
+        for group in &mut filter.groups {
+            self.canonical_filter_sources(group, owner)?;
+        }
+        Ok(())
+    }
+
+    /// Parameterized predicates shared by direct searches and nested playlist sources.
+    pub(crate) fn filter_terms(
+        &self,
+        filter: &FilterSpec,
+        depth: usize,
+    ) -> Result<(String, Vec<Value>)> {
+        if depth > MAX_SOURCE_DEPTH {
+            return Err(too_deep());
+        }
+        let (mut terms, mut args) = query::conditions(filter);
+        let (sources, values) = self.source_terms(filter, depth)?;
+        terms += &sources;
+        args.extend(values);
+        if !filter.groups.is_empty() {
+            let mut branches = Vec::new();
+            for group in &filter.groups {
+                let (conditions, values) = self.filter_terms(group, depth + 1)?;
+                branches.push(format!("(1=1{conditions})"));
+                args.extend(values);
+            }
+            let join = match filter.group_join {
+                weave_player_core::FilterJoin::And => " AND ",
+                weave_player_core::FilterJoin::Or => " OR ",
+            };
+            terms += &format!(" AND ({})", branches.join(join));
+        }
+        Ok((terms, args))
     }
 
     /// The sources of a filter as playlist IDs. Each must exist, and none may be `owner` or lead
@@ -319,7 +435,7 @@ impl Storage {
             return Err(too_deep());
         }
         let p = self.playlist(from)?;
-        for s in &p.filter.sources {
+        for s in p.filter.all_sources() {
             if s == target || self.draws_on(s, target, depth + 1)? {
                 return Ok(true);
             }
@@ -349,18 +465,13 @@ impl Storage {
             let p = self.playlist(name)?;
             match (p.kind, p.filter.limit) {
                 (PlaylistKind::Manual, _) => {
-                    terms.push(
-                        "m.track_id IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?)"
-                            .into(),
-                    );
+                    terms.push("m.track_id IN (SELECT track_id FROM playlist_tracks WHERE playlist_id = ?)".into());
                     args.push(Value::Text(p.id));
                 }
                 (PlaylistKind::Dynamic, None) => {
-                    let (conditions, own) = query::conditions(&p.filter);
-                    let (nested, more) = self.source_terms(&p.filter, depth + 1)?;
-                    terms.push(format!("(1=1{conditions}{nested})"));
+                    let (conditions, own) = self.filter_terms(&p.filter, depth + 1)?;
+                    terms.push(format!("(1=1{conditions})"));
                     args.extend(own);
-                    args.extend(more);
                 }
                 (PlaylistKind::Dynamic, Some(_)) => {
                     let slugs: Vec<String> = self
@@ -473,7 +584,44 @@ impl Storage {
         tx.commit().map_err(db_err)
     }
 
-    /// A manual playlist's tracks in their play order.
+    /// Commit an entire manual-playlist order atomically, provided its saved order is unchanged.
+    pub fn playlist_reorder(
+        &mut self,
+        playlist: &str,
+        expected: &[String],
+        ordered: &[String],
+    ) -> Result<()> {
+        let playlist_id = self.require_manual(playlist)?;
+        let expected = expected
+            .iter()
+            .map(|id| self.resolve_id(id))
+            .collect::<Result<Vec<_>>>()?;
+        let ordered = ordered
+            .iter()
+            .map(|id| self.resolve_id(id))
+            .collect::<Result<Vec<_>>>()?;
+        let tx = self.conn.transaction().map_err(db_err)?;
+        let current = ordered_track_ids(&tx, &playlist_id)?;
+        if current != expected {
+            return Err(Error::InvalidInput(
+                "The playlist changed while it was being edited. Cancel and reopen edit mode."
+                    .into(),
+            ));
+        }
+        let mut membership = current.clone();
+        let mut proposed = ordered.clone();
+        membership.sort();
+        proposed.sort();
+        if membership != proposed {
+            return Err(Error::InvalidInput(
+                "A new playlist order must contain each current track exactly once".into(),
+            ));
+        }
+        write_order(&tx, &playlist_id, &ordered)?;
+        tx.commit().map_err(db_err)
+    }
+
+    /// A manual playlist's curated tracks in saved order, unaffected by addition rules.
     pub fn manual_playlist_tracks(&self, playlist_id: &str, page: Page) -> Result<SearchResult> {
         let total: i64 = self
             .conn
@@ -495,7 +643,7 @@ impl Storage {
             "SELECT {}{} JOIN playlist_tracks p ON p.track_id = m.track_id
              WHERE p.playlist_id = ? ORDER BY p.play_order LIMIT ? OFFSET ?",
             query::COLUMNS,
-            query::FROM
+            query::FROM,
         );
         let tracks = self.fetch(
             &sql,

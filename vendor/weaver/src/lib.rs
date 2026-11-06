@@ -5,7 +5,8 @@
 //! - Assignments are explicit and flat. The tree only widens queries: a filter for a tag also
 //!   reaches its descendants unless it asks for an exact match (`=genre:bachata`).
 //! - Any number of kinds of things ([`Owner`]s) can carry tags, all sharing one vocabulary.
-//! - [`TagFilter`] (all / any / exclude, plus keyed clauses) compiles to parameterized SQL
+//! - [`TagFilter`] (all / any / exclude, keyed clauses, and flat AND blocks of OR alternatives)
+//!   rejects nested tag blocks and compiles to parameterized SQL
 //!   with [`conditions`], to splice into your own `WHERE`.
 //!
 //! ```

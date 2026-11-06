@@ -1,6 +1,6 @@
 //! Components that are not upstream (yet). [`media_list`] is generic and meant for
 //! iced-adaptive-design; [`tag_badge`] is weave's tag-to-icon-and-colour lookup over its `Chip`.
-//! Everything else that used to live here is upstream now
+//! Generic widgets that used to live here are upstream; MediaHeader remains the app-owned media composition
 //! (`SyncedText`, `VirtualList`, `EditableText`, `DetailHeader`, `HistogramRangeSlider`,
 //! `IconToggleButton`, `Avatar` icons and shapes, `ChipGroup`,
 //! `FlowGrid`, `SectionHeading`, `Badge`, `RoundBadge`, the circular play button, the menus with
@@ -8,3 +8,8 @@
 
 pub mod media_list;
 pub mod tag_badge;
+
+pub mod media_header;
+pub use media_header::MediaHeader;
+
+pub mod tags_input;

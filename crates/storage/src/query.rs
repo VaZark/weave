@@ -77,14 +77,29 @@ pub const ALBUM_TAGS: TagOwner = TagOwner {
 /// The tag conditions of a filter (flat lists and clauses) as ` AND …` terms over
 /// the given kind of owner. Expects a normalized, validated filter.
 pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
-    weaver::conditions(&f.tag_filter(), o.owner, o.outer)
+    let (mut conditions, mut args) = weaver::conditions(&f.tag_filter(), o.owner, o.outer);
+    if !f.groups.is_empty() {
+        let mut branches = Vec::new();
+        for group in &f.groups {
+            let (sql, values) = tag_conditions(group, o);
+            branches.push(format!("(1=1{sql})"));
+            args.extend(values);
+        }
+        let join = match f.group_join {
+            weave_player_core::FilterJoin::And => " AND ",
+            weave_player_core::FilterJoin::Or => " OR ",
+        };
+        conditions += &format!(" AND ({})", branches.join(join));
+    }
+    (conditions, args)
 }
 
 /// The filter's own conditions as ` AND …` terms for `FROM` (the caller supplies ` WHERE 1=1`).
 /// Expects a normalized, validated filter; its playlist sources are added by the storage layer.
 pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
     let mut sql = String::new();
-    let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
+    let (tag_sql, mut args) =
+        weaver::conditions(&f.tag_filter(), TRACK_TAGS.owner, TRACK_TAGS.outer);
     sql += &tag_sql;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

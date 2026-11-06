@@ -285,6 +285,17 @@ impl Library {
             })
             .collect();
         result.loyalty = loyalty.into_values().collect();
+        result.ended_listens = result.loyalty.iter().map(|l| l.ended_listens).sum();
+        let repeats: usize = result
+            .loyalty
+            .iter()
+            .map(|l| l.listens.saturating_sub(1))
+            .sum();
+        result.completion_rate = (result.ended_listens > 0)
+            .then(|| result.completed_listens as f64 / result.ended_listens as f64);
+        result.replay_rate = (result.listens > 0).then(|| repeats as f64 / result.listens as f64);
+        result.repeats_per_day = repeats as f64 / ((until - since) as f64 / DAY as f64);
+
         result.most_replayed_track = result
             .loyalty
             .iter()
@@ -438,6 +449,10 @@ mod tests {
         assert_eq!(result.favorite_artist.as_ref().unwrap().name, "Bob");
         assert_eq!(result.artists.len(), 1);
         assert_eq!(result.artist_other_ms, 500);
+        assert_eq!(result.ended_listens, 3);
+        assert_eq!(result.completion_rate, Some(2.0 / 3.0));
+        assert_eq!(result.replay_rate, Some(1.0 / 3.0));
+        assert!(result.repeats_per_day > 0.0);
         assert_eq!(
             result
                 .daily

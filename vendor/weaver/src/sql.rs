@@ -68,6 +68,21 @@ pub fn conditions(f: &TagFilter, o: &Owner, outer: &str) -> (String, Vec<Value>)
     let mut sql = String::new();
     let mut args: Vec<Value> = Vec::new();
 
+    for block in &f.blocks {
+        let mut alternatives = Vec::new();
+        for group in block {
+            if group.is_empty() {
+                continue;
+            }
+            let (predicate, values) = conditions(group, o, outer);
+            alternatives.push(format!("(1=1{predicate})"));
+            args.extend(values);
+        }
+        if !alternatives.is_empty() {
+            sql += &format!(" AND ({})", alternatives.join(" OR "));
+        }
+    }
+
     // Flat lists: a leading `=` on an entry asks for an exact match.
     for (op, list) in [
         (TagOp::All, &f.all),

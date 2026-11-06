@@ -19,13 +19,6 @@ pub const BAR_H: f32 = 65.0;
 pub const TAB_H: f32 = 56.0;
 pub const MINI_H: f32 = 60.0;
 
-pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-    container(content)
-        .padding(12) // gutter-ok: a component's own padding, not a page gutter
-        .style(style::container::card)
-        .into()
-}
-
 impl App {
     pub fn view(&self) -> Element<'_> {
         let body: Element<'_> = if self.minimal {
@@ -39,9 +32,15 @@ impl App {
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
         let jam_filters = self.jam_filters_showing() && !self.is_narrow();
-        let saving = self.save_name.is_some() && !self.is_narrow();
-        let backdrop = if jam_filters {
+        let saving = self.save_name.is_some() && !self.save_manual && !self.is_narrow();
+        let backdrop = if self.manual_filter_review.is_some() {
+            Some(Message::CancelManualFilterReview)
+        } else if self.import_report.is_some() && !self.is_narrow() {
+            Some(Message::DismissImportReport)
+        } else if jam_filters {
             Some(Message::JamFilters(false))
+        } else if self.playlist_tracks_open && !self.is_narrow() {
+            Some(Message::PlaylistTracksOpen(false))
         } else if saving {
             Some(Message::CancelSaveJam)
         } else {
@@ -69,7 +68,43 @@ impl App {
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
-        if self.save_name.is_some() && !self.is_narrow() {
+        // Rule changes remove curated tracks only after a dialog, at every window width.
+        if let Some(review) = &self.manual_filter_review {
+            return Some(self.manual_filter_confirmation(review));
+        }
+        if self.playlist_tracks_open && !self.is_narrow() {
+            return Some(
+                container(self.playlist_tracks_form())
+                    .padding(20)
+                    .width(Length::Fixed(560.0))
+                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 640.0)))
+                    .style(style::container::popover)
+                    .into(),
+            );
+        }
+        if self.page_filters_open && !self.is_narrow() {
+            return Some(
+                container(self.page_filters_view())
+                    .padding(20)
+                    .width(Length::Fixed(560.0))
+                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 640.0)))
+                    .style(crate::ui_dialogs::filter_surface)
+                    .into(),
+            );
+        }
+        if let Some(report) = &self.import_report
+            && !self.is_narrow()
+        {
+            return Some(
+                container(crate::import_picker::report_view(report))
+                    .padding(20)
+                    .width(Length::Fixed(640.0))
+                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 680.0)))
+                    .style(style::container::popover)
+                    .into(),
+            );
+        }
+        if self.save_name.is_some() && !self.save_manual && !self.is_narrow() {
             return Some(self.save_dialog());
         }
         if self.jam_filters_showing() && !self.is_narrow() {
@@ -121,6 +156,10 @@ impl App {
         match self.dest {
             Dest::Playlist(i) => self.lib.playlists.get(i).map(|p| from_seed(&p.name)),
             Dest::Artist(i) | Dest::Album(i) => Some(from_index(i)),
+            Dest::Tracks => Some(from_seed("All tracks")),
+            Dest::Artists => Some(from_seed("All artists")),
+            Dest::Albums => Some(from_seed("All albums")),
+            Dest::Playlists => Some(from_seed("All playlists")),
             _ => None,
         }
     }
@@ -152,12 +191,17 @@ impl App {
     }
 
     pub fn page_title(&self) -> String {
+        if self.save_manual && self.save_name.is_some() {
+            return "Create playlist".into();
+        }
         if self.jam_open {
             return "Jam".into();
         }
         match self.dest {
             Dest::Home => "Home".into(),
             Dest::Explore => "Explore".into(),
+            Dest::Rediscover => "Rediscover".into(),
+            Dest::AboutMe => "About me".into(),
             Dest::Recent => "Recent tracks".into(),
             Dest::Tracks => "Tracks".into(),
             Dest::Artists => "Artists".into(),
@@ -175,7 +219,9 @@ impl App {
     fn header(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let mut h = self.bar(true, true);
-        if self.history.can_back() {
+        if self.save_manual && self.save_name.is_some() {
+            h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::CancelSaveJam));
+        } else if self.history.can_back() {
             h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::Back));
         }
         h = h.title(self.page_title());
@@ -198,10 +244,17 @@ impl App {
                         .on_toggle(move |_| Message::ToggleJam),
                 );
         }
+        if self.can_search_page() {
+            h = h.pack_end(
+                w::IconToggleButton::new(Icon::Search, self.search_open)
+                    .tooltip("Search this page")
+                    .on_toggle(Message::SearchOpen),
+            );
+        }
         h.into()
     }
 
-    /// The main menu: the density switch, and importing files or a folder.
+    /// The main menu: the density switch and the unified file/folder import action.
     fn main_menu(&self) -> Element<'_> {
         if self.is_narrow() {
             return w::icon_button(Icon::OpenMenu)
@@ -215,6 +268,7 @@ impl App {
     pub fn main_menu_def(&self, wrap: impl Fn(Message) -> Message) -> w::Menu<Message> {
         let compact = self.compact();
         w::Menu::new("Menu")
+            .check_style(w::MenuCheckStyle::Mark)
             .section([w::MenuItem::check(
                 "Compact",
                 compact,
@@ -225,10 +279,16 @@ impl App {
                 })),
             )])
             .section([
-                w::MenuItem::action("Import files…", wrap(Message::Import(true)))
-                    .icon(Icon::Document),
-                w::MenuItem::action("Import folder…", wrap(Message::Import(false)))
-                    .icon(Icon::Folder),
+                w::MenuItem::action(
+                    "Import files…",
+                    wrap(Message::Import(crate::import_picker::Mode::Files)),
+                )
+                .icon(Icon::Document),
+                w::MenuItem::action(
+                    "Import folder…",
+                    wrap(Message::Import(crate::import_picker::Mode::Folder)),
+                )
+                .icon(Icon::Folder),
             ])
     }
 
@@ -249,7 +309,11 @@ impl App {
 
     /// The page area. (There are no library pills: Home and Explore link to every list.)
     fn content(&self) -> Element<'_> {
-        self.page()
+        if self.save_manual && self.save_name.is_some() {
+            self.create_playlist_page()
+        } else {
+            self.page()
+        }
     }
 
     /// The queue opening or closing: the same final layout, only animated. The now-playing bar
@@ -377,13 +441,13 @@ impl App {
                 .into(),
             None => base,
         };
-        // The jam's filters: a full-screen bottom sheet over the page.
+        // The jam filters use a bounded bottom sheet over the page.
         let base = if self.jam_filters_showing() {
             w::Dock::new(base, self.jam_filters_sheet())
                 .scope(w::DockScope::Window)
-                .size(w::DockSize::FullScreen)
+                .size(w::DockSize::Fraction(0.8))
                 .mode(w::DockMode::Overlay)
-                .scrim(false)
+                .on_outside(Message::JamFilters(false))
                 .into()
         } else {
             base
@@ -397,8 +461,18 @@ impl App {
                 .into(),
             None => base,
         };
+        let base = if self.playlist_tracks_open {
+            w::Dock::new(base, container(self.playlist_tracks_form()).padding(20))
+                .scope(w::DockScope::Window)
+                .size(w::DockSize::Fraction(0.8))
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::PlaylistTracksOpen(false))
+                .into()
+        } else {
+            base
+        };
         // Save as playlist: a bottom sheet over everything.
-        let base = if self.save_name.is_some() {
+        let base = if self.save_name.is_some() && !self.save_manual {
             w::Dock::new(base, self.save_sheet())
                 .scope(w::DockScope::Window)
                 .mode(w::DockMode::Overlay)
@@ -408,12 +482,43 @@ impl App {
             base
         };
         // Edit details: a bottom sheet over everything, with the page behind it.
-        match &self.edit {
+        let base = match &self.edit {
             Some(draft) => w::Dock::new(base, self.details_sheet(draft))
                 .scope(w::DockScope::Window)
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelDetails)
                 .into(),
+            None => base,
+        };
+        let base = if self.page_filters_open {
+            w::Dock::new(
+                base,
+                container(self.page_filters_view())
+                    .padding(20)
+                    .height(Length::Fill)
+                    .style(style::container::window),
+            )
+            .scope(w::DockScope::Window)
+            .size(w::DockSize::Fraction(0.8))
+            .mode(w::DockMode::Overlay)
+            .on_outside(Message::PageFilters(false))
+            .into()
+        } else {
+            base
+        };
+        match &self.import_report {
+            Some(report) => w::Dock::new(
+                base,
+                container(crate::import_picker::report_view(report))
+                    .padding(20)
+                    .height(Length::Fill)
+                    .style(style::container::window),
+            )
+            .scope(w::DockScope::Window)
+            .size(w::DockSize::Fraction(0.8))
+            .mode(w::DockMode::Overlay)
+            .on_outside(Message::DismissImportReport)
+            .into(),
             None => base,
         }
     }

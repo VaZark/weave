@@ -56,7 +56,7 @@ impl AnalyticsPeriod {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnalyticsQuery {
     /// Half-open UTC millisecond range. Omitted bounds mean all recorded history through now.
@@ -148,6 +148,10 @@ pub struct ListeningAnalytics {
     pub unique_tracks: usize,
     pub listens: usize,
     pub completed_listens: usize,
+    pub ended_listens: usize,
+    pub completion_rate: Option<f64>,
+    pub replay_rate: Option<f64>,
+    pub repeats_per_day: f64,
     pub favorite_track: Option<ListeningShare>,
     pub favorite_artist: Option<ListeningShare>,
     pub most_listened_track: Option<ListeningShare>,

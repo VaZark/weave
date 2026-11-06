@@ -20,6 +20,7 @@ pub struct Playlist {
     pub name: String,
     pub description: Option<String>,
     pub kind: PlaylistKind,
-    /// Empty for manual playlists.
+    /// Rules for membership (dynamic) or finding eligible additions (manual).
+    /// Manual membership and order are curated independently of these rules.
     pub filter: FilterSpec,
 }

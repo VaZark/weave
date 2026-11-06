@@ -227,3 +227,42 @@ fn a_tag_has_an_icon_and_a_color() {
         Err(Error::NotFound(_))
     ));
 }
+
+#[test]
+fn flat_or_blocks_chain_with_and_and_keep_shared_conditions() {
+    let db = fixture();
+    let tag = |name: &str| TagFilter {
+        all: s(&[name]),
+        ..Default::default()
+    };
+    let filter = TagFilter {
+        blocks: vec![
+            vec![tag("genre:zouk"), tag("genre:bachata")],
+            vec![tag("=genre:bachata"), tag("genre:bachata-traditional")],
+        ],
+        ..Default::default()
+    };
+    assert!(filter.validate().is_ok());
+    assert_eq!(find(&db, filter.clone()), ["B", "T"]);
+    assert_eq!(
+        find(
+            &db,
+            TagFilter {
+                exclude: s(&["=genre:bachata"]),
+                ..filter
+            }
+        ),
+        ["T"]
+    );
+    assert!(
+        TagFilter {
+            blocks: vec![vec![TagFilter {
+                blocks: vec![vec![tag("genre:zouk")]],
+                ..Default::default()
+            }]],
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
+}

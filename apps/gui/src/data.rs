@@ -72,25 +72,7 @@ fn tag_nodes(all: &[weave_player_lib::core::Tag], parent: Option<&str>) -> Vec<T
         .collect()
 }
 
-/// `tag` and everything under it in `tree`.
-fn subtree<'a>(tree: &'a [TreeNode], tag: &str, out: &mut Vec<&'a str>, inside: bool) {
-    for n in tree {
-        let here = inside || n.value.eq_ignore_ascii_case(tag);
-        if here {
-            out.push(&n.value);
-        }
-        subtree(&n.children, tag, out, here);
-    }
-}
-
-/// The filter page's state: tags (each also reaching its descendants), a BPM range, artists and
-/// albums, and a text search.
-///
-/// A track must have every chosen tag, be in the tempo range, have one of the chosen artists (if
-/// any are chosen) and one of the chosen albums (if any are), and match the search. `q`, the
-/// generic search over title, artist and album, is not saved with a dynamic playlist: it only
-/// narrows what is on screen.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Filter {
     pub tags: Vec<String>,
     pub bpm: (f32, f32),
@@ -101,6 +83,15 @@ pub struct Filter {
     /// A substring of the title, artist or album. Not saved.
     pub q: String,
     pub imported_within_days: Option<u32>,
+    /// Full engine definition, including fields this editor does not expose.
+    pub retained: weave_player_lib::core::FilterSpec,
+    pub exclusion_input: String,
+}
+
+impl PartialEq for Filter {
+    fn eq(&self, other: &Self) -> bool {
+        self.q == other.q && self.to_spec() == other.to_spec()
+    }
 }
 
 pub const BPM: (f32, f32) = (60.0, 180.0);
@@ -117,27 +108,44 @@ impl Default for Filter {
             albums: Vec::new(),
             q: String::new(),
             imported_within_days: None,
+            retained: Default::default(),
+            exclusion_input: String::new(),
         }
     }
 }
 
-/// Whether `needle` (trimmed, case-insensitive) is in `hay`; an empty needle matches anything.
-fn contains_ci(hay: &str, needle: &str) -> bool {
-    let n = needle.trim();
-    n.is_empty() || hay.to_lowercase().contains(&n.to_lowercase())
+fn exclusion_text(tags: &[String]) -> String {
+    tags.iter()
+        .map(|tag| tag.replace('\\', "\\\\").replace(',', "\\,"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
-
-/// Whether one of `wanted` names `value` exactly (case-insensitive); [`UNKNOWN`] names a missing
-/// value. Nothing wanted accepts anything.
-fn one_of(wanted: &[String], value: &str, known: bool) -> bool {
-    wanted.is_empty()
-        || wanted.iter().any(|w| {
-            if w == UNKNOWN {
-                !known
-            } else {
-                known && w.trim().to_lowercase() == value.trim().to_lowercase()
+fn parse_exclusions(text: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut tag = String::new();
+    let mut escaped = false;
+    for character in text.chars() {
+        if escaped {
+            tag.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == ',' {
+            if !tag.trim().is_empty() {
+                tags.push(tag.trim().to_string());
             }
-        })
+            tag.clear();
+        } else {
+            tag.push(character);
+        }
+    }
+    if escaped {
+        tag.push('\\');
+    }
+    if !tag.trim().is_empty() {
+        tags.push(tag.trim().to_string());
+    }
+    tags
 }
 
 impl Filter {
@@ -153,11 +161,30 @@ impl Filter {
     /// The conditions the Tag filters edit: tags, tempo, artists and albums. These are the ones a
     /// dynamic playlist keeps.
     pub fn tag_count(&self) -> usize {
-        self.tags.len()
-            + usize::from(self.bpm != BPM)
+        self.retained.tag_blocks.iter().map(Vec::len).sum::<usize>()
+            + self.tags.len()
+            + usize::from(
+                self.bpm != BPM
+                    || self.retained.bpm_min.is_some()
+                    || self.retained.bpm_max.is_some(),
+            )
             + self.artists.len()
             + self.albums.len()
             + usize::from(self.imported_within_days.is_some())
+            + usize::from(!self.exclusion_input.trim().is_empty())
+            + usize::from(
+                !self.retained.sources.is_empty()
+                    || self.retained.query.is_some()
+                    || self.retained.rating_min.is_some()
+                    || self.retained.rating_max.is_some()
+                    || self.retained.year_min.is_some()
+                    || self.retained.year_max.is_some()
+                    || self.retained.has_played.is_some()
+                    || self.retained.not_played_for_days.is_some()
+                    || self.retained.limit.is_some()
+                    || !self.retained.tag_any.is_empty()
+                    || !self.retained.tag_clauses.is_empty(),
+            )
     }
 
     /// The conditions the search bar edits: the generic search.
@@ -170,57 +197,48 @@ impl Filter {
         self.tag_count() > 0
     }
 
-    pub fn matches(&self, t: &Track, tree: &[TreeNode]) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        if (weave_player_lib::core::FilterSpec {
-            imported_within_days: self.imported_within_days,
-            ..Default::default()
-        })
-        .import_cutoff(now)
-        .is_some_and(|cutoff| t.added_at < cutoff)
-        {
-            return false;
-        }
-        if self.bpm != BPM && (t.bpm < self.bpm.0 || t.bpm > self.bpm.1) {
-            return false;
-        }
-        if !one_of(&self.artists, &t.artist, t.artist_known)
-            || !one_of(&self.albums, &t.album, !t.album.is_empty())
-        {
-            return false;
-        }
-        if !self.q.trim().is_empty()
-            && !(contains_ci(&t.title, &self.q)
-                || contains_ci(&t.artist, &self.q)
-                || contains_ci(&t.album, &self.q))
-        {
-            return false;
-        }
-        self.tags.iter().all(|want| {
-            let mut covered = Vec::new();
-            subtree(tree, want, &mut covered, false);
-            t.tags
-                .iter()
-                .any(|have| covered.iter().any(|c| c.eq_ignore_ascii_case(have)))
-        })
-    }
-
     /// What a dynamic playlist stores of this filter: tags, tempo, artists and albums. The
     /// generic search `q` is left out.
     pub fn to_spec(&self) -> weave_player_lib::core::FilterSpec {
-        weave_player_lib::core::FilterSpec {
-            tag_all: self.tags.clone(),
-            bpm_min: (self.bpm != BPM).then_some(f64::from(self.bpm.0)),
-            bpm_max: (self.bpm != BPM).then_some(f64::from(self.bpm.1)),
-            artist_any: self.artists.clone(),
-            album_any: self.albums.clone(),
-            imported_within_days: self.imported_within_days,
-            ..Default::default()
+        let mut spec = self.retained.clone();
+        spec.tag_all = self.tags.clone();
+        let original_bpm = (
+            spec.bpm_min.map_or(BPM.0, |v| v as f32),
+            spec.bpm_max.map_or(BPM.1, |v| v as f32),
+        );
+        if self.bpm != original_bpm {
+            spec.bpm_min = (self.bpm != BPM).then_some(f64::from(self.bpm.0));
+            spec.bpm_max = (self.bpm != BPM).then_some(f64::from(self.bpm.1));
         }
-        .normalized()
+        spec.artist_any = self.artists.clone();
+        spec.album_any = self.albums.clone();
+        spec.imported_within_days = self.imported_within_days;
+        spec.tag_exclude = parse_exclusions(&self.exclusion_input);
+        spec.normalized()
+    }
+
+    /// An explicit slider/preset change replaces the original open-ended BPM shape.
+    pub fn set_bpm(&mut self, range: (f32, f32)) {
+        self.retained.bpm_min = None;
+        self.retained.bpm_max = None;
+        self.bpm = range;
+    }
+    pub fn bpm_label(&self) -> String {
+        let spec = self.to_spec();
+        match (spec.bpm_min, spec.bpm_max) {
+            (None, None) => "any".into(),
+            (Some(lo), None) => format!("{lo:.0}+ BPM"),
+            (None, Some(hi)) => format!("up to {hi:.0} BPM"),
+            (Some(lo), Some(hi)) => format!("{lo:.0}–{hi:.0} BPM"),
+        }
+    }
+
+    pub fn search_spec(&self) -> weave_player_lib::core::FilterSpec {
+        let mut spec = self.to_spec();
+        if !self.q.trim().is_empty() {
+            spec.query = Some(self.q.clone());
+        }
+        spec
     }
 
     /// The filter a stored dynamic playlist describes (everything but `q`).
@@ -235,6 +253,8 @@ impl Filter {
             albums: spec.album_any.clone(),
             q: String::new(),
             imported_within_days: spec.imported_within_days,
+            retained: spec.clone(),
+            exclusion_input: exclusion_text(&spec.tag_exclude),
         }
     }
 }
@@ -245,7 +265,8 @@ pub struct Playlist {
     /// An icon key (as for tags); a playlist without one is drawn as an avatar of its name.
     pub icon: Option<&'static str>,
     pub description: String,
-    /// A dynamic playlist is a filter; a manual one an ordered list.
+    pub manual: bool,
+    /// Dynamic membership rules or manual-playlist addition rules.
     pub filter: Option<Filter>,
     pub tracks: Vec<usize>,
     /// Play it shuffled (`Some(true)`), in order (`Some(false)`), or as the player says (`None`).
@@ -406,11 +427,13 @@ impl Library {
                 .iter()
                 .filter_map(|t| index.get(t.id.0.as_str()).copied())
                 .collect();
-            let filter = (p.kind == PlaylistKind::Dynamic).then(|| Filter::from_spec(&p.filter));
+            let filter = (p.kind == PlaylistKind::Dynamic || p.filter != FilterSpec::default())
+                .then(|| Filter::from_spec(&p.filter));
             playlists.push(Playlist {
                 name: p.name.clone(),
                 icon: None,
                 description: p.description.clone().unwrap_or_default(),
+                manual: p.kind == PlaylistKind::Manual,
                 filter,
                 tracks,
                 shuffle: pref_of(EntityKind::Playlist, &p.id),
@@ -670,39 +693,11 @@ impl Library {
         out
     }
 
-    /// How many tracks fall in each of `bins` even slices of `BPM`, among those that match the
-    /// filter's tags (its own BPM range is ignored, so the whole distribution stays visible).
-    pub fn bpm_histogram(&self, f: &Filter, bins: usize) -> Vec<usize> {
-        // The tempo is what is being binned, so it is not applied; everything else is.
-        let only_tags = Filter {
-            bpm: BPM,
-            ..f.clone()
-        };
-        let width = (BPM.1 - BPM.0) / bins as f32;
-        let mut out = vec![0; bins];
-        for t in self.filtered(&only_tags) {
-            let i = (((t.bpm - BPM.0) / width) as usize).min(bins - 1);
-            out[i] += 1;
-        }
-        out
-    }
-
-    pub fn filtered(&self, f: &Filter) -> Vec<&Track> {
-        self.tracks
-            .iter()
-            .filter(|t| f.matches(t, &self.tags))
-            .collect()
-    }
-
     pub fn playlist_tracks(&self, p: &Playlist) -> Vec<&Track> {
-        match &p.filter {
-            Some(f) => self.filtered(f),
-            None => p
-                .tracks
-                .iter()
-                .filter_map(|i| self.tracks.get(*i))
-                .collect(),
-        }
+        p.tracks
+            .iter()
+            .filter_map(|i| self.tracks.get(*i))
+            .collect()
     }
 
     /// The artists a filter can pick, most tracks first, and how many tracks have none.

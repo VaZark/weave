@@ -377,6 +377,19 @@ impl Storage {
         .map_err(db_err)
     }
 
+    /// Primary tracks linked to this exact artist entity, including tracks without an album.
+    pub fn artist_tracks(&self, key: &str) -> Result<Vec<weave_player_core::Track>> {
+        let id = self.resolve_artist(key)?;
+        self.fetch(
+            &format!(
+                "SELECT {}{} WHERE t.artist_id = ? ORDER BY m.title_norm, t.slug",
+                query::COLUMNS,
+                query::FROM
+            ),
+            vec![Value::Text(id)],
+        )
+    }
+
     pub fn artist(&self, key: &str) -> Result<ArtistProfile> {
         let id = self.resolve_artist(key)?;
         let (slug, name): (String, String) = self

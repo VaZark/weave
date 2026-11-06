@@ -50,3 +50,161 @@ Our own widgets live in `apps/gui/src/components`, with their headless logic in 
 ## Developing against a local iced-adaptive-design
 
 The GUI pins a revision of iced-adaptive-design. To build against a sibling checkout that is ahead of it, create `.cargo/config.toml` (ignored by git) with a `[patch."https://github.com/VaZark/iced-libadwaita"]` entry pointing at `../iced-libadwaita`. The tempo picker is iad's `ComposedComponent` (a `BarChart::histogram` over a `range_slider`), so it needs a revision with the composed component.
+
+Tag pickers initially show at most three complete lines; artist and album pickers
+show at most two. A downward chevron after the last chip on the final clamped line expands the picker;
+an upward chevron after the expanded chips restores the limit. Each picker expands independently. A chevron appears only if the actual wrapped
+content exceeds the limit, including after a search or window resize. Searching
+and expanding never change selected values. Reopening a filter or track-tag editor
+starts collapsed. Track-tag choices scroll inside the dialog so Save/Cancel remain
+accessible when expanded. `App::chip_line_limit` configures tag pickers;
+`App::name_chip_line_limit` configures artists and albums.
+
+For reproducible software-rendered review images, run
+`WEAVE_CHIP_REVIEW_DIR=/tmp/weave-chip-review cargo test -p weave-player-gui --no-default-features render_chip_filters`.
+This covers wide/narrow, collapsed/expanded, a short search result, and the track-tag
+dialog; toolkit tests additionally click expansion controls and hidden/visible chips.
+
+The tag icon inside the search entry switches between all tags and category browsing.
+Category chips are never line-clamped. Select a named key to show its tags (including
+nested tags), or **Custom** for unkeyed tags. **Categories** returns to the category
+list; the tag icon returns to all tags. Search is available in every mode, matches
+full tag names, and finds categories through their matching child tags. A child-tag
+query stays active on entering a category; a category-only search clears when it
+would otherwise hide all its children. Navigating
+never changes selections in live filters, saved-filter drafts, or track-tag editors.
+The same engine discovery APIs supply every picker.
+
+For manual review, the development start states `WEAVE_GUI_START=tag-categories`,
+`tag-genre` and `tag-custom` open the corresponding Jam filter views. Automated
+behavior tests run with
+`cargo test -p weave-player-gui -p weave-player-engine --no-default-features -- --skip render_chip_filters`;
+visual review is performed by the user.
+
+The main menu's **Import files…** and **Import folder…** actions open the system
+chooser directly. Files mode imports the selected files; folder mode recursively
+imports the confirmed folder. The empty-library button opens the folder chooser.
+Cancellation imports nothing. There is no in-app import browser or confirmation
+page. Importing runs off the UI thread; partial successes reload the library and
+show per-path issues, and clean imports show a summary. System file/folder modes
+were chosen during user review because the portal cannot return the currently
+browsed folder when no file is selected.
+
+All collection pages use search from the window header. Artist and album collections use the
+Recent playlist layout (image beside name), with a flat surface, in a responsive grid on wide layouts
+and full-width list rows on narrow layouts. Artist and album entries omit track counts;
+Home and artist-detail album groups use the same presentation. Explore sections are
+collapsible and retain their open state while navigating. Library links come first,
+followed by one Explore section containing About me and Rediscover, then
+most listened tracks/albums/artists. The
+sample Usage widget is removed. Rediscover's filter dialog edits inactivity days,
+ranking, ratings and the same tag/artist/album/tempo/exclusion controls as search.
+
+About me shows measured listening overview metrics, rolling day/week/month/year
+or custom UTC calendar ranges, and shared filter controls. It has no play/save
+controls. Empty history stays empty. Statistics load on a worker and update while
+open; charts remain deferred. Playlist editing retains fields not exposed by the
+GUI, and membership/order come from the engine rather than a partial GUI projection.
+
+The toolkit supplies a neutral ProfileHeader with image/name/description and optional
+after-name, top-right and controls slots. Weave owns its media controls composition;
+the full old composition remains a gallery example rather than a toolkit export.
+
+Exclusion entries accept comma-separated tag names; escape a comma or backslash
+inside a tag name with a backslash. Loaded definitions are encoded and decoded
+without losing those characters. Selecting Any in the BPM presets explicitly clears
+stored open-ended bounds; leaving the BPM control unchanged preserves exact bounds.
+
+Artist pages use the same collapsible section dividers as Explore for Popular albums,
+Latest albums and All tracks. Sections start expanded and remember their state per
+artist while the application is running.
+
+The bottom player places the favourite button immediately after the track information.
+On wide layouts the progress scrubber sits beside previous/play/next controls and
+has a minimum width of 200 px, including its time labels. Playback controls and
+scrubber form a centered group, with equal space for metadata and actions on either side.
+Fullscreen and Now Playing toggle icons are removed; clicking the track information
+still opens Now Playing, and the fullscreen keyboard shortcut remains available.
+The narrow mini-player places its progress indicator below the track and controls.
+
+All tracks/artists/albums/playlists use the detail-page header and background wash.
+Play is always at the far left, with secondary actions grouped on the right in both
+layouts. Sort offers: Recent, Release date,
+Added date or Rating. Home's recent collections share the engine's Recent order
+(latest played, with latest import fallback). Collections use member tracks for
+release/import/rating sorts; ratings average only rated members and unknowns sort
+last. Each All page remembers its sort during the session. Detail-page sorting is
+temporary and preserves saved playlist order. Jam's sort precedes its icon-only
+Save as playlist action and stays separate from the saved query. Sort-icon choices
+are ephemeral playback rules, held only in GUI session state. They order the current
+matches after saved limits, without rewriting playlist membership, saved order or
+filters. Starting sorted playback follows that rule instead of random shuffle;
+choosing Shuffle afterward clears the temporary sort. Existing saved shuffle
+preferences remain intact; All tracks also exposes the player shuffle toggle.
+
+Search is opened by the window-header icon on collection, detail and Jam pages.
+While active, a toolkit search bar replaces the page's media header inline, following
+the gallery's header/search swap pattern. There is no search dialog or bottom sheet.
+Typing narrows only the current page's existing data. Playlist search composes
+FilterSpec.sources with the query; other pages use engine filtering over their
+current candidate IDs. Jam filters, source membership, saved limits and ordering
+remain intact. Closing search or pressing Escape clears its transient text and
+restores the header and complete current collection. Filter pickers retain their
+own tag/name lookup.
+
+Narrow menus always use bottom sheets, including sort and sleep timer. Desktop
+menus remain anchored dropdowns. Filter and import-result sheets are bounded to
+80% of the window height, leaving the page visible behind a dismissible scrim.
+Weave does not use full-page menu or drawer presentations.
+
+Boolean and radio menu choices use checkmarks for selection, without On/Off state
+text, consistently in desktop dropdowns and narrow bottom sheets.
+
+Selecting the active sort again cycles descending, ascending, then deselected.
+The selected option shows its direction; deselection restores the collection's
+normal order. Unknown dates/ratings stay last in either direction. The tag-filter
+Clear action uses a reset-arrow icon rather than a trash can.
+
+Unavailable icon actions use the theme's disabled opacity, including playback,
+queue clear, filter reset and Jam save. Disabled buttons remain non-interactive.
+
+Filter actions use the toolkit Indicator to overlay a tiny accent dot on the icon's
+top-right corner when active, without a numeric badge or extra layout width. Sorting
+retains its descending/ascending/deselected cycle. Manual playlists have an icon-only
+order editor: pencil enters edit mode, checkmark saves, cross cancels, and every
+control has a tooltip. Rows have drag handles plus up/down actions. The draft is
+separate from playback and is saved atomically; stale drafts are rejected rather
+than overwriting concurrent changes. Saved-filter playlists keep engine-generated
+membership and cannot enter this manual-order editor.
+
+Jam keeps its match count immediately after Play. The empty-filter hint uses the
+same text size and reserved line height as a medium chip, so the first chip does
+not move the surrounding header. Artist/album filter choices retain their positions
+when selected instead of moving to the front.
+
+All playlists has a + action immediately before Sort for creating an empty manual
+playlist. Creation is a full-screen page in both layouts, reusing the playlist
+filter editor, name form and validation, then opening the shared playlist detail page. Manual playlists add a searchable library-track picker
+(dialog wide, bounded bottom sheet narrow), with +/trash membership actions, and
+Remove from playlist in each track's regular menu. Changes persist immediately and
+leave library tracks and playback intact. Reordering retains its separate cancellable
+draft; membership editing is unavailable during that draft. Dynamic playlists retain
+filter-based membership and their existing actions.
+
+Manual playlist creation saves optional addition rules and starts with no tracks.
+These rules use the same tag, artist, album, tempo and exclusion semantics as dynamic
+playlists, but constrain only the tracks offered by Add tracks. They never silently
+populate the playlist, hide existing curated tracks or change their saved order.
+Manual/dynamic kind is explicit in the GUI snapshot, independent of whether rules
+are present. Edit filter remains available alongside ordinary curation controls.
+
+Saving changed manual rules previews the curated tracks disqualified by the new
+rules. If any would be removed, a confirmation dialog shows their exact count on
+both desktop and narrow layouts (never a bottom sheet). Cancel returns to editing
+without saving rules or membership. Confirm atomically saves the rules and removes
+those playlist memberships, retaining the library tracks and playback. Concurrent
+membership or eligibility changes invalidate the review and require a fresh preview.
+
+Removing a selected tag also opens this confirmation when the affected count is
+zero. Relaxing an AND rule can disqualify no tracks; the dialog reports zero rather
+than implying that removing a tag necessarily removes members.
