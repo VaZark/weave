@@ -19,3 +19,6 @@ pub mod collection;
 pub mod collection_flow;
 
 pub mod disc_artwork;
+
+pub mod filter_editor;
+pub mod responsive_dialog;

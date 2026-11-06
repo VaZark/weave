@@ -26,8 +26,16 @@ impl App {
             .layout(Layout::Wide, || self.wide())
             .into();
         let framed = self.chrome(true, true).frame(body, Message::Window);
+        let editor = self
+            .active_filter_context()
+            .map(|context| (self.filter_editor(context), self.filter_close(context)));
+        let framed = crate::components::responsive_dialog::present(
+            framed,
+            editor,
+            self.is_narrow(),
+            iced::Size::new(self.win_w, self.win_h),
+        );
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
-        let jam_filters = self.jam_filters_showing() && !self.is_narrow();
         let saving = self.save_name.is_some() && !self.save_manual && !self.is_narrow();
         let backdrop = if self.manual_filter_review.is_some() {
             Some(Message::CancelManualFilterReview)
@@ -35,8 +43,6 @@ impl App {
             Some(Message::Themes(false))
         } else if self.import_report.is_some() && !self.is_narrow() {
             Some(Message::DismissImportReport)
-        } else if jam_filters {
-            Some(Message::JamFilters(false))
         } else if self.playlist_tracks_open && !self.is_narrow() {
             Some(Message::PlaylistTracksOpen(false))
         } else if saving {
@@ -57,12 +63,7 @@ impl App {
     /// Whether a dialog (not a sheet) is showing: for the tests.
     #[cfg(test)]
     pub fn dialog_open_for_test(&self) -> bool {
-        self.dialog().is_some()
-    }
-
-    /// Whether the jam's filters are open (a dialog wide, a sheet narrow).
-    fn jam_filters_showing(&self) -> bool {
-        self.jam_open && self.jam_filters_open
+        self.dialog().is_some() || self.active_filter_context().is_some() && !self.is_narrow()
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
@@ -90,16 +91,6 @@ impl App {
                     .into(),
             );
         }
-        if self.page_filters_open && !self.is_narrow() {
-            return Some(
-                container(self.page_filters_view())
-                    .padding(20)
-                    .width(Length::Fixed(560.0))
-                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 640.0)))
-                    .style(crate::ui_dialogs::filter_surface)
-                    .into(),
-            );
-        }
         if let Some(report) = &self.import_report
             && !self.is_narrow()
         {
@@ -115,18 +106,14 @@ impl App {
         if self.save_name.is_some() && !self.save_manual && !self.is_narrow() {
             return Some(self.save_dialog());
         }
-        if self.jam_filters_showing() && !self.is_narrow() {
-            return Some(self.jam_filters_dialog());
-        }
         if !self.is_narrow()
             && let Some(name) = &self.delete_playlist
         {
             return Some(self.delete_playlist_dialog(name));
         }
-        self.draft
+        self.edit_track
             .as_ref()
-            .map(|f| self.filter_dialog(f))
-            .or_else(|| self.edit_track.as_ref().map(|e| self.track_dialog(e)))
+            .map(|e| self.track_dialog(e))
             .or_else(|| self.rate_track.map(|id| self.rate_dialog(id)))
             .or_else(|| self.info_track.map(|id| self.info_dialog(id)))
             // On narrow, Edit details is a bottom sheet (see `narrow`), not a dialog.
@@ -450,17 +437,6 @@ impl App {
                 .into(),
             None => base,
         };
-        // The jam filters use a bounded bottom sheet over the page.
-        let base = if self.jam_filters_showing() {
-            w::Dock::new(base, self.jam_filters_sheet())
-                .scope(w::DockScope::Window)
-                .size(w::DockSize::Fraction(0.8))
-                .mode(w::DockMode::Overlay)
-                .on_outside(Message::JamFilters(false))
-                .into()
-        } else {
-            base
-        };
         // Delete playlist: a bottom sheet over everything.
         let base = match &self.delete_playlist {
             Some(name) => w::Dock::new(base, self.delete_playlist_sheet(name))
@@ -498,22 +474,6 @@ impl App {
                 .on_outside(Message::CancelDetails)
                 .into(),
             None => base,
-        };
-        let base = if self.page_filters_open {
-            w::Dock::new(
-                base,
-                container(self.page_filters_view())
-                    .padding(20)
-                    .height(Length::Fill)
-                    .style(style::container::window),
-            )
-            .scope(w::DockScope::Window)
-            .size(w::DockSize::Fraction(0.8))
-            .mode(w::DockMode::Overlay)
-            .on_outside(Message::PageFilters(false))
-            .into()
-        } else {
-            base
         };
         let base = if self.themes_open {
             let shade = iced::widget::mouse_area(

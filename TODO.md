@@ -1,444 +1,529 @@
-# Feature matrix
+# Weave: Current Implementation Audit and Roadmap Reconciliation
 
-CLI and engine work is implemented together. Non-chart GUI changes are implemented **as one batch**;
-visual review belongs to the user. “Implemented; user visual review” means code exists but has not had
-interactive verification. Rendering stays immediately before charts.
+The existing development roadmap is a historical record of requirements, not necessarily the current state of the application.
 
-| Feature | CLI | GUI | Engine/library |
-| --- | --- | --- | --- |
-| tag DSl | Pending | pending | pnending |
-| Timestamped playback events, pauses/seeks/restarts | Done (`stats --events`) | — | Done |
-| About me time ranges and exclusion filters | Done | Implemented; user visual review | Done |
-| Listening overview and favorites/replay metrics | Done | Implemented; user visual review | Done |
-| Window clipping and gradient overflow | — | Deferred until before charts | Toolkit task |
-| Activity chart data, UTC buckets | Done | Chart pending | Done |
-| Genre hierarchy/sunburst data | Done | Chart pending | Done |
-| Artist listening share, top N + Other | Done | Chart pending | Done |
-| Listening sessions/bubble chart data | Done | Chart pending | Done |
-| Completion, replay and repeat frequency | Done | Chart pending | Done |
+The local working tree contains newer implementations and refinements that may supersede parts of the roadmap.
 
-The GUI now retains full saved FilterSpec definitions and reads evaluated playlist
-membership from the engine. Non-chart GUI changes are implemented as one batch;
-compilation and behavior checks follow implementation. Visual review belongs to the
-user. Charts and the rendering investigation scheduled immediately before charts
-remain deferred.
+**Treat the current local code as the best-known implementation state. Do not assume the roadmap is authoritative when it conflicts with implemented behavior.**
 
-The detailed requirements below remain the acceptance criteria. Backend completion does
-not imply GUI completion. No historical listening time is inferred from old start counts.
+## Objectives
 
-Backend verification:
+1. Inspect the current working tree, including uncommitted changes.
+2. Understand the architecture, existing components, and implemented functionality.
+3. Evaluate the roadmap against the current code.
+4. Identify requirements that have already been implemented, refined, superseded, or made obsolete.
+5. Identify duplicate functionality, unnecessary abstractions, and opportunities for simplification.
+6. Recommend what to keep, modify, consolidate, remove, or implement.
 
-- Workspace tests pass with default features, excluding the two existing hardware audio tests
-  (`--skip tests::audio::`); audio-device initialization is unavailable in this sandbox.
-- The complete workspace also passed without default features. Playback accounting is tested
-  against fake audio output, including pause, seek, completion, failed starts and restarts.
-- CLI smoke tests passed on a temporary library, including partial imports and saved queries.
-- CLI/engine Clippy passes with warnings denied. Workspace Clippy now passes with warnings denied after the GUI batch.
-- Additive measured-history tables preserve existing libraries; old starts are not backfilled.
+## Rules
 
-Tag filter page
+1. Do not compare Git branches or use remote Git history as the basis of this review.
+2. Do not assume uncommitted or unpushed changes are incomplete.
+3. Do not modify code during this audit.
+4. Do not automatically implement roadmap requirements.
+5. Preserve newer design refinements when they supersede older requirements.
+6. Do not propose architectural rewrites unless a concrete problem justifies them.
+7. Keep music-specific logic in Weave and reusable UI abstractions in `iced-libadwaita`.
+8. Distinguish verified implementation facts from assumptions and recommendations.
+9. Reference relevant source files and symbols when explaining findings.
 
-weave-player search --or-group --tag-any genre:zouk,genre:bachata --tag-all mood:romantic --or-group --tag-all lang:tamil,tag:romantic,90s --bpm-max 90
+## Evaluation process
 
-Push the changes to vendored/weaver as it's original tag manager. no complex and nested query mgmt yet.
+For each feature in the roadmap:
 
-The tag filter in the dialog needs a + beside the tag icon for each group. on clicking it, the current selection will be grouped and show up on the input bar with a comma after it. (ChipInput  - mantine).
+1. **Roadmap intent:** What problem was the original requirement trying to solve?
+2. **Current implementation:** What actually exists in the working tree?
+3. **Later refinements:** Has the implementation evolved beyond the original requirement?
+4. **Gaps:** What remains missing or broken?
+5. **Recommendation:**
+   - Keep as implemented.
+   - Refine the existing implementation.
+   - Consolidate with existing functionality.
+   - Remove obsolete requirements or code.
+   - Implement missing functionality.
+   - Defer until needed.
+6. **Impact:** Which Weave or toolkit modules would be affected?
+7. **Dependencies:** Does this change require another feature or fix first? Does it require updating upstream features?
 
-we can't have Show "> Categories custom" when we select a category. Just a < would be enough but put it at the start of the line just show more collapse chevron at the end of the line. Check if both chevreons are properly styled. hte eery increasing shading is out place.
+## Output
 
-Drop Recently imported and exclude tags; can we style the input to better fit with the app. The bg and shadows need some work too - that grey looks out of place. Also do something about the damn fat scrollbar
+Start with a concise feature inventory and implementation status.
 
-Import
+Then evaluate features individually, following the roadmap's functional groupings.
 
-1. [x] After importing, show a Recently imported filter in Jam/Search (rolling last 7 days).
-2. [x] Import opens the system browser directly. User chose separate native file/folder modes after review of portal limitations; the custom import page is removed.
-3. [x] Top bar settings popover reuses the bottom sheet menu in narrow mode.
+For each feature, provide evidence from the current code and a proposed direction, but **do not finalize design decisions on behalf of the user**.
 
-Filter dialog
+Present the findings for collaborative review, one feature at a time.
 
-1. [x] Tag pickers default to three complete lines.
-2. [x] Chip pickers share configurable line limits with an overflow-only chevron after the last chip on the final clamped line.
-3. [x] Tag search has an inline category icon, unlimited category chips, child-tag choices, Custom for unkeyed tags and back navigation that preserves selection.
+Do not rewrite the entire roadmap yet. The revised TODO will be produced after the individual features have been discussed and decisions agreed upon.
 
-Explore page
+# Weave: Roadmap
 
-1. The widgets for "All *" should also use the same layout as Recent playlist
-2. Search bar should in all the "All *" pages. against jsut for discovery. add appropriate params in engine
-3. Make everything on the Explore Page a Section divider with collapsible logic (make collapsible and the chevron a parameter with toggleCollapse being default action when collapsible + paramter to defaultCollapseState expanded/collapsed)
-6. Drop Usage in explore page. Add an  "About me" Clickable Row
-4. Rediscover's should be a another clickable row. Opens Favourite/Playlist like page with for music not listened in 180 days ordered by highly rated. Both paramters configurable via filter dialog
-5. Put Explore after the "All *" block, folowed by rediscover, and most listened tracks/albums
+## 2. Working principles
 
-About me (last priority)
+1. Weave is the target application. Do not create parallel applications or unrelated implementations.
+2. Inspect existing code, architecture, components, and data models before making changes.
+3. Reuse existing abstractions rather than introducing duplicate components.
+4. Keep business logic, filtering, and data transformations in the engine.
+5. Keep presentation and presentation-level interactions in the GUI.
+6. Implement corresponding CLI and engine functionality together when introducing new business capabilities.
+7. Keep music-specific behavior in Weave.
+8. Move reusable behavior into `iced-libadwaita` only when its generality is established.
+9. Preserve the existing design system and responsive behavior.
+10. Prefer Iced and existing toolkit functionality before introducing dependencies.
+11. Do not infer missing historical listening data.
+12. Preserve existing functionality and avoid unnecessary rewrites.
 
-1. Clicking "About me" should open MediaControl page but with no other controls besides filter icon. then content should be stats and graphs that we can come up with.
-   - refactor Media control? MediaControl's should ony guarante Image/avatar, name, description. Everything else like after_name (used by tags in JAM), top right used by search and std controls block (play, filters, save playlist) are paramter based. remove it from the toolkit library but keep it in gallery as example.ame
+## 3. UI foundations and toolkit improvements
 
-2. UIdeas
-   - global time filters for last 24hr, 1 week, month, year + custom duration
-   - exclusion filters : same as dialog as search
-   - Text bloc: Usage in hours, No of tracks, Fav artist, track, longest listening session, most replayed track, artist, tag
+### 3.1 Responsive component composition
 
-Rendering
+Review existing Weave widgets and identify repeated responsive patterns.
 
-1. Investigate why the gradient in Jam/Album page extend beyond the borders of the window. That should not be technically possible. invetigate and push the changes to the toolkit. the Toolkit should never allow that because it defines the borders of the window. An anything rendered beynd it's milits is never rendered
+1. Compose reusable presentation primitives into higher-level components where appropriate.
+2. Reuse the same logical component across different screen sizes.
+3. Prefer changing presentation over duplicating interactions or application state.
+4. Evaluate existing `iced-libadwaita` composition and slot APIs.
+5. Suggest toolkit changes only when the behavior is reusable outside Weave.
 
-Charts (after rendering)
+Use responsive settings menus and collection pages as validation cases.
 
-   - Daily activity chart: Hours listened scrollable by X-axis
-   - Sun burst chart by genre
-   - Pie chart: Listening share by artist
-   - Usage heatmap-bubble chart : point per session, size for session duration and tint based on tags
-   - Most Loyal to : how often do u stick to it to completion x no of times played
+### 3.2 Animations and transitions
 
+Investigate broken animations and transitions throughout the application.
 
-### Codex prompt
+1. Animations should be part of component activation and dismissal.
+2. Avoid implementing independent animation logic in every consuming screen.
+3. Inspect existing toolkit animation support before adding new mechanisms.
+4. Ensure transitions are consistent across popovers, dialogs, bottom sheets, and navigation.
+5. Handle interrupted, repeated, and reversed transitions correctly.
 
-# Weave: Library UX, Explore, Import, Filtering and Listening Analytics
+Where the issue originates in the toolkit, fix it there.
 
-You are working on **Weave**, a Rust desktop music library application built with Iced and the `iced-libadwaita` toolkit.
+### 3.3 Clipping, overlays, and window boundaries
 
-Your task is to investigate and implement the following product and UI improvements in Weave. Weave is also the trial application for the toolkit, so use it to validate reusable toolkit capabilities where appropriate.
+Investigate the rendering problems affecting:
 
-## Working principles
+- Jam and Album page gradients.
+- Background tints extending beyond rounded window boundaries.
+- Filter dialogs and bottom sheets overriding window corner radii.
+- Overlays that incorrectly behave as fullscreen windows.
 
-1. **Weave is the target application.** Do not create a separate implementation or make changes to unrelated projects.
-2. Inspect the existing codebase, architecture, components, data models and current UI before making decisions.
-3. Reuse existing abstractions wherever possible. Avoid introducing duplicate components or parallel interaction models.
-4. Keep business logic and data transformation in the core. UI components should present data and handle presentation-level interactions.
-5. Keep music-specific concepts in Weave. Only introduce or modify toolkit abstractions when the behaviour is genuinely reusable.
-6. Respect the existing design system and responsive behaviour.
-7. Do not introduce arbitrary dependencies without evaluating existing Iced capabilities and alternatives.
-8. Preserve existing functionality and avoid unnecessary architectural rewrites.
+Establish the following rules:
 
-## 1. Import experience
+1. The window owns its outer boundaries and corner radius.
+2. Normal content must respect its clipping boundary.
+3. A bottom sheet may occupy 100% of the available content height without becoming a fullscreen window.
+4. Only an actual window mode change may override window-level decoration behavior.
+5. Bottom sheets and tints may occupy different z-index positions while remaining within the same window boundary.
+6. Shadows and popovers may intentionally overflow local component boundaries.
+7. Separate windows have independent boundaries and are not subject to their parent window's clipping.
+8. Do not introduce global clipping that breaks legitimate overlays.
 
-### Recently imported (completed)
+Investigate the actual cause, including layout bounds, transformations, gradient coordinates, canvas rendering, overlay composition, and renderer clipping.
 
-After importing music, expose a **Recently imported** filter in the Jam/Search page.
+Fix toolkit-level defects in `iced-libadwaita`, document the clipping contract, and add regression coverage.
 
-Requirements:
-- Make it a search source/filter, not an entirely separate browsing system.
-- Use actual import timestamps.
-- Support combining it with existing filters.
-- Ensure newly imported items are discoverable immediately.
+**This work must be completed before implementing analytics charts.**
 
-### Mixed file and folder selection
+## 4. Library exploration and navigation
 
-The import workflow should allow selecting files and folders together in a single operation.
+### 4.1 Explore page structure
 
-Requirements:
-- Support mixed file/folder selection.
-- Recursively enumerate folders.
-- Avoid importing duplicates.
-- Handle inaccessible files and partial failures gracefully.
-- Report import results clearly.
+Restructure Explore into consistent, reusable sections.
 
-### Responsive settings menu (completed)
+1. Use a common section component for Explore content.
+2. Support:
+   1. Optional collapsibility.
+   2. Initial expanded/collapsed state.
+   3. Configurable chevron.
+   4. Default collapse/expand interaction.
+   5. Optional trailing actions.
+   6. Application-owned persistent collapse state.
+3. Non-collapsible sections must not appear interactive.
+4. Remove the existing Usage widget.
+5. Introduce navigation entries for About Me and Rediscover.
 
-On narrow layouts, reuse the existing bottom-sheet menu presentation for the top-bar settings menu instead of opening a sidebar.
+Preferred ordering:
 
-The menu's contents and actions should remain consistent between layouts. Only the presentation should change.
-
-## 3. Filter dialog improvements
-
-### Chip expansion
-
-All chip collections should have a consistent line-clamping behaviour.
-
-Requirements:
-- Default maximum: three lines for tags, two for artists and albums.
-- Reserve a downward chevron immediately after the last visible chip on the final clamped line when content overflows.
-- Expand inline.
-- Show an upward chevron after the expanded chips to collapse again.
-- Make the line limit configurable.
-- Apply consistently to tag filters and other chip collections.
-
-### Category-based tag browsing
-
-Improve the tag filter with category-based navigation.
-
-Proposed interaction:
-
-1. Display the regular tag filter and search input.
-2. Add a tag/category icon on the right side of the input.
-3. Clicking it switches to category browsing.
-4. Display named categories as chips, without the normal line limit.
-5. Selecting a category displays its child tags.
-6. Provide a `Custom` category for unnamed tags.
-7. Allow returning to the category list without losing selections.
-
-Search should remain available in both modes.
-
-Use the existing tag data model. Do not introduce a second tag-selection mechanism.
-
-## 4. Explore page restructuring
-
-### Consistent All pages
-
-All `All *` buttons should use the same layout and interaction model as the existing Recent playlist.
-
-### Search on every All page
-
-Every `All *` page should have a search bar.
-
-Search must not be limited to discovery.
-
-Architecture:
-
-- **GUI widget:** implements the input, loading state, results, empty state and interactions.
-- **Weave:** supplies the search sources and maps results to music entities.
-- Keep the search logic out of the GUI. Update the engine and cli
-
-### Reusable collapsible sections
-
-Everything on the Explore page should be structured as a section divider with optional collapsible behaviour.
-
-The section component should support:
-- `collapsible`
-- `default_collapse_state` (`expanded` or `collapsed`)
-- A configurable chevron.
-- `toggle_collapse` as the default action when collapsible.
-- Optional trailing actions.
-
-The application should be able to own/persist collapse state when needed.
-
-Do not make non-collapsible sections appear interactive.
-
-### Explore navigation and ordering
-
-Remove the Usage widget from Explore.
-
-Add an **About me** clickable row.
-
-Add a **Rediscover** clickable row.
-
-Recommended ordering:
-
-1. Library. (the "All *")
+1. Library (All collections).
 2. Explore.
 3. Rediscover.
 4. Most listened tracks.
 5. Most listened albums.
 
-### Rediscover page
+### 4.2 Consistent collection pages
 
-Rediscover opens a collection page using the same layout as playlists and other music collections.
+All `All *` destinations should reuse the established Recent Playlist layout and interaction patterns.
 
-Default behaviour:
-- Show music that has not been listened to in at least 180 days.
-- Order by historical preference.
-- Expose the inactivity duration and ranking criteria through the existing filter dialog.
+Each page should have:
 
-Make both parameters configurable.
+1. A consistent collection layout.
+2. Search functionality.
+3. Shared loading, empty, and results presentations.
+4. Responsive behavior appropriate to the available width.
 
-Ranking should account for more than raw play count. Consider historical listening behaviour, ratings and completion data where available.
+Keep search responsibilities separated:
 
-Distinguish between:
-- Not listened to recently.
-- Previously played but rarely completed.
-- Frequently replayed historically.
+- Engine and CLI: search capabilities and query evaluation.
+- Weave: search sources and mapping results to music entities.
+- GUI: input, loading state, results, empty state, and interactions.
 
-Do not invent data that the current model cannot provide. Ask me if it's easier to create a simpler model
+### 4.3 Rediscover
 
-## 5. MediaControl composition
+Implement Rediscover as a collection page using the existing playlist/collection layout.
 
-Revisit the existing MediaControl implementation.
+Default behavior:
 
-Its guaranteed contract should be limited to:
+1. Find music not listened to for at least 180 days.
+2. Order by historical preference.
+3. Allow the inactivity threshold and ranking criteria to be configured through the existing filter dialog.
 
-- Image/avatar.
-- Name.
-- Description.
+Consider available historical signals:
 
-Everything else should be caller-provided or parameterised:
+- Listening frequency.
+- Ratings.
+- Completion.
+- Replay behavior.
 
-- `after_name` content, such as JAM tags.
-- Top-right content, such as search.
-- Standard controls block, such as play, filters and save playlist.
-- Other optional actions.
+Distinguish music that has not been played recently, music that was rarely completed, and music that was previously replayed frequently.
 
-The goal is to turn MediaControl into a composable presentation primitive rather than an opinionated music-player component.
+Use only signals supported by the data model. Do not fabricate historical preferences.
 
-Remove the opinionated MediaControl implementation from the toolkit library, but retain a complete composition example in the toolkit gallery.
+If the available model cannot support a meaningful ranking, propose a simpler alternative before introducing new data structures.
 
-Do not move music-specific functionality into the toolkit.
+### 4.4 Music import
 
-Evaluate whether the existing toolkit slot/composition APIs are sufficient. Prefer reusable slot types over arbitrary callback complexity where possible.
+Preserve the completed Recently Imported search capability.
 
-For this trial application, implement and validate the resulting composition in Weave.
+For the import workflow:
 
-## 6. About me: listening analytics
+1. Support selecting files and directories together when the underlying file-selection mechanism permits it.
+2. Recursively enumerate selected directories.
+3. Avoid duplicate imports.
+4. Handle inaccessible files and partial failures.
+5. Report imported, skipped, and failed items.
+6. Make newly imported music discoverable immediately.
 
-Clicking **About me** should open a MediaControl-style page containing:
-- Image/avatar.
-- Name.
-- Description.
-- Filter action only.
+Keep Recently Imported as a search capability, but remove its dedicated control from the tag-filter dialog as requested by the newer UI notes.
 
-Do not display the usual play, save or other media controls.
+### 4.5 Responsive settings menu
 
-The rest of the page is dedicated to personal listening statistics and visualisations.
+The narrow-layout settings menu already uses the existing bottom-sheet presentation.
 
-### Global filters
+Preserve this implementation and verify that:
 
-Provide global time filters:
-- Last 24 hours.
-- Last 7 days.
-- Last month.
-- Last year.
-- Custom duration (daterange primitive custom widget).
+1. The same actions appear across layouts.
+2. State and behavior remain consistent.
+3. The menu respects window clipping.
+4. Activation and dismissal animations work correctly.
 
-All metrics and charts should respond to the same selected time range.
+## 5. Tag filtering and query composition
 
-Reuse the existing exclusion filters from the search/filter dialog. Do not implement a separate filtering system.
+### 5.1 Filter dialog cleanup
 
-### Overview metrics
+Simplify the filter dialog.
 
-Display:
-- Total listening hours.
-- Number of unique tracks listened to.
-- Favourite artist.
-- Favourite track.
-- Longest listening session.
-- Most replayed track.
-- Most listened-to artist.
-- Most listened-to tag.
+1. Remove the dedicated Recently Imported and Exclude Tags controls from the visible dialog.
+2. Preserve existing engine-level filter capabilities unless explicitly deprecated.
+3. Improve background, shadows, and surface styling.
+4. Remove inconsistent grey surfaces and excessive progressive shading.
+5. Refine scrollbar width and styling.
+6. Keep the input visually consistent with the rest of Weave.
+7. Preserve existing selections while navigating filter categories.
 
-Clearly define the ranking metric behind favourite and most-listened values.
+### 5.2 Chip collections
 
-### Rendering correctness: clipping and overflow (before charts)
+Use consistent chip wrapping and expansion behavior.
 
-Investigate the gradient in the Jam/Album page that currently extends beyond the window boundaries.
+1. Default maximum visible lines:
+   1. Tags: 3.
+   2. Artists: 2.
+   3. Albums: 2.
+2. Make the line limit configurable.
+3. Display a downward chevron after the final visible chip when content overflows.
+4. Expand the existing collection inline.
+5. Display an upward chevron to collapse.
+6. Preserve chip selection and input state across expansion.
+7. Reuse the same behavior across all chip collections.
 
-This should not happen.
+Evaluate whether this should become a reusable toolkit component.
 
-Determine the actual cause before applying a fix. Investigate:
-- Canvas or custom renderer behaviour.
-- Layering and overlay composition.
-- Gradients and shaders using window-relative coordinates.
-- Widget transformations and layout bounds.
-- Nested container clipping.
-- Any rendering path that bypasses normal clipping.
+### 5.3 Category-based tag browsing
 
-### Toolkit responsibility
+Keep the existing tag data model and selection mechanism.
 
-If the issue originates in `iced-libadwaita` or its rendering abstractions, fix it at the toolkit level.
+1. Display the regular tag filter with search input.
+2. Add a category/tag icon beside the input.
+3. Allow switching between tag selection and category browsing.
+4. Display categories as chips without the normal line limit.
+5. Selecting a category displays its child tags.
+6. Provide a Custom category for uncategorized tags.
+7. Preserve selections when navigating between categories.
+8. Keep search available in both modes.
 
-The desired invariant is:
+Navigation and visual refinement:
 
-**Nothing should render outside its defined clipping boundary unless the component explicitly requests intentional overflow.**
+1. Use a simple back chevron at the beginning of the category row.
+2. Avoid verbose breadcrumb text such as `> Categories Custom`.
+3. Place the show-more/collapse chevron at the end of the chip collection.
+4. Keep the visual hierarchy and background shading consistent.
 
-Distinguish between:
-- Normal content, which must be clipped.
-- Shadows and popovers, which may intentionally extend beyond parent bounds.
-- Explicit overlay or escape boundaries.
+### 5.4 Tag grouping and ChipInput
 
-Do not simply clip everything globally and break popovers, shadows or menus.
+Introduce grouping using the existing filter model where possible.
 
-Document the clipping contract and add regression coverage where possible.
+1. Add a `+` action beside the tag icon for each filter group.
+2. Clicking it groups the current selection.
+3. Represent the resulting group in the input bar.
+4. Append a comma after the completed group to allow continued entry.
+5. Evaluate a Mantine-style ChipInput interaction.
+6. Maintain a single canonical filter representation.
 
-### Visualisations
+Do not introduce a second independent query model in the GUI.
 
-Implement the following, prioritising clarity and integration with the existing design system.
+### 5.5 Tag query DSL
 
-**Daily activity**
-- Listening hours over time.
-- Horizontally scrollable X-axis.
-- Adapt resolution to the selected period.
+The advanced DSL remains pending.
 
-**Genre sunburst**
-- Hierarchical genre/tag distribution.
-- Support drill-down where practical.
+Target syntax:
 
-**Artist distribution**
-- Pie chart showing listening share by artist.
-- Support configurable top N and group the remainder into `Other`.
+`weave-player search --or-group --tag-any genre:zouk,genre:bachata --tag-all mood:romantic --or-group --tag-all lang:tamil,tag:romantic,90s --bpm-max 90`
 
-**Session bubble chart**
-- One point per listening session.
-- Bubble size represents session duration.
-- Colour/tint represents tags or genres.
-- Explore useful axis combinations, such as date and time of day.
+Requirements:
 
-**Listening loyalty**
-Measure how often the user listens to tracks to completion, alongside replay behaviour.
+1. Define the grouping semantics explicitly before implementation.
+2. Use the existing `FilterSpec` model where possible.
+3. Implement parsing and evaluation in the engine.
+4. Expose the capability through the CLI.
+5. Have the GUI consume the same evaluated query model.
+6. Avoid implementing a separate GUI query engine.
+7. Defer complex nested query management until the basic grouping model is validated.
+8. Push reusable tag-management changes to `vendored/weaver`, the original tag manager.
 
-Keep these metrics distinct:
-- Completion rate.
-- Replay rate.
-- Repeat frequency.
-- Total completed listens.
+## 6. MediaControl composition
 
-Avoid conflating a track that is frequently replayed with one that is consistently completed.
+Refactor the existing MediaControl abstraction.
 
-## 7. Playback analytics data foundation
+Its guaranteed contract should include only:
 
-Before implementing analytics, inspect the current playback and library data models.
+1. Image/avatar.
+2. Name.
+3. Description.
 
-Lifetime play counts alone are insufficient for accurate time-filtered statistics.
+All other content should be optional and caller-provided:
 
-Determine whether the existing model can support:
-- Daily listening duration.
-- Session duration.
-- Completion rate.
-- Listening heatmaps.
-- Arbitrary time ranges.
-- Replay and repeat frequency.
+1. `after_name`, such as Jam tags.
+2. Top-right content, such as search.
+3. Standard controls, including play, filter, and save actions.
+4. Additional contextual actions.
 
-If not, propose and implement a timestamped playback event model.
+Implementation requirements:
 
-A potential event should contain:
-- Track identifier.
-- Started timestamp.
-- Ended timestamp.
-- Actual listened duration.
-- Completion status.
-- Interruption/reason where known.
-- Session identifier.
+1. Use existing composition and slot APIs where possible.
+2. Avoid music-specific assumptions in reusable toolkit primitives.
+3. Prefer composable presentation primitives over increasingly large configuration objects.
+4. Remove the opinionated MediaControl implementation from the toolkit library.
+5. Retain a complete composition example in the toolkit gallery.
+6. Validate the resulting composition in Weave.
+7. Keep application-specific controls and behavior in Weave.
 
-The event stream should be the source of truth. Aggregate statistics should be derived from it.
+## 7. About Me: Listening analytics
 
-Account for interrupted playback, seeking, pauses, duplicate events and application restarts. Avoid counting paused time as listening time.
+**Status:** The analytics backend and overview GUI are implemented. The GUI requires visual review. Charts remain pending.
 
-Do not present fabricated analytics as real user data. If historical events are unavailable, show an appropriate empty state and explain that statistics will accumulate from the point tracking begins.
+### 7.1 Page layout
 
-## 8. Implementation and validation workflow
+About Me opens a MediaControl-style page containing:
 
-Work in the following order:
+1. Avatar/image.
+2. Name.
+3. Description.
+4. Filter action.
 
-1. Inspect the current repository and map the relevant architecture.
-2. Identify existing components and abstractions that can be reused.
-3. Implement import improvements.
-4. Implement filter dialog improvements.
-5. Implement Explore restructuring and search.
-6. Refactor MediaControl composition.
-7. Establish the playback event model.
-8. Implement About me overview metrics after the data foundation.
-9. Fix rendering/clipping immediately before implementing charts.
-10. Implement analytics charts.
+Do not show normal media playback, save, or playlist controls.
 
-For each stage:
-- Explain the relevant existing architecture.
-- Identify affected modules.
-- Describe the proposed changes.
-- Implement the changes.
-- Run formatting, compilation and relevant tests.
-- Report what was verified and what remains unverified.
+The remainder of the page displays listening statistics and charts.
 
-Do not claim a feature works merely because the code has been written.
+### 7.2 Global filters
 
-## 9. Final deliverable
+Support the existing global time filters:
+
+1. Last 24 hours.
+2. Last 7 days.
+3. Last month.
+4. Last year.
+5. Custom date range.
+
+All displayed metrics and charts must respond to the same filter state.
+
+Reuse existing exclusion-filter capabilities rather than introducing a separate analytics filtering system.
+
+Evaluate the existing date-range primitive for the custom duration control.
+
+### 7.3 Listening overview
+
+Review the implemented UI for:
+
+1. Total listening hours.
+2. Unique tracks listened to.
+3. Favorite artist.
+4. Favorite track.
+5. Longest listening session.
+6. Most replayed track.
+7. Most listened-to artist.
+8. Most listened-to tag.
+
+Clearly distinguish favorite rankings from raw listening frequency.
+
+Do not infer missing historical listening time from legacy play counts.
+
+### 7.4 Playback analytics foundation
+
+The timestamped playback-event model and corresponding CLI/engine functionality are already implemented.
+
+Preserve the event stream as the source of truth.
+
+Validate that aggregation correctly handles:
+
+1. Playback starts and ends.
+2. Pauses and resumes.
+3. Seeking.
+4. Interrupted playback.
+5. Application restarts.
+6. Duplicate events.
+7. Session boundaries.
+8. Actual listening duration.
+9. Completion and replay behavior.
+
+Paused time must not count as listening time.
+
+Historical periods without event data must display an appropriate empty state rather than invented statistics.
+
+### 7.5 Charts
+
+Implement charts only after resolving the rendering and clipping issues from Section 3.
+
+#### Daily activity
+
+1. Display listening hours over time.
+2. Support horizontal scrolling.
+3. Adapt time resolution to the selected period.
+4. Use the implemented UTC bucket data while presenting dates appropriately.
+
+#### Genre sunburst
+
+1. Visualize hierarchical genre/tag distribution.
+2. Reuse the existing genre hierarchy data.
+3. Support drill-down where practical.
+
+#### Artist distribution
+
+1. Display listening share by artist.
+2. Support configurable Top N.
+3. Group remaining artists into Other.
+
+#### Listening sessions
+
+1. Render one bubble per listening session.
+2. Use bubble size for session duration.
+3. Use color/tint for associated tags or genres.
+4. Explore useful axis combinations, such as date and time of day.
+
+#### Listening loyalty
+
+Keep the following metrics distinct:
+
+1. Completion rate.
+2. Replay rate.
+3. Repeat frequency.
+4. Total completed listens.
+
+Do not conflate frequent replaying with consistently completing a track.
+
+Charts must share the global About Me filters and follow the existing responsive design system.
+
+## 8. Implementation order
+
+### Phase 1: UI foundations
+
+1. Inspect reusable composition patterns.
+2. Fix broken component animations and transitions.
+3. Investigate and resolve window clipping, tint, and bottom-sheet issues.
+4. Validate toolkit-level fixes in Weave.
+
+### Phase 2: Library and filtering
+
+1. Complete filter dialog visual cleanup.
+2. Implement consistent chip expansion.
+3. Refine category-based tag browsing.
+4. Implement basic tag grouping and ChipInput behavior.
+5. Complete collection search and Explore restructuring.
+6. Complete Rediscover.
+7. Complete any remaining mixed file/folder import work.
+
+Non-chart GUI changes should be implemented as a coordinated batch, reusing shared primitives rather than introducing disconnected screen-specific solutions.
+
+### Phase 3: MediaControl and About Me
+
+1. Refactor MediaControl into a composable primitive.
+2. Update Weave and the toolkit gallery.
+3. Visually review the implemented About Me overview and filters.
+4. Verify that analytics use the existing event-based data model.
+
+### Phase 4: Charts
+
+1. Confirm rendering/clipping regressions are resolved.
+2. Implement activity, sunburst, artist, session, and loyalty charts.
+3. Verify global filtering and responsive behavior.
+4. Perform interactive visual review.
+
+### Phase 5: Advanced tag DSL
+
+1. Finalize the query grammar and grouping semantics.
+2. Implement engine and CLI support.
+3. Integrate query construction into the existing GUI filter model.
+4. Synchronize reusable tag-manager functionality with `vendored/weaver`.
+
+## 9. Validation and reporting
+
+For each implementation stage:
+
+1. Inspect the relevant existing architecture.
+2. Identify affected modules.
+3. Describe proposed changes and reuse opportunities.
+4. Implement the changes.
+5. Run formatting, compilation, and relevant tests.
+6. Verify CLI/engine behavior where applicable.
+7. Report GUI implementation separately from interactive visual verification.
+8. Identify any changes made to `iced-libadwaita`.
+9. Document remaining limitations and incomplete work.
+
+Use these statuses consistently:
+
+- **Pending:** Not implemented.
+- **Implemented, unverified:** Code exists but validation is incomplete.
+- **Implemented, user visual review:** Automated checks pass or implementation exists, but appearance/interaction requires user review.
+- **Done:** Relevant implementation and verification are complete.
+- **Deferred:** Intentionally scheduled for a later phase.
+
+Do not treat successful compilation as proof of correct appearance or interaction.
+
+## 10. Final deliverable
 
 Provide:
-- Summary of changes.
-- Architectural decisions.
-- Any new toolkit abstractions and why they are reusable.
-- Data-model changes and migration implications.
-- Tests and build results.
-- Known limitations.
-- Remaining work.
 
-Prioritise correctness, coherent architecture and reuse over the number of features completed.
+1. Summary of completed changes.
+2. Architectural decisions.
+3. Affected Weave modules.
+4. Any reusable toolkit abstractions introduced or modified.
+5. Engine/CLI changes.
+6. Data-model and migration implications.
+7. Build and test results.
+8. Visual verification status.
+9. Known limitations.
+10. Remaining tasks.
 
-Do not sacrifice the toolkit's generality to make a single Weave screen easier to implement.
+Prioritize correctness, coherent architecture, and reuse over feature count.
+
+Do not sacrifice the generality of `iced-libadwaita` to simplify one Weave screen.

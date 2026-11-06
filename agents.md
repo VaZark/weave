@@ -35,6 +35,7 @@ Build an open-source, local-first music management engine used by a CLI and, as 
 
 ## Coding conventions
 
+- **Prefer icons over text for actionable UI elements throughout the app.** Use meaningful icon buttons with tooltips and accessible action names for commands, toolbar actions, dialog/sheet actions, and repeated controls. Apply this consistently in shared components and on every page. Choose icons that describe the action (for example, dice for Surprise me and shuffle for playback order); add an appropriate icon when one is missing rather than substitute an unrelated symbol. Keep text for content, headings, field labels, named choices, and menu items where it identifies what the user is choosing. Use a text action only when an icon would make the action ambiguous.
 - Language: Rust for the library and the CLI; use `clap` for CLI parsing and SQLite for storage (system library by default, minimum 3.14.0; the opt-in `sqlite-from-source` feature compiles and statically links it).
 - Respect the specs defined in `goals.md`
 - Keep the domain model independent of any UI, SQL details and audio SDKs.

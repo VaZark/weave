@@ -4,6 +4,10 @@ The design of the Weave GUI frontend: a separate application built with [iced](h
 
 Two goals shape it. It is the first real application built on iced-libadwaita, so a component that more than one app would want is built there, not here (see [components](components.md)). And it serves what Weave is for: organising music by the user's own tags, so the filter is the centre of the interface and the tags are the user's own words, never a fixed list.
 
+## App-wide action style
+
+- **Prefer icons over text for actionable UI elements throughout the app.** Use meaningful icon buttons with tooltips and accessible action names for commands, toolbar actions, dialog/sheet actions, and repeated controls. Apply this consistently in shared components and on every page. Choose icons that describe the action (for example, dice for Surprise me and shuffle for playback order); add an appropriate icon when one is missing rather than substitute an unrelated symbol. Keep text for content, headings, field labels, named choices, and menu items where it identifies what the user is choosing. Use a text action only when an icon would make the action ambiguous.
+
 ## Pages
 
 - [layout](layout.md): actions, triggers, views and layouts as separate things, the adaptive component that picks a layout, the first two layouts (narrow and wide), the library and player views, and the transition sequences.
@@ -228,3 +232,11 @@ Themes opens a dialog on wide layouts and a bottom sheet on narrow layouts.
 Import themes and choose Desktop or an imported theme there; selecting a theme
 previews it immediately while keeping the chooser open. Compact density remains
 a separate setting. The compact player window and its sizing controls are removed.
+
+Filter panels share `components::responsive_dialog` at the window root: a bounded
+dialog wide and a full-screen sheet narrow. `components::filter_editor` owns the
+common header, scrolling body, slim scrollbar and fixed icon action row. The
+active Jam, page, or playlist-draft context supplies fields/messages and actions.
+Resizing keeps the same filter; live changes remain live and draft changes still
+require Save. Header close, Escape and desktop backdrop all use the context's
+close action. Actions use icon buttons with tooltips.

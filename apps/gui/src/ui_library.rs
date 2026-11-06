@@ -2,7 +2,7 @@
 use crate::ui_dialogs::FilterMsgs;
 use crate::{App, Dest, Element, Message};
 use iad::prelude::{self as w, surface, typography as ty};
-use iced::widget::{column, container, row, scrollable, space};
+use iced::widget::{column, container, row, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design::{self as iad, Icon};
 use weave_player_lib::core::{AnalyticsPeriod, AnalyticsQuery, ListeningAnalytics, SortField};
@@ -463,20 +463,14 @@ impl App {
         .height(Length::Fill)
         .into()
     }
-    pub fn page_filters_view(&self) -> Element<'_> {
+    pub fn page_filter_fields(&self) -> Element<'_> {
         let about = self.dest == Dest::AboutMe;
         let filter = if about {
             &self.analytics_filter
         } else {
             &self.rediscover_filter
         };
-        let msgs = FilterMsgs {
-            tag: Message::PageTag,
-            artist: Message::PageArtist,
-            album: Message::PageAlbum,
-            bpm: Message::PageBpm,
-            target: crate::FilterTarget::Page,
-        };
+        let msgs = FilterMsgs::for_target(crate::FilterTarget::Page);
         let mut fields = self.filter_fields(filter, msgs);
         fields = fields
             .push(ty::heading("Minimum rating"))
@@ -513,23 +507,7 @@ impl App {
                 Message::RediscoverSort,
             ));
         }
-        column![
-            row![
-                ty::title_3(if about {
-                    "Listening filters"
-                } else {
-                    "Rediscover filters"
-                }),
-                space::horizontal(),
-                w::suggested_button(ty::label("Done")).on_press(Message::PageFilters(false))
-            ]
-            .align_y(Alignment::Center),
-            scrollable(fields)
-                .direction(crate::ui_dialogs::filter_scroll_direction())
-                .height(Length::Fill)
-        ]
-        .spacing(12)
-        .into()
+        fields.into()
     }
     pub fn analytics_query(&self) -> Result<AnalyticsQuery, String> {
         let mut query = AnalyticsQuery {

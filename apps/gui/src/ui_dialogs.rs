@@ -29,21 +29,33 @@ pub struct FilterMsgs {
     pub target: FilterTarget,
 }
 
-const JAM_FILTER: FilterMsgs = FilterMsgs {
-    tag: Message::ToggleTag,
-    artist: Message::JamArtistToggle,
-    album: Message::JamAlbumToggle,
-    bpm: Message::Bpm,
-    target: FilterTarget::Jam,
-};
-
-const DRAFT_FILTER: FilterMsgs = FilterMsgs {
-    tag: Message::DraftToggle,
-    artist: Message::DraftArtistToggle,
-    album: Message::DraftAlbumToggle,
-    bpm: Message::DraftBpm,
-    target: FilterTarget::Draft,
-};
+impl FilterMsgs {
+    pub(super) fn for_target(target: FilterTarget) -> Self {
+        match target {
+            FilterTarget::Jam => Self {
+                tag: Message::ToggleTag,
+                artist: Message::JamArtistToggle,
+                album: Message::JamAlbumToggle,
+                bpm: Message::Bpm,
+                target,
+            },
+            FilterTarget::Draft => Self {
+                tag: Message::DraftToggle,
+                artist: Message::DraftArtistToggle,
+                album: Message::DraftAlbumToggle,
+                bpm: Message::DraftBpm,
+                target,
+            },
+            FilterTarget::Page => Self {
+                tag: Message::PageTag,
+                artist: Message::PageArtist,
+                album: Message::PageAlbum,
+                bpm: Message::PageBpm,
+                target,
+            },
+        }
+    }
+}
 
 impl App {
     /// One tag picker shared by live filters, saved-filter drafts and track annotations.
@@ -563,63 +575,83 @@ impl App {
 
     // ---- jam filters --------------------------------------------------------------------
 
-    /// The jam's filters, edited live: a header with the matches, Clear filters and Done, then the
-    /// shared filter fields. The same content in the dialog (wide) and the full-screen sheet
-    /// (narrow).
-    fn jam_filters_form(&self) -> Element<'_> {
-        let n = self.matching(&self.filter).len();
-        column![
-            row![
-                ty::title_3("Tag filters"),
-                ty::caption(format!("{n} matches")),
-                space::horizontal(),
-                w::tooltip(
-                    w::flat_button(ty::label("🎲")).on_press(Message::Surprise),
-                    "Surprise me",
-                    w::TooltipPosition::Bottom,
-                ),
-                w::tooltip(
-                    self.icon_action(
-                        Icon::Reset,
-                        (self.filter.tag_count() > 0).then_some(Message::ClearTagFilters)
-                    ),
-                    "Clear tag filters",
-                    w::TooltipPosition::Bottom,
-                ),
-                w::suggested_button(ty::label("Done")).on_press(Message::JamFilters(false)),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            scrollable(self.filter_fields(&self.filter, JAM_FILTER))
-                .direction(iced::widget::scrollable::Direction::Vertical(
-                    iced::widget::scrollable::Scrollbar::new()
-                        .width(4)
-                        .scroller_width(4)
-                ))
-                .height(Length::Fill),
-        ]
-        .spacing(12)
-        .into()
+    pub(super) fn prepare_filter_editor(&mut self) {
+        self.chip_expanded = [false; 4];
+        self.tag_browse = TagBrowse::Categories;
+        self.tag_query.clear();
+        self.artist_query.clear();
+        self.album_query.clear();
     }
 
-    /// The jam's filters as a dialog (wide).
-    pub fn jam_filters_dialog(&self) -> Element<'_> {
-        container(self.jam_filters_form())
-            .padding(20) // gutter-ok: a component's own padding, not a page gutter
-            .width(Length::Fixed(560.0))
-            .height(Length::Fixed(520.0))
-            .style(filter_surface)
-            .into()
+    /// Modal context is derived once; presentation never belongs to an individual page.
+    pub(super) fn active_filter_context(&self) -> Option<FilterTarget> {
+        if self.draft.is_some() {
+            Some(FilterTarget::Draft)
+        } else if self.page_filters_open {
+            Some(FilterTarget::Page)
+        } else if self.jam_open && self.jam_filters_open {
+            Some(FilterTarget::Jam)
+        } else {
+            None
+        }
     }
 
-    /// The jam's filters inside the bounded bottom sheet (narrow).
-    pub fn jam_filters_sheet(&self) -> Element<'_> {
-        container(self.jam_filters_form())
-            .padding(20) // gutter-ok: a component's own padding, not a page gutter
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(iad::styles::container::window)
-            .into()
+    pub(super) fn filter_close(&self, context: FilterTarget) -> Message {
+        match context {
+            FilterTarget::Jam => Message::JamFilters(false),
+            FilterTarget::Page => Message::PageFilters(false),
+            FilterTarget::Draft => Message::CancelFilter,
+        }
+    }
+
+    pub(super) fn filter_editor(&self, context: FilterTarget) -> Element<'_> {
+        use crate::components::filter_editor::FilterEditor;
+        let close = self.filter_close(context);
+        match context {
+            FilterTarget::Jam => FilterEditor::new(
+                "Tag filters",
+                self.filter_fields(&self.filter, FilterMsgs::for_target(context))
+                    .into(),
+                close.clone(),
+                "Done",
+                close,
+            )
+            .subtitle(format!("{} matches", self.matching(&self.filter).len()))
+            .action(w::tooltip(
+                w::icon_button(Icon::Dice).on_press(Message::Surprise),
+                "Surprise me",
+                w::TooltipPosition::Bottom,
+            ))
+            .action(w::tooltip(
+                self.icon_action(
+                    Icon::Reset,
+                    (self.filter.tag_count() > 0).then_some(Message::ClearTagFilters),
+                ),
+                "Clear tag filters",
+                w::TooltipPosition::Bottom,
+            ))
+            .into(),
+            FilterTarget::Page => FilterEditor::new(
+                if self.dest == Dest::AboutMe {
+                    "Listening filters"
+                } else {
+                    "Rediscover filters"
+                },
+                self.page_filter_fields(),
+                close.clone(),
+                "Done",
+                close,
+            )
+            .into(),
+            FilterTarget::Draft => {
+                let draft = self.draft.as_ref().expect("active playlist filter draft");
+                FilterEditor::new("Playlist filter", self.playlist_filter_editor(draft), close.clone(), "Save rules", Message::SaveFilter)
+                    .subtitle(if self.manual_playlist().is_some() {
+                        "Rules limit the tracks offered when adding. Saving changes asks before removing disqualified tracks."
+                    } else { "The playlist holds every track that matches these rules, now and as the library changes." })
+                    .cancel(close).into()
+            }
+        }
     }
 
     // ---- save as playlist --------------------------------------------------------------
@@ -698,7 +730,7 @@ impl App {
     fn playlist_filter_editor<'a>(&'a self, filter: &'a Filter) -> Element<'a> {
         column![
             ty::caption(self.filter_sentence(filter)),
-            self.filter_fields(filter, DRAFT_FILTER),
+            self.filter_fields(filter, FilterMsgs::for_target(FilterTarget::Draft)),
         ]
         .spacing(8)
         .into()
@@ -928,32 +960,6 @@ impl App {
         .into()
     }
 
-    /// Shared playlist rules: dynamic membership or curated addition eligibility.
-    pub fn filter_dialog<'a>(&'a self, draft: &'a Filter) -> Element<'a> {
-        container(
-            column![
-                ty::title_3("Playlist filter"),
-                ty::caption(if self.manual_playlist().is_some() {
-                    "Rules limit the tracks offered when adding. Saving changes asks before removing disqualified tracks."
-                } else {
-                    "The playlist holds every track that matches these rules, now and as the library changes."
-                }),
-                scrollable(self.playlist_filter_editor(draft)).direction(filter_scroll_direction()).height(Length::Fixed((self.win_h - 260.0).clamp(80.0, 380.0))),
-                row![
-                    space::horizontal(),
-                    w::tooltip(w::icon_button(Icon::WindowClose).on_press(Message::CancelFilter), "Cancel", w::TooltipPosition::Bottom),
-                    w::tooltip(w::icon_button(Icon::Check).on_press(Message::SaveFilter), "Save rules", w::TooltipPosition::Bottom),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12),
-        )
-        .padding(20) // gutter-ok: a component's own padding, not a page gutter
-        .width(Length::Fixed(520.0))
-        .style(filter_surface)
-        .into()
-    }
-
     /// Edit a track's tags. Modal: closed by Cancel or Save.
     pub fn track_dialog<'a>(&'a self, e: &'a crate::TrackEdit) -> Element<'a> {
         let t = self.track(e.id);
@@ -1068,27 +1074,6 @@ impl App {
     }
 }
 
-/// Use the app's window surface with a restrained border, avoiding stacked grey surfaces.
-pub(super) fn filter_surface(theme: &iad::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(theme.semantic.window.bg.into()),
-        border: iced::Border {
-            color: theme.semantic.border,
-            width: 1.0,
-            radius: theme.metrics.radius_window.into(),
-        },
-        shadow: iced::Shadow {
-            color: Color {
-                a: 0.16,
-                ..Color::BLACK
-            },
-            offset: iced::Vector::new(0.0, 6.0),
-            blur_radius: 20.0,
-        },
-        ..Default::default()
-    }
-}
-
 pub(super) fn filter_scroll_direction() -> iced::widget::scrollable::Direction {
     iced::widget::scrollable::Direction::Vertical(
         iced::widget::scrollable::Scrollbar::new()
@@ -1186,11 +1171,7 @@ impl App {
         if self.themes.themes.is_empty() {
             choices = choices.push(ty::caption("Import a theme file to add it here."));
         }
-        let mut import = w::suggested_button(ty::label(if self.theme_import_pending {
-            "Choosing theme…"
-        } else {
-            "Import theme…"
-        }));
+        let mut import = w::suggested_button(Icon::Document.view(16.0));
         if !self.theme_import_pending {
             import = import.on_press(Message::ImportTheme);
         }
@@ -1206,9 +1187,21 @@ impl App {
                 .direction(filter_scroll_direction())
                 .height(Length::Fill),
             row![
-                import,
+                w::tooltip(
+                    import,
+                    if self.theme_import_pending {
+                        "Choosing theme…"
+                    } else {
+                        "Import theme…"
+                    },
+                    w::TooltipPosition::Top
+                ),
                 space::horizontal(),
-                w::flat_button(ty::label("Done")).on_press(Message::Themes(false))
+                w::tooltip(
+                    w::icon_button(Icon::Check).on_press(Message::Themes(false)),
+                    "Done",
+                    w::TooltipPosition::Top
+                )
             ]
             .align_y(Alignment::Center),
         ]

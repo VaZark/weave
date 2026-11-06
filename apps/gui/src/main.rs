@@ -904,6 +904,7 @@ impl App {
     /// Leaves the jam: the search text is only for finding something, so it does not stay.
     fn leave_jam(&mut self) {
         self.jam_open = false;
+        self.jam_filters_open = false;
         self.jam_search_open = false;
         self.search_open = false;
         self.collection_query.clear();
@@ -1562,12 +1563,10 @@ impl App {
                 Vec::new()
             }
             Message::PageFilters(open) => {
-                self.page_filters_open = open;
-                if open {
-                    self.tag_browse = TagBrowse::Categories;
-                    self.tag_query.clear();
-                    self.chip_expanded = [false; 4];
+                if open && !self.page_filters_open {
+                    self.prepare_filter_editor();
                 }
+                self.page_filters_open = open;
                 Vec::new()
             }
             Message::PageTag(tag) => {
@@ -2042,6 +2041,9 @@ impl App {
                 if self.manual_filter_review.is_some() {
                     return self.update(Message::CancelManualFilterReview);
                 }
+                if let Some(context) = self.active_filter_context() {
+                    return self.update(self.filter_close(context));
+                }
                 if self.save_manual && self.save_name.is_some() {
                     return self.update(Message::CancelSaveJam);
                 }
@@ -2411,9 +2413,7 @@ impl App {
             }
             Message::JamFilters(on) => {
                 if on && !self.jam_filters_open {
-                    self.chip_expanded = [false; 4];
-                    self.tag_browse = TagBrowse::Categories;
-                    self.tag_query.clear();
+                    self.prepare_filter_editor();
                 }
                 self.jam_filters_open = on;
                 Vec::new()
@@ -2521,8 +2521,7 @@ impl App {
                 Vec::new()
             }
             Message::EditFilter => {
-                self.chip_expanded = [false; 4];
-                self.tag_browse = TagBrowse::Categories;
+                self.prepare_filter_editor();
                 if let Dest::Playlist(i) = self.dest {
                     self.draft = self
                         .lib
@@ -3076,8 +3075,22 @@ mod tests {
                 ("playlist-narrow", 390, 844),
                 ("now-playing", 700, 780),
                 ("now-playing-narrow", 390, 844),
+                ("filter-jam-wide", 1000, 720),
+                ("filter-jam-narrow", 390, 844),
+                ("filter-page-wide", 1000, 720),
+                ("filter-page-narrow", 390, 844),
+                ("filter-playlist-wide", 1000, 720),
+                ("filter-playlist-narrow", 390, 844),
             ] {
-                a.dest = if scene == "playlist-narrow" {
+                a.jam_open = scene.starts_with("filter-jam-");
+                a.jam_filters_open = a.jam_open;
+                a.page_filters_open = scene.starts_with("filter-page-");
+                a.draft = scene
+                    .starts_with("filter-playlist-")
+                    .then(|| a.filter.clone());
+                a.dest = if scene.starts_with("filter-page-") {
+                    Dest::Rediscover
+                } else if scene == "playlist-narrow" || scene.starts_with("filter-playlist-") {
                     Dest::Playlist(0)
                 } else {
                     Dest::Home
@@ -3090,10 +3103,14 @@ mod tests {
                 a.themes_open = scene == "themes-sheet";
                 let theme = a.theme();
                 let mut element = if scene == "filters" {
-                    a.jam_filters_dialog()
+                    crate::components::responsive_dialog::panel(
+                        a.filter_editor(FilterTarget::Jam),
+                        false,
+                        Size::new(width as f32, height as f32),
+                    )
                 } else if scene == "themes" {
                     a.themes_form()
-                } else if scene == "themes-sheet" {
+                } else if scene == "themes-sheet" || scene.starts_with("filter-") {
                     a.view()
                 } else if scene.starts_with("now-playing") {
                     a.now_playing_view()
@@ -3147,6 +3164,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn filter_contexts_share_responsive_presentation_and_keep_edit_semantics() {
+        let mut a = app();
+        let check = |a: &mut App, target| {
+            assert_eq!(a.active_filter_context(), Some(target));
+            for (width, narrow) in [(1000.0, false), (390.0, true)] {
+                let _ = a.update(Message::Resized(width, 844.0));
+                let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+                assert_eq!(a.dialog_open_for_test(), !narrow);
+                assert_eq!(
+                    a.active_filter_context(),
+                    Some(target),
+                    "resizing preserves context"
+                );
+                let _ = a.view();
+            }
+        };
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        check(&mut a, FilterTarget::Jam);
+        let live = a.filter.clone();
+        let _ = a.update(Message::EscapeKey);
+        assert!(a.active_filter_context().is_none());
+        assert_eq!(a.filter, live, "closing a live editor keeps its changes");
+
+        let _ = a.update(Message::Go(Dest::Rediscover));
+        let _ = a.update(Message::PageFilters(true));
+        let _ = a.update(Message::PageTag("practice".into()));
+        check(&mut a, FilterTarget::Page);
+        let live_page = a.rediscover_filter.clone();
+        let _ = a.update(Message::EscapeKey);
+        assert_eq!(a.rediscover_filter, live_page);
+        let _ = a.update(Message::Go(Dest::AboutMe));
+        let _ = a.update(Message::PageFilters(true));
+        check(&mut a, FilterTarget::Page);
+        let _ = a.update(Message::PageFilters(false));
+
+        a.backend
+            .create_dynamic_playlist("Filter context", &live)
+            .unwrap();
+        assert!(a.reload_library());
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Filter context")
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let original = a.lib.playlists[index].filter.clone();
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("practice".into()));
+        check(&mut a, FilterTarget::Draft);
+        let _ = a.update(Message::EscapeKey);
+        assert!(a.draft.is_none());
+        assert_eq!(
+            a.lib.playlists[index].filter, original,
+            "cancel never persists draft changes"
+        );
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("practice".into()));
+        let _ = a.update(Message::SaveFilter);
+        assert!(a.draft.is_none());
+        assert!(
+            a.lib
+                .playlists
+                .iter()
+                .find(|p| p.name == "Filter context")
+                .unwrap()
+                .filter
+                .as_ref()
+                .unwrap()
+                .tags
+                .iter()
+                .any(|tag| tag == "practice")
+        );
     }
 
     #[test]
@@ -4289,9 +4384,17 @@ mod tests {
             let mut el = if name.starts_with("track-tags") {
                 a.track_dialog(&track_edit)
             } else if width < 500 {
-                a.jam_filters_sheet()
+                crate::components::responsive_dialog::panel(
+                    a.filter_editor(FilterTarget::Jam),
+                    true,
+                    Size::new(width as f32, height as f32),
+                )
             } else {
-                a.jam_filters_dialog()
+                crate::components::responsive_dialog::panel(
+                    a.filter_editor(FilterTarget::Jam),
+                    false,
+                    Size::new(width as f32, height as f32),
+                )
             };
             let mut tree = Tree::new(&el);
             let size = Size::new(width as f32, height as f32);
@@ -4304,7 +4407,7 @@ mod tests {
                 assert_eq!(node.size().width, size.width);
                 assert!(node.size().height <= size.height);
             } else {
-                assert_eq!(node.size(), size);
+                assert!(node.size().width <= size.width && node.size().height <= size.height);
             }
             let physical = Size::new(width, node.size().height.ceil() as u32);
             iced::advanced::Renderer::reset(&mut renderer, Rectangle::new(Point::ORIGIN, size));
