@@ -73,7 +73,7 @@ impl App {
         picker: ChipPicker,
         groups: Option<(&'a Filter, FilterTarget)>,
     ) -> Element<'a> {
-        let categories = self.tag_browse != TagBrowse::All;
+        let all_tags = self.tag_browse == TagBrowse::All;
         let mut input_items = self.tag_selection_chips(
             selected,
             groups
@@ -112,10 +112,17 @@ impl App {
             .width(Length::Fill)
             .into(),
         );
-        let mut controls =
-            row![w::section_button(Icon::Tag, Message::TagBrowseToggle).active(categories)]
-                .spacing(2)
-                .align_y(Alignment::Center);
+        let mut controls = row![w::tooltip(
+            w::section_button(Icon::Tag, Message::TagBrowseToggle).active(all_tags),
+            if all_tags {
+                "Show categories"
+            } else {
+                "Show all tags"
+            },
+            w::TooltipPosition::Bottom,
+        )]
+        .spacing(2)
+        .align_y(Alignment::Center);
         if let Some((_, target)) = groups {
             controls = controls.push(w::tooltip(
                 w::section_button(Icon::ListAdd, Message::CommitTagGroup(target)),
@@ -157,7 +164,10 @@ impl App {
                     .map(|categories| {
                         let options = categories.into_iter().map(|key| {
                             let label = key.as_deref().unwrap_or("Custom").to_string();
-                            ChipOption::new(key, label).icon(Icon::Tag)
+                            let style = data::category_style(key.as_deref());
+                            ChipOption::new(key, label)
+                                .icon(crate::icons::for_key(&style.icon))
+                                .color(style.color)
                         });
                         // The category list is deliberately unbounded. It is navigation, not a filter.
                         ChipGroup::new(options, &[], Message::TagCategory)
@@ -400,8 +410,9 @@ impl App {
     ) -> Vec<Element<'a>> {
         let mut chips = Vec::new();
         for tag in selected {
-            let mut chip =
-                w::Chip::new(crate::components::tag_badge::value_of(tag)).size(ChipSize::Medium);
+            let mut chip = w::Chip::new(crate::components::tag_badge::value_of(tag))
+                .size(ChipSize::Medium)
+                .color(self.lib.style_of(tag).color);
             if let Some(toggle) = on_toggle {
                 chip = chip.on_remove(toggle(tag.clone()));
             }

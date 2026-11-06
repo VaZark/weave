@@ -307,6 +307,30 @@ pub fn default_style(tag: &str) -> TagStyle {
     }
 }
 
+/// Category chips share the known tag-key palette; user-defined keys get a stable color.
+pub fn category_style(key: Option<&str>) -> TagStyle {
+    let Some(key) = key else {
+        let mut style = default_style("custom");
+        style.color = parse_hex("#62a0ea").unwrap();
+        return style;
+    };
+    let key = key.to_lowercase();
+    let mut style = default_style(&format!("{key}:category"));
+    if !matches!(
+        key.as_str(),
+        "genre" | "mood" | "lang" | "language" | "energy" | "style"
+    ) {
+        let palette = [
+            "#62a0ea", "#c061cb", "#33bda1", "#e5a44b", "#e87888", "#9a83e8",
+        ];
+        let index = key.bytes().fold(0_usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte as usize)
+        }) % palette.len();
+        style.color = parse_hex(palette[index]).unwrap();
+    }
+    style
+}
+
 /// How "Recent tracks" is ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecentOrder {
@@ -484,13 +508,21 @@ impl Library {
         }
     }
 
-    /// The look of a tag: its own, or the default of its key.
+    /// Keep the tag icon, but inherit its category color consistently across all views.
     pub fn style_of(&self, tag: &str) -> TagStyle {
-        self.styles
+        let mut style = self
+            .styles
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(tag))
             .map(|(_, s)| s.clone())
-            .unwrap_or_else(|| default_style(tag))
+            .unwrap_or_else(|| default_style(tag));
+        let key = tag
+            .strip_prefix('=')
+            .unwrap_or(tag)
+            .split_once(':')
+            .map(|(key, _)| key);
+        style.color = category_style(key).color;
+        style
     }
 
     /// An album's year: the earliest among its tracks, 0 when none has one.

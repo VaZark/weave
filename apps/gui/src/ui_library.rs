@@ -237,20 +237,7 @@ impl App {
                 }),
             _ => self
                 .collection_playlist_indices(&self.collection_query, order)
-                .map(|indices| {
-                    indices
-                        .into_iter()
-                        .map(|i| {
-                            let p = &self.lib.playlists[i];
-                            w::action_row(p.name.clone())
-                                .subtitle(format!("{} tracks", p.tracks.len()))
-                                .prefix(w::avatar(40.0, p.name.clone()))
-                                .chevron(true)
-                                .on_activate(Message::Open(Dest::Playlist(i)))
-                                .into()
-                        })
-                        .collect()
-                }),
+                .map(|indices| indices.into_iter().map(|i| self.playlist_card(i)).collect()),
         };
         let title = match kind {
             Dest::Artists => "All artists",
@@ -267,10 +254,8 @@ impl App {
                         "No matching results"
                     })
                     .into()
-                } else if matches!(kind, Dest::Artists | Dest::Albums) {
-                    self.media_grid(items)
                 } else {
-                    column(items).spacing(4).into()
+                    self.media_grid(items)
                 };
                 column![self.collection_header(title, n), surface::scrolling(body)]
                     .height(Length::Fill)

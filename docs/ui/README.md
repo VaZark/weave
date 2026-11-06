@@ -208,3 +208,18 @@ membership or eligibility changes invalidate the review and require a fresh prev
 Removing a selected tag also opens this confirmation when the affected count is
 zero. Relaxing an AND rule can disqualify no tracks; the dialog reports zero rather
 than implying that removing a tag necessarily removes members.
+
+Filter tag pickers start with categories. The tag icon switches to all tags
+and back to categories, without changing selections. The leading back chevron opens
+the category list. Category chips (`Custom`, `lang`, `genre`, and other keys)
+use their category colors and icons; user-defined keys get stable colors.
+
+Individual tag pills inherit their category color in suggestions, selected input
+pills, and page summaries, including Custom and user-defined tag keys.
+
+Recent and All artist, album, and playlist collections use the shared
+`components::collection::CollectionLayout` for both entries and their layout.
+The shared `CollectionFlow` primitive flows into a grid in wide mode (260 px
+cards, 220 px compact), and full-width rows in narrow mode. Home recent artists,
+albums, and playlists explicitly use cards at both widths. All playlists uses the same artwork, counts, and card rendering
+as Recent playlists. Collection search and ordering only change the items.

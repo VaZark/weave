@@ -688,7 +688,7 @@ impl App {
             analytics_loading: false,
             last_analytics: Instant::now(),
             tag_query: String::new(),
-            tag_browse: TagBrowse::All,
+            tag_browse: TagBrowse::Categories,
             import_report: None,
             import_chooser_open: false,
             import_request: 0,
@@ -1636,7 +1636,8 @@ impl App {
             Message::PageFilters(open) => {
                 self.page_filters_open = open;
                 if open {
-                    self.tag_browse = TagBrowse::All;
+                    self.tag_browse = TagBrowse::Categories;
+                    self.tag_query.clear();
                     self.chip_expanded = [false; 4];
                 }
                 Vec::new()
@@ -2288,7 +2289,7 @@ impl App {
             Message::NewManualPlaylist => {
                 self.creation_filter = Filter::default();
                 self.chip_expanded = [false; 4];
-                self.tag_browse = TagBrowse::All;
+                self.tag_browse = TagBrowse::Categories;
                 self.tag_query.clear();
                 self.artist_query.clear();
                 self.album_query.clear();
@@ -2451,7 +2452,8 @@ impl App {
             Message::JamFilters(on) => {
                 if on && !self.jam_filters_open {
                     self.chip_expanded = [false; 4];
-                    self.tag_browse = TagBrowse::All;
+                    self.tag_browse = TagBrowse::Categories;
+                    self.tag_query.clear();
                 }
                 self.jam_filters_open = on;
                 Vec::new()
@@ -2560,7 +2562,7 @@ impl App {
             }
             Message::EditFilter => {
                 self.chip_expanded = [false; 4];
-                self.tag_browse = TagBrowse::All;
+                self.tag_browse = TagBrowse::Categories;
                 if let Dest::Playlist(i) = self.dest {
                     self.draft = self
                         .lib
@@ -3930,13 +3932,67 @@ mod tests {
     }
 
     #[test]
+    fn individual_tags_inherit_their_category_color() {
+        let mut a = app();
+        a.lib.styles.push((
+            "occasion:wedding".into(),
+            data::TagStyle {
+                icon: "star".into(),
+                color: iced::Color::BLACK,
+            },
+        ));
+        for (tag, category) in [
+            ("genre:bachata", Some("genre")),
+            ("genre:zouk", Some("genre")),
+            ("lang:tamil", Some("lang")),
+            ("occasion:wedding", Some("occasion")),
+            ("occasion:party", Some("occasion")),
+            ("practice", None),
+            ("90s", None),
+        ] {
+            assert_eq!(
+                a.lib.style_of(tag).color,
+                data::category_style(category).color,
+                "{tag}"
+            );
+        }
+        assert_eq!(a.lib.style_of("occasion:wedding").icon, "star");
+    }
+
+    #[test]
+    fn filter_picker_defaults_to_categories_and_tag_icon_opens_all_tags() {
+        let mut a = app();
+        let _ = a.update(Message::JamFilters(true));
+        assert_eq!(a.tag_browse, TagBrowse::Categories);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let filter = a.filter.clone();
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::All);
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::Categories);
+        assert_eq!(a.filter, filter);
+        assert_ne!(
+            data::category_style(Some("genre")).color,
+            data::category_style(Some("lang")).color
+        );
+        assert_ne!(
+            data::category_style(None).color,
+            data::category_style(Some("lang")).color
+        );
+        assert_eq!(
+            data::category_style(Some("occasion")).color,
+            data::category_style(Some("occasion")).color
+        );
+    }
+
+    #[test]
     fn tag_category_navigation_keeps_live_filters_drafts_and_track_selections() {
         let mut a = app();
         let _ = a.update(Message::JamFilters(true));
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
         let selected = a.filter.clone();
         let _ = a.update(Message::TagBrowseToggle);
-        assert_eq!(a.tag_browse, TagBrowse::Categories);
+        assert_eq!(a.tag_browse, TagBrowse::All);
         let _ = a.update(Message::TagQuery("sensual".into()));
         assert_eq!(
             a.backend.tag_categories(&a.tag_query).unwrap(),

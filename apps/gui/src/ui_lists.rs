@@ -4,10 +4,11 @@
 use iad::Icon;
 use iad::prelude::{self as w, Menu, MenuItem, VirtualList, typography as ty};
 use iced::alignment::Horizontal;
-use iced::widget::{button, column, container, row, scrollable, space};
+use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 
+use crate::components::collection::CollectionLayout;
 use crate::components::media_list::MediaListLayout;
 use crate::data::{Filter, RecentOrder, Track};
 use crate::icons::{cover, playlist_avatar};
@@ -52,18 +53,6 @@ fn or_note<'a>(empty: bool, note: &'static str, body: impl Into<Element<'a>>) ->
     } else {
         body.into()
     }
-}
-
-/// The most characters of a playlist's name its tile shows: about two lines.
-const PLAYLIST_NAME_MAX: usize = 25;
-
-/// `text` cut to `max` characters, with `…` where it was cut.
-fn limit_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
 }
 
 impl App {
@@ -369,103 +358,26 @@ impl App {
 
     // ---- grids ----------------------------------------------------------------------------
 
-    /// Cards that fit the width, or (in compact mode) the same entries as a tight list: iad's
-    /// `FlowGrid`, with the density decided once.
-    pub(super) fn grid<'a>(&self, items: Vec<Element<'a>>, card_width: f32) -> Element<'a> {
-        // Compact shrinks the cards into tight rows but they still flow as a grid, never as one
-        // vertical column (`FlowGrid::cols(1)` would be that).
-        w::FlowGrid::new(items)
-            .max_width(if self.compact() { 220.0 } else { card_width })
-            .spacing(if self.compact() { 8.0 } else { 12.0 })
-            .into()
+    pub(super) fn collection_layout(&self) -> crate::components::collection::CollectionLayout {
+        crate::components::collection::CollectionLayout::new(self.is_narrow(), self.compact())
     }
 
-    /// An album, an artist or a playlist: a card, or a compact row (the picture shrinks with it).
-    fn media_card<'a>(
-        &self,
-        title: String,
-        subtitle: String,
-        picture: impl Fn(f32) -> Element<'a>,
-        card_picture: f32,
-        raised: bool,
-        on_press: Message,
-    ) -> Element<'a> {
-        let compact = self.compact();
-        if !compact {
-            // The picture
-            // at the left and the title beside it, centered on it, the name cut at
-            // `PLAYLIST_NAME_MAX` characters (about two lines). (The kind and the
-            // count are left out; compact rows still show them.) Text wraps at words
-            // (`heading` alone never wraps).
-            let wrap = iced::widget::text::Wrapping::WordOrGlyph;
-            let body = row![
-                picture(card_picture),
-                ty::heading(limit_chars(&title, PLAYLIST_NAME_MAX))
-                    .wrapping(wrap)
-                    .width(Length::Fill)
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center);
-            let surface = container(body)
-                .padding(12) // gutter-ok: the entry's own padding
-                .width(Length::Fill)
-                .height(Length::Fill);
-            let surface = if raised {
-                surface.style(iad::styles::container::card)
-            } else {
-                surface
-            };
-            return button(surface)
-                .padding(0)
-                .style(move |theme, status| {
-                    if raised {
-                        iad::styles::button::events(theme, status)
-                    } else {
-                        iad::styles::button::flat(theme, status)
-                    }
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .on_press(on_press)
-                .into();
-        }
-        w::ItemCard::new(title)
-            .subtitle(subtitle)
-            .picture(picture(if compact { 36.0 } else { card_picture }))
-            .density(if compact {
-                iad::config::Density::Compact
-            } else {
-                iad::config::Density::Comfort
-            })
-            .on_press(on_press)
-            .into()
-    }
-
-    /// Artist and album collections use full-width rows narrow, flat horizontal entries wide.
     pub(super) fn media_grid<'a>(&self, items: Vec<Element<'a>>) -> Element<'a> {
-        if self.is_narrow() {
-            column(items).spacing(4).width(Length::Fill).into()
-        } else {
-            self.grid(items, 260.0)
-        }
+        self.collection_layout().view(items)
     }
 
     pub(super) fn album_card(&self, i: usize, show_artist: bool) -> Element<'_> {
+        self.album_card_in(i, show_artist, self.collection_layout())
+    }
+
+    fn album_card_in(&self, i: usize, show_artist: bool, layout: CollectionLayout) -> Element<'_> {
         let (name, artist, _) = self.lib.albums()[i].clone();
         let subtitle = if show_artist {
             artist.clone()
         } else {
             self.lib.year_label(&name, &artist)
         };
-        if self.is_narrow() {
-            return w::action_row(name)
-                .subtitle(subtitle)
-                .prefix(cover(i, 40.0))
-                .chevron(true)
-                .on_activate(Message::Open(Dest::Album(i)))
-                .into();
-        }
-        self.media_card(
+        layout.item(
             name,
             subtitle,
             |s| cover(i, s),
@@ -475,11 +387,15 @@ impl App {
         )
     }
 
-    fn playlist_card(&self, i: usize) -> Element<'_> {
+    pub(super) fn playlist_card(&self, i: usize) -> Element<'_> {
+        self.playlist_card_in(i, self.collection_layout())
+    }
+
+    fn playlist_card_in(&self, i: usize, layout: CollectionLayout) -> Element<'_> {
         let p = &self.lib.playlists[i];
         let n = self.lib.playlist_tracks(p).len();
         let kind = if !p.manual { "dynamic" } else { "manual" };
-        self.media_card(
+        layout.item(
             p.name.clone(),
             format!("{kind} · {n} tracks"),
             |s| playlist_avatar(&p.name, p.icon, s),
@@ -490,19 +406,18 @@ impl App {
     }
 
     pub(super) fn artist_card(&self, i: usize, with_plays: Option<u32>) -> Element<'_> {
+        self.artist_card_in(i, with_plays, self.collection_layout())
+    }
+
+    fn artist_card_in(
+        &self,
+        i: usize,
+        with_plays: Option<u32>,
+        layout: CollectionLayout,
+    ) -> Element<'_> {
         let name = self.lib.artists()[i].0.clone();
         let subtitle = with_plays.map(|plays| format!("{plays} plays"));
-        if self.is_narrow() {
-            let mut entry = w::action_row(name.clone())
-                .prefix(w::avatar(40.0, name))
-                .chevron(true)
-                .on_activate(Message::Open(Dest::Artist(i)));
-            if let Some(subtitle) = subtitle {
-                entry = entry.subtitle(subtitle);
-            }
-            return entry.into();
-        }
-        self.media_card(
+        layout.item(
             name.clone(),
             subtitle.unwrap_or_default(),
             |s| w::avatar(s, name.clone()).into(),
@@ -549,39 +464,39 @@ impl App {
             .into_iter()
             .cloned()
             .collect();
+        let recent_layout = self.collection_layout().cards();
         let recent_order = weave_player_lib::core::CollectionOrder::Recent;
         let playlist_indices = self
             .collection_playlist_indices("", recent_order)
             .unwrap_or_default();
         let no_playlists = playlist_indices.is_empty();
-        let playlists = self.grid(
+        let playlists = recent_layout.view(
             playlist_indices
                 .into_iter()
                 .take(6)
-                .map(|i| self.playlist_card(i))
+                .map(|i| self.playlist_card_in(i, recent_layout))
                 .collect(),
-            260.0,
         );
         let recent_artists = self
             .collection_artist_indices("", recent_order)
             .unwrap_or_default();
         let no_artists = recent_artists.is_empty();
-        let artists = self.media_grid(
+        let artists = recent_layout.view(
             recent_artists
                 .into_iter()
                 .take(8)
-                .map(|i| self.artist_card(i, None))
+                .map(|i| self.artist_card_in(i, None, recent_layout))
                 .collect(),
         );
         let recent_albums = self
             .collection_album_indices("", recent_order)
             .unwrap_or_default();
         let n_albums = recent_albums.len();
-        let albums = self.media_grid(
+        let albums = recent_layout.view(
             recent_albums
                 .into_iter()
                 .take(6)
-                .map(|i| self.album_card(i, true))
+                .map(|i| self.album_card_in(i, true, recent_layout))
                 .collect(),
         );
         let page = column![
@@ -1199,22 +1114,5 @@ impl App {
             Dest::Playlists => self.playlists(),
             Dest::Playlist(_) | Dest::Artist(_) | Dest::Album(_) => self.detail_page(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::limit_chars;
-
-    #[test]
-    fn a_long_name_is_cut_with_an_ellipsis_and_a_short_one_is_kept() {
-        assert_eq!(limit_chars("Road trip", 50), "Road trip");
-        let fifty = "x".repeat(50);
-        assert_eq!(limit_chars(&fifty, 50), fifty, "exactly the limit is kept");
-        let long = format!("{} tail", "word ".repeat(20));
-        let cut = limit_chars(&long, 50);
-        assert!(cut.chars().count() <= 50 && cut.ends_with('…'), "{cut}");
-        // Characters, not bytes: accents do not shorten the allowance.
-        assert_eq!(limit_chars(&"é".repeat(60), 50).chars().count(), 50);
     }
 }
