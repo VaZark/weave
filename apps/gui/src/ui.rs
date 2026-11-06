@@ -21,20 +21,18 @@ pub const MINI_H: f32 = 60.0;
 
 impl App {
     pub fn view(&self) -> Element<'_> {
-        let body: Element<'_> = if self.minimal {
-            self.minimal_view()
-        } else {
-            adaptive(&self.adaptive)
-                .layout(Layout::Narrow, || self.narrow())
-                .layout(Layout::Wide, || self.wide())
-                .into()
-        };
+        let body: Element<'_> = adaptive(&self.adaptive)
+            .layout(Layout::Narrow, || self.narrow())
+            .layout(Layout::Wide, || self.wide())
+            .into();
         let framed = self.chrome(true, true).frame(body, Message::Window);
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
         let jam_filters = self.jam_filters_showing() && !self.is_narrow();
         let saving = self.save_name.is_some() && !self.save_manual && !self.is_narrow();
         let backdrop = if self.manual_filter_review.is_some() {
             Some(Message::CancelManualFilterReview)
+        } else if self.themes_open && !self.is_narrow() {
+            Some(Message::Themes(false))
         } else if self.import_report.is_some() && !self.is_narrow() {
             Some(Message::DismissImportReport)
         } else if jam_filters {
@@ -71,6 +69,16 @@ impl App {
         // Rule changes remove curated tracks only after a dialog, at every window width.
         if let Some(review) = &self.manual_filter_review {
             return Some(self.manual_filter_confirmation(review));
+        }
+        if self.themes_open && !self.is_narrow() {
+            return Some(
+                container(self.themes_form())
+                    .padding(20)
+                    .width(Length::Fixed(480.0))
+                    .height(Length::Fixed((self.win_h - 100.0).clamp(240.0, 560.0)))
+                    .style(style::container::dialog)
+                    .into(),
+            );
         }
         if self.playlist_tracks_open && !self.is_narrow() {
             return Some(
@@ -278,6 +286,7 @@ impl App {
                     DensityPref::Compact
                 })),
             )])
+            .section([w::MenuItem::action("Themes…", wrap(Message::Themes(true))).icon(Icon::Star)])
             .section([
                 w::MenuItem::action(
                     "Import files…",
@@ -502,6 +511,55 @@ impl App {
             .size(w::DockSize::Fraction(0.8))
             .mode(w::DockMode::Overlay)
             .on_outside(Message::PageFilters(false))
+            .into()
+        } else {
+            base
+        };
+        let base = if self.themes_open {
+            let shade = iced::widget::mouse_area(
+                container(
+                    iced::widget::space()
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .style(|_| iced::widget::container::Style {
+                    background: Some(
+                        iced::Color {
+                            a: 0.25,
+                            ..iced::Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..Default::default()
+                }),
+            )
+            .on_press(Message::Themes(false));
+            let panel = container(self.themes_form())
+                .padding(20)
+                .width(Length::Fill)
+                .height(Length::Fixed((self.win_h * 0.75).clamp(240.0, 640.0)))
+                .style(|theme: &iad::Theme| {
+                    let mut style = style::container::dialog(theme);
+                    style.border.radius = iced::border::Radius {
+                        top_left: theme.metrics.radius_l,
+                        top_right: theme.metrics.radius_l,
+                        bottom_left: 0.0,
+                        bottom_right: 0.0,
+                    };
+                    style
+                });
+            iced::widget::stack![
+                base,
+                shade,
+                column![
+                    iced::widget::space().height(Length::Fill),
+                    iced::widget::opaque(panel)
+                ]
+                .width(Length::Fill)
+                .height(Length::Fill)
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
         } else {
             base

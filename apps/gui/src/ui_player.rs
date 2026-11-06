@@ -5,7 +5,7 @@ use iad::prelude::{
 };
 use iad::{Icon, styles as style};
 use iced::widget::{button, column, container, mouse_area, row, space, vertical_slider};
-use iced::{Alignment, Background, Color, Length};
+use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
 
 use crate::components::tag_badge::tag_pill;
@@ -123,7 +123,6 @@ impl App {
     /// Wide layout: the player bar.
     pub fn player_bar(&self) -> Element<'_> {
         let Some(t) = self.now() else {
-            // Nothing playing: no bar at all.
             return space::vertical().height(0).into();
         };
         // Equal side regions keep transport centered independently of the metadata/actions.
@@ -158,7 +157,6 @@ impl App {
             w::IconToggleButton::new(Icon::Queue, self.queue_open)
                 .size(16.0)
                 .on_toggle(move |_| Message::ToggleQueue),
-            w::icon_button(Icon::Compact).on_press(Message::Minimal(true)),
         ]
         .spacing(4)
         .align_y(Alignment::Center);
@@ -368,6 +366,34 @@ impl App {
 
     // ---- Now Playing ----------------------------------------------------------------------
 
+    pub(super) fn radial_visualizer_visible(&self) -> bool {
+        self.now_playing
+            && self.now().is_some()
+            && self.theme_config.text("player", "artwork") == Some("disc")
+            && self.theme_config.bool("player", "radial-visualizer") == Some(true)
+            && !(self.show_lyrics && self.is_narrow())
+            && !iad::config::current().reduced_motion
+    }
+
+    fn player_artwork(&self, track: &Track, size: f32) -> Element<'_> {
+        if self.theme_config.text("player", "artwork") == Some("disc") {
+            let silent = &[];
+            let bands = if iad::config::current().reduced_motion {
+                silent
+            } else {
+                &self.spectrum[..]
+            };
+            crate::components::disc_artwork::disc(
+                track.id,
+                size,
+                bands,
+                self.theme_config.bool("player", "radial-visualizer") == Some(true),
+            )
+        } else {
+            cover(track.id, size)
+        }
+    }
+
     /// Now Playing: the cover, or the lyrics in its place. The transport controls are only
     /// here when the layout has no player bar (narrow): they are not drawn twice.
     pub fn now_playing_view(&self) -> Element<'_> {
@@ -388,7 +414,7 @@ impl App {
         let tags = row(t
             .tags
             .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Medium)))
+            .map(|g| tag_pill(g, &self.tag_style(g), ChipSize::Medium)))
         .spacing(6)
         .wrap();
         let info = column![
@@ -426,10 +452,13 @@ impl App {
         let stage: Element<'_> = if beside {
             // The cover and what it is on the left, the lyrics on the right.
             row![
-                column![container(cover(t.id, 300.0)).center(Length::Fill), info]
-                    .spacing(12)
-                    .align_x(Alignment::Center)
-                    .width(Length::FillPortion(1)),
+                column![
+                    container(self.player_artwork(t, 300.0)).center(Length::Fill),
+                    info
+                ]
+                .spacing(12)
+                .align_x(Alignment::Center)
+                .width(Length::FillPortion(1)),
                 container(synced())
                     .width(Length::FillPortion(1))
                     .height(Length::Fill),
@@ -441,7 +470,9 @@ impl App {
             let art: Element<'_> = if self.show_lyrics {
                 synced()
             } else {
-                container(cover(t.id, 260.0)).center(Length::Fill).into()
+                container(self.player_artwork(t, 300.0))
+                    .center(Length::Fill)
+                    .into()
             };
             column![
                 container(art).height(Length::Fill).width(Length::Fill),
@@ -466,26 +497,21 @@ impl App {
                 .on_press(Message::Window(iad::windows::Action::Drag)),
         ]
         .align_y(Alignment::Center);
-        let backdrop = iad::color::from_index(t.id);
         container(column![
             close,
             surface::full(container(body).center_x(Length::Fill))
         ])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(move |t: &iad::Theme| {
-            // Opaque: the window colour with a wash of the cover's colour.
-            let base = t.palette.window_bg_color;
-            let k = 0.14;
-            iced::widget::container::Style {
-                background: Some(Background::Color(Color {
-                    r: base.r + (backdrop.r - base.r) * k,
-                    g: base.g + (backdrop.g - base.g) * k,
-                    b: base.b + (backdrop.b - base.b) * k,
+        .style(|theme: &iad::Theme| iced::widget::container::Style {
+            background: Some(
+                Color {
                     a: 1.0,
-                })),
-                ..Default::default()
-            }
+                    ..theme.semantic.window.bg
+                }
+                .into(),
+            ),
+            ..Default::default()
         })
         .into()
     }

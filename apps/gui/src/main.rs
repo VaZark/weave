@@ -5,6 +5,7 @@
 //! here; the layouts in `ui.rs` only render it, so a
 //! window that crosses the breakpoint loses nothing.
 
+mod appearance;
 mod backend;
 mod components;
 mod data;
@@ -15,7 +16,6 @@ mod ui;
 mod ui_dialogs;
 mod ui_library;
 mod ui_lists;
-mod ui_minimal;
 mod ui_player;
 mod ui_search;
 
@@ -40,12 +40,6 @@ pub const ROW: f32 = 56.0;
 pub const ROW_COMPACT: f32 = 32.0;
 
 const WINDOW: (f32, f32) = (1120.0, 720.0);
-
-/// The window in minimal mode: one line, as high as the player bar.
-const MINIMAL: (f32, f32) = (560.0, 72.0);
-/// The narrowest minimal mode goes.
-const MINIMAL_MIN_WIDTH: f32 = 360.0;
-const MINIMAL_MAX_WIDTH: f32 = 900.0;
 
 /// `WEAVE_GUI_SIZE=WxH` starts the window at that size (to judge the narrow layout).
 fn window_size() -> (f32, f32) {
@@ -210,6 +204,10 @@ pub enum Message {
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
+    Themes(bool),
+    ImportTheme,
+    ThemeChosen(Option<std::path::PathBuf>),
+    SelectTheme(Option<String>),
     WhileDays(u32),
     ToggleFavorite(String),
     /// The heart of a track: in or out of the Favourites playlist.
@@ -308,12 +306,8 @@ pub enum Message {
     Repeat,
     /// The volume slider: 0.0 to 1.0.
     SetVolume(f32),
-    /// Enter (true) or leave minimal mode: the window shrinks to the one-line player and back.
-    Minimal(bool),
-    /// A new reading of the spectrum, while minimal mode draws it.
+    /// A new reading of the spectrum while the Now Playing ring is visible.
     SpectrumTick,
-    /// The cover in minimal mode: switch between the spectrum and the song with its controls.
-    MinimalDetails,
     /// The volume button: mute, or back to the volume before.
     ToggleMute,
     Queue(ReorderEvent),
@@ -563,13 +557,7 @@ pub struct App {
     /// The window's height, for how far a sheet travels.
     pub win_h: f32,
     pub win_w: f32,
-    /// Minimal mode: the window is the one-line player.
-    pub minimal: bool,
-    /// The window size to come back to when minimal mode ends.
-    pub restore_size: Option<(f32, f32)>,
-    /// Minimal mode shows the song, artist and controls instead of the spectrum.
-    pub minimal_details: bool,
-    /// The spectrum of what plays, as last read (drawn in minimal mode).
+    /// The spectrum of what plays, as last read (drawn by the Now Playing visualizer).
     pub spectrum: [f32; weave_player_lib::core::spectrum::BANDS],
     pub show_lyrics: bool,
     pub history: History<Place>,
@@ -597,6 +585,11 @@ pub struct App {
     history_seq: u64,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
+    pub themes: appearance::ThemeLibrary,
+    pub theme_scheme: Option<iad::palette::Scheme>,
+    pub theme_import_pending: bool,
+    pub themes_open: bool,
+    pub theme_config: iad::theme_config::ThemeConfig,
     /// "It's been a while" on Home: rated highly, not played for this many days.
     pub while_days: u32,
     pub favorites: std::collections::HashSet<String>,
@@ -640,7 +633,18 @@ impl App {
         let dev = iad::dev::Switches::from_env();
         dev.apply();
         let session = backend.snapshot();
+        let themes = appearance::ThemeLibrary::load(appearance::config_directory());
+        let theme_config = themes
+            .current()
+            .map(|theme| theme.config.clone())
+            .unwrap_or_else(|| appearance::config(""));
+        let theme_scheme = themes.current().and_then(|theme| theme.scheme);
         let mut app = Self {
+            themes,
+            theme_config,
+            theme_scheme,
+            theme_import_pending: false,
+            themes_open: false,
             backend,
             adaptive: Adaptive::new(
                 Layouts::new()
@@ -708,9 +712,6 @@ impl App {
             queue_slide: Slide::default(),
             win_h: window_size().1,
             win_w: window_size().0,
-            minimal: false,
-            restore_size: None,
-            minimal_details: false,
             spectrum: [0.0; weave_player_lib::core::spectrum::BANDS],
             show_lyrics: false,
             history: History::new(Place::home()),
@@ -771,28 +772,6 @@ impl App {
                 let _ = rx.await;
                 Message::Fullscreen(true)
             }));
-        }
-        let start_minimal = matches!(
-            std::env::var("WEAVE_GUI_START").as_deref(),
-            Ok("minimal" | "minimal-details")
-        );
-        if start_minimal {
-            // After the window is on screen, as when the compact button is pressed.
-            let delayed = |ms: u64, m: Message| {
-                Task::future(async move {
-                    let (tx, rx) = iced::futures::channel::oneshot::channel();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(ms));
-                        let _ = tx.send(());
-                    });
-                    let _ = rx.await;
-                    m
-                })
-            };
-            tasks.push(delayed(1500, Message::Minimal(true)));
-            if std::env::var("WEAVE_GUI_START").as_deref() == Ok("minimal-details") {
-                tasks.push(delayed(2200, Message::MinimalDetails));
-            }
         }
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
@@ -903,21 +882,7 @@ impl App {
         }
         // Development switches (screenshot, holding animations) are iad's, from the environment.
         if dev.screenshot.is_some() {
-            // Minimal mode opens a window of its own, so the shot is of the newest one, taken
-            // after that has happened.
-            let window = if start_minimal {
-                Task::future(async {
-                    let (tx, rx) = iced::futures::channel::oneshot::channel();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(3000));
-                        let _ = tx.send(());
-                    });
-                    let _ = rx.await;
-                })
-                .then(|_| iced::window::latest())
-            } else {
-                iced::window::oldest()
-            };
+            let window = iced::window::oldest();
             tasks.push(
                 window
                     .and_then(move |id| dev.capture(id).unwrap_or_else(Task::none))
@@ -1507,43 +1472,6 @@ impl App {
             }
             Message::Tick(t) => self.adaptive.tick(t),
             Message::Transition(e) => self.adaptive.report(e, now),
-            Message::Minimal(on) => {
-                if on == self.minimal {
-                    return Task::none();
-                }
-                self.minimal = on;
-                self.minimal_details = false;
-                let settings = if on {
-                    // Overlays go; the player stays.
-                    self.now_playing = false;
-                    self.queue_open = false;
-                    self.restore_size = Some((self.win_w, self.win_h));
-                    iced::window::Settings {
-                        size: iced::Size::new(MINIMAL.0, MINIMAL.1),
-                        min_size: Some(iced::Size::new(MINIMAL_MIN_WIDTH, MINIMAL.1)),
-                        // As high as the strip, and as wide as the user pulls it.
-                        max_size: Some(iced::Size::new(MINIMAL_MAX_WIDTH, MINIMAL.1)),
-                        ..iad::windows::settings_for(platforms::APP_ID)
-                    }
-                } else {
-                    let (w, h) = self.restore_size.take().unwrap_or_else(window_size);
-                    iced::window::Settings {
-                        size: iced::Size::new(w, h),
-                        ..iad::windows::settings_for(platforms::APP_ID)
-                    }
-                };
-                // A new window of the size wanted, then the old one closes: on Wayland a window
-                // cannot be told its new size (winit sends no resize event for a request, so the
-                // app would keep drawing at the old size).
-                return iced::window::oldest().and_then(move |old| {
-                    let (_, open) = iced::window::open(settings.clone());
-                    open.then(move |_| iced::window::close(old))
-                });
-            }
-            Message::MinimalDetails => {
-                self.minimal_details = !self.minimal_details;
-                Vec::new()
-            }
             Message::SpectrumTick => {
                 self.spectrum = weave_player_lib::core::spectrum::bands();
                 Vec::new()
@@ -1834,6 +1762,35 @@ impl App {
                 }
                 return self.update(Message::Go(Dest::Explore));
             }
+            Message::Themes(open) => {
+                self.themes_open = open;
+                self.sheet = None;
+                Vec::new()
+            }
+            Message::ImportTheme => {
+                if self.theme_import_pending {
+                    return Task::none();
+                }
+                self.theme_import_pending = true;
+                return Task::perform(appearance::choose(), Message::ThemeChosen);
+            }
+            Message::ThemeChosen(path) => {
+                self.theme_import_pending = false;
+                if let Some(path) = path {
+                    match self.themes.import(&path) {
+                        Ok(key) => return self.update(Message::SelectTheme(Some(key))),
+                        Err(error) => self.say(format!("Cannot import theme: {error}")),
+                    }
+                }
+                Vec::new()
+            }
+            Message::SelectTheme(key) => {
+                match self.themes.select(key) {
+                    Ok(()) => self.apply_theme(),
+                    Err(error) => self.say(format!("Cannot select theme: {error}")),
+                }
+                Vec::new()
+            }
             Message::SetDensity(d) => {
                 self.density = d;
                 Vec::new()
@@ -2079,6 +2036,9 @@ impl App {
                 return self.update(Message::Fullscreen(!self.fullscreen));
             }
             Message::EscapeKey => {
+                if self.themes_open {
+                    return self.update(Message::Themes(false));
+                }
                 if self.manual_filter_review.is_some() {
                     return self.update(Message::CancelManualFilterReview);
                 }
@@ -2945,7 +2905,9 @@ impl App {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Progress));
         }
         // The bars are read as often as they are drawn, and until they have fallen quiet.
-        if self.minimal && (self.player.playing || self.spectrum.iter().any(|l| *l > 0.0)) {
+        if self.radial_visualizer_visible()
+            && (self.player.playing || self.spectrum.iter().any(|l| *l > 0.0))
+        {
             subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::SpectrumTick));
         }
         Subscription::batch(subs)
@@ -2959,7 +2921,14 @@ impl App {
     }
 
     fn theme(&self) -> iad::Theme {
-        iad::Theme::from_config(&iad::config::current())
+        let theme = appearance::theme(self.theme_scheme, &self.theme_config);
+        if self.theme_config.bool("player", "ambient") == Some(true) {
+            if let Some(track) = self.now() {
+                let color = iad::color::from_index(track.id);
+                return theme.with_tint(Some(iced::Color { a: 0.16, ..color }));
+            }
+        }
+        theme
     }
 }
 
@@ -3053,6 +3022,186 @@ mod tests {
     fn app() -> App {
         let (backend, lib) = backend::sample::backend();
         App::with(backend, lib).0
+    }
+
+    #[test]
+    fn theme_presets_render_pages_and_filters_without_changing_library_state() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless, Style},
+            widget::Tree,
+        };
+        use iced::{Font, Pixels, Point, Rectangle, Size, mouse};
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        for name in ["After hours", "Velvet grooves", "Summer crush"] {
+            a.backend.create_dynamic_playlist(name, &a.filter).unwrap();
+        }
+        assert!(a.reload_library());
+        a.player.queue = vec![0];
+        a.player.current = Some(0);
+        // Synthetic levels only in this rendering fixture; production reads the audio tap.
+        a.spectrum =
+            std::array::from_fn(|index| ((index as f32 * 0.7).sin() * 0.35 + 0.45).clamp(0.0, 1.0));
+        a.themes.themes = appearance::EXAMPLES
+            .into_iter()
+            .map(|text| appearance::ThemeDocument::parse(text).unwrap())
+            .collect();
+        let original_filter = a.filter.clone();
+        let original_rows = a.rows.clone();
+        for text in appearance::EXAMPLES {
+            let document = appearance::ThemeDocument::parse(text).unwrap();
+            a.theme_config = document.config.clone();
+            a.theme_scheme = document.scheme;
+            a.themes.selected = Some(document.key.clone());
+            assert_eq!(a.filter, original_filter);
+            assert_eq!(a.rows, original_rows);
+            assert_eq!(
+                a.tag_style("genre:bachata").color,
+                a.category_style(Some("genre")).color
+            );
+            for (scene, width, height) in [
+                ("app", 1000, 720),
+                ("home", 1000, 720),
+                ("home-narrow", 390, 720),
+                ("filters", 560, 520),
+                ("themes", 480, 560),
+                ("themes-sheet", 390, 844),
+                ("now-playing", 700, 780),
+                ("now-playing-narrow", 390, 844),
+            ] {
+                let _ = a.update(Message::Resized(width as f32, height as f32));
+                let _ = a.update(Message::Tick(
+                    Instant::now() + std::time::Duration::from_secs(2),
+                ));
+                a.now_playing = scene.starts_with("now-playing");
+                a.themes_open = scene == "themes-sheet";
+                let theme = a.theme();
+                let mut element = if scene == "filters" {
+                    a.jam_filters_dialog()
+                } else if scene == "themes" {
+                    a.themes_form()
+                } else if scene == "themes-sheet" {
+                    a.view()
+                } else if scene.starts_with("now-playing") {
+                    a.now_playing_view()
+                } else if scene == "app" {
+                    a.view()
+                } else {
+                    a.page()
+                };
+                let mut tree = Tree::new(&element);
+                let size = Size::new(width as f32, height as f32);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                assert!(node.size().width <= size.width && node.size().height <= size.height);
+                iced::advanced::Renderer::reset(&mut renderer, Rectangle::new(Point::ORIGIN, size));
+                let mut messages = Vec::new();
+                let mut shell = iced::advanced::Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
+                    layout::Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &Rectangle::new(Point::ORIGIN, size),
+                );
+                element.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme,
+                    &Style {
+                        text_color: theme.semantic.window.fg,
+                    },
+                    layout::Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &Rectangle::new(Point::ORIGIN, size),
+                );
+                if let Some(dir) = std::env::var_os("WEAVE_THEME_REVIEW_DIR") {
+                    let physical = Size::new(width, height);
+                    let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
+                    let path =
+                        std::path::PathBuf::from(dir).join(format!("{}-{scene}.png", document.key));
+                    iad::dev::save_png(
+                        &iced::window::Screenshot::new(pixels, physical, 1.0),
+                        &path,
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn themes_uses_a_dialog_or_sheet_and_keeps_density_separate() {
+        let mut a = app();
+        let root = import_picker::tests::temp();
+        a.themes = appearance::ThemeLibrary::load(root.join("settings"));
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
+        let _ = a.update(Message::Resized(1000.0, 720.0));
+        let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+        let _ = a.update(Message::Themes(true));
+        assert!(a.themes_open && a.dialog_open_for_test());
+        let _ = a.view();
+        let source = root.join("theme.conf");
+        std::fs::write(&source, appearance::EXAMPLES[0]).unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(source)));
+        assert!(a.themes_open, "import must return to the chooser");
+        assert!(a.compact(), "theme selection must keep compact density");
+        assert!(a.themes.current().is_some());
+        let _ = a.update(Message::SelectTheme(None));
+        assert!(a.themes_open && a.themes.current().is_none());
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+        assert!(
+            a.themes_open && !a.dialog_open_for_test(),
+            "narrow uses a bottom sheet"
+        );
+        let _ = a.view();
+        let _ = a.update(Message::EscapeKey);
+        assert!(!a.themes_open);
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::SheetAction(Box::new(Message::Themes(true))));
+        assert!(a.themes_open && a.sheet.is_none());
+        let _ = a.update(Message::Themes(false));
+        assert!(!a.themes_open && a.compact());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn theme_import_cancellation_failure_and_selection_preserve_the_music_state() {
+        let mut a = app();
+        let root = import_picker::tests::temp();
+        a.themes = appearance::ThemeLibrary::load(root.join("themes-test"));
+        let original = a.filter.clone();
+        a.theme_import_pending = true;
+        let _ = a.update(Message::ThemeChosen(None));
+        assert!(!a.theme_import_pending);
+        assert!(a.themes.themes.is_empty());
+        let path = root.join("skin.conf");
+        std::fs::write(&path, appearance::EXAMPLES[0]).unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(path.clone())));
+        assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
+        assert_eq!(a.theme_config.text("player", "artwork"), Some("disc"));
+        assert_eq!(a.filter, original);
+        std::fs::write(&path, "[theme]\nkey=../invalid\n").unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(path)));
+        assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
+        assert!(a.notice.as_ref().unwrap().0.contains("Cannot import theme"));
+        let _ = a.update(Message::SelectTheme(None));
+        assert_eq!(a.theme_config.text("player", "artwork"), Some("square"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4740,33 +4889,6 @@ mod tests {
         assert_eq!(a.filter.count(), 1);
         let _ = a.update(Message::Bpm(data::BPM));
         assert!(a.filter.is_empty());
-    }
-
-    #[test]
-    fn minimal_mode_shrinks_the_window_and_remembers_its_size_to_come_back() {
-        let (backend, lib) = backend::sample::backend();
-        let mut a = App::with(backend, lib).0;
-        a.play(vec![10, 11], 0);
-        let _ = a.update(Message::Resized(900.0, 640.0));
-        let _ = a.update(Message::NowPlaying(true));
-        let _ = a.update(Message::Minimal(true));
-        assert!(a.minimal && !a.now_playing, "overlays close");
-        assert_eq!(a.restore_size, Some((900.0, 640.0)));
-        // The strip builds in both views, and the cover switches between them.
-        let _ = a.view();
-        assert!(!a.minimal_details, "the spectrum first");
-        let _ = a.update(Message::MinimalDetails);
-        assert!(a.minimal_details);
-        let _ = a.view();
-        let _ = a.update(Message::MinimalDetails);
-        assert!(!a.minimal_details);
-        let _ = a.update(Message::Resized(560.0, 72.0));
-        let _ = a.update(Message::Minimal(false));
-        assert!(!a.minimal);
-        assert_eq!(a.restore_size, None, "the size is used once");
-        // Asking for what already is does nothing.
-        let _ = a.update(Message::Minimal(false));
-        assert!(!a.minimal);
     }
 
     #[test]

@@ -100,7 +100,7 @@ impl App {
                     iced::Border {
                         color: theme.semantic.accent.bg,
                         width: 1.0,
-                        radius: 6.0.into(),
+                        radius: theme.metrics.radius_m.into(),
                     }
                 } else {
                     iced::Border::default()
@@ -152,7 +152,7 @@ impl App {
             border: iced::Border {
                 color: theme.semantic.border,
                 width: 1.0,
-                radius: 6.0.into(),
+                radius: theme.metrics.radius_m.into(),
             },
             ..Default::default()
         });
@@ -164,7 +164,7 @@ impl App {
                     .map(|categories| {
                         let options = categories.into_iter().map(|key| {
                             let label = key.as_deref().unwrap_or("Custom").to_string();
-                            let style = data::category_style(key.as_deref());
+                            let style = self.category_style(key.as_deref());
                             ChipOption::new(key, label)
                                 .icon(crate::icons::for_key(&style.icon))
                                 .color(style.color)
@@ -184,7 +184,7 @@ impl App {
                     .tag_choices(&self.tag_query, category)
                     .map(|tags| {
                         let options = tags.into_iter().map(|tag| {
-                            let style = self.lib.style_of(&tag.name);
+                            let style = self.tag_style(&tag.name);
                             ChipOption::new(tag.name, tag.value)
                                 .icon(crate::icons::for_key(&style.icon))
                                 .color(style.color)
@@ -195,7 +195,6 @@ impl App {
                                 Message::ChipExpand(picker, on)
                             })
                             .empty_text("No matching tags")
-                            .on_color(Color::WHITE)
                             .into()
                     })
             }
@@ -307,8 +306,7 @@ impl App {
                 .expandable(self.chip_expanded[picker as usize], move |on| {
                     Message::ChipExpand(picker, on)
                 })
-                .empty_text("No match")
-                .on_color(Color::WHITE),
+                .empty_text("No match"),
         ]
         .spacing(8)
         .into()
@@ -412,7 +410,7 @@ impl App {
         for tag in selected {
             let mut chip = w::Chip::new(crate::components::tag_badge::value_of(tag))
                 .size(ChipSize::Medium)
-                .color(self.lib.style_of(tag).color);
+                .color(self.tag_style(tag).color);
             if let Some(toggle) = on_toggle {
                 chip = chip.on_remove(toggle(tag.clone()));
             }
@@ -1028,7 +1026,7 @@ impl App {
         let tags = row(t
             .tags
             .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Small)))
+            .map(|g| tag_pill(g, &self.tag_style(g), ChipSize::Small)))
         .spacing(6)
         .wrap();
         container(
@@ -1077,7 +1075,7 @@ pub(super) fn filter_surface(theme: &iad::Theme) -> iced::widget::container::Sty
         border: iced::Border {
             color: theme.semantic.border,
             width: 1.0,
-            radius: 16.0.into(),
+            radius: theme.metrics.radius_window.into(),
         },
         shadow: iced::Shadow {
             color: Color {
@@ -1112,7 +1110,7 @@ fn filter_input(
             theme.semantic.border
         },
         width: 1.0,
-        radius: 10.0.into(),
+        radius: theme.metrics.radius_m.into(),
     };
     style
 }
@@ -1151,4 +1149,72 @@ pub(super) fn tag_group_label(group: &weave_player_lib::core::TagFilter) -> Stri
         });
     }
     parts.join(" + ")
+}
+
+impl App {
+    /// One theme chooser shared by the desktop dialog and mobile bottom sheet.
+    pub(super) fn themes_form(&self) -> Element<'_> {
+        let mut choices = column![].spacing(6).width(Length::Fill);
+        let mut desktop = w::action_row("Desktop theme")
+            .subtitle("Follow the desktop appearance")
+            .on_activate(Message::SelectTheme(None));
+        if self.themes.selected.is_none() {
+            desktop = desktop.suffix(Icon::Check.view(16.0));
+        }
+        choices = choices.push(desktop);
+        for theme in &self.themes.themes {
+            let accent = theme
+                .config
+                .color("colors", "accent")
+                .unwrap_or(Color::from_rgb8(128, 128, 128));
+            let swatch = container(space::horizontal().width(22).height(22)).style(move |_| {
+                iced::widget::container::Style {
+                    background: Some(accent.into()),
+                    border: iced::Border::default().rounded(11),
+                    ..Default::default()
+                }
+            });
+            let mut choice = w::action_row(theme.name.clone())
+                .subtitle(theme.key.clone())
+                .prefix(swatch)
+                .on_activate(Message::SelectTheme(Some(theme.key.clone())));
+            if self.themes.selected.as_deref() == Some(theme.key.as_str()) {
+                choice = choice.suffix(Icon::Check.view(16.0));
+            }
+            choices = choices.push(choice);
+        }
+        if self.themes.themes.is_empty() {
+            choices = choices.push(ty::caption("Import a theme file to add it here."));
+        }
+        let mut import = w::suggested_button(ty::label(if self.theme_import_pending {
+            "Choosing theme…"
+        } else {
+            "Import theme…"
+        }));
+        if !self.theme_import_pending {
+            import = import.on_press(Message::ImportTheme);
+        }
+        column![
+            row![
+                ty::title_3("Themes"),
+                space::horizontal(),
+                w::icon_button(Icon::WindowClose).on_press(Message::Themes(false))
+            ]
+            .align_y(Alignment::Center),
+            ty::caption("Choose a theme to apply it immediately."),
+            scrollable(choices)
+                .direction(filter_scroll_direction())
+                .height(Length::Fill),
+            row![
+                import,
+                space::horizontal(),
+                w::flat_button(ty::label("Done")).on_press(Message::Themes(false))
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into()
+    }
 }

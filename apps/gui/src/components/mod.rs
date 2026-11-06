@@ -17,3 +17,5 @@ pub mod tags_input;
 pub mod collection;
 
 pub mod collection_flow;
+
+pub mod disc_artwork;

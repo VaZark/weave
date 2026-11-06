@@ -223,3 +223,8 @@ The shared `CollectionFlow` primitive flows into a grid in wide mode (260 px
 cards, 220 px compact), and full-width rows in narrow mode. Home recent artists,
 albums, and playlists explicitly use cards at both widths. All playlists uses the same artwork, counts, and card rendering
 as Recent playlists. Collection search and ordering only change the items.
+
+Themes opens a dialog on wide layouts and a bottom sheet on narrow layouts.
+Import themes and choose Desktop or an imported theme there; selecting a theme
+previews it immediately while keeping the chooser open. Compact density remains
+a separate setting. The compact player window and its sizing controls are removed.
