@@ -1,12 +1,12 @@
 //! Track lists (flat rows, one setting for compact), the library pages, the detail pages
 //! (playlist, artist, album) and Home.
 
-use iad::Icon;
 use iad::prelude::{self as w, Menu, MenuItem, VirtualList, typography as ty};
 use iced::alignment::Horizontal;
 use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 use crate::components::collection::CollectionLayout;
 use crate::components::media_list::MediaListLayout;
@@ -154,7 +154,7 @@ impl App {
     /// The menu of a track: a dropdown on desktop, a button that opens the bottom sheet on narrow.
     fn track_menu<'a>(&self, id: usize, album: bool) -> Element<'a> {
         if self.is_narrow() {
-            return w::icon_button(Icon::ViewMore)
+            return crate::icons::icon_button(Icon::ViewMore)
                 .on_press(Message::OpenSheet(Some(Sheet::Track(id, album))))
                 .into();
         }
@@ -284,7 +284,7 @@ impl App {
     pub(super) fn play_all(&self) -> Element<'_> {
         let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
         let available = !ids.is_empty() && self.playlist_edit.is_none();
-        w::suggested_circular_button(self.action_icon(Icon::Play, 20.0, available))
+        w::suggested_circular_button(Icon::Play.view(20.0))
             .size(44.0)
             .on_press_maybe(available.then_some(Message::PlayAll(ids)))
             .into()
@@ -601,7 +601,7 @@ impl App {
     /// on narrow.
     fn options_menu(&self, dynamic: bool) -> Element<'_> {
         if self.is_narrow() {
-            return w::icon_button(Icon::ViewMore)
+            return crate::icons::icon_button(Icon::ViewMore)
                 .on_press(Message::OpenSheet(Some(Sheet::Options(dynamic))))
                 .into();
         }
@@ -645,7 +645,7 @@ impl App {
     /// The ⋮ of Recent tracks: a dropdown on desktop, a bottom sheet on narrow.
     fn recent_menu(&self) -> Element<'_> {
         if self.is_narrow() {
-            return w::icon_button(Icon::ViewMore)
+            return crate::icons::icon_button(Icon::ViewMore)
                 .on_press(Message::OpenSheet(Some(Sheet::Recent)))
                 .into();
         }
@@ -938,7 +938,8 @@ impl App {
         if matches!(self.dest, Dest::Playlist(i) if self.lib.playlists[i].manual) {
             if self.playlist_edit.is_none() {
                 header = header.action(w::tooltip(
-                    w::icon_button(Icon::ListAdd).on_press(Message::PlaylistTracksOpen(true)),
+                    crate::icons::icon_button(Icon::ListAdd)
+                        .on_press(Message::PlaylistTracksOpen(true)),
                     "Add or remove tracks",
                     w::TooltipPosition::Bottom,
                 ));
@@ -1115,7 +1116,7 @@ impl App {
         description: Option<&'static str>,
         action: Option<(&'static str, Message)>,
     ) -> Element<'_> {
-        let dim = self.theme().semantic.dim_solid();
+        let dim = self.theme().semantic.dim();
         let mut page = w::status_page::<Message>()
             .icon(icon.colored(64.0, dim))
             .title(title);

@@ -8,7 +8,7 @@ use iced_adaptive_design::{self as iad, Element};
 
 pub fn disc<'a, M: 'a>(id: usize, size: f32, bands: &'a [f32], visualizer: bool) -> Element<'a, M> {
     let art = iad::prelude::avatar(size * 0.66, "")
-        .icon(iad::Icon::MusicNote)
+        .icon(weave_icons::Icon::MusicNote)
         .shape(iad::prelude::AvatarShape::Circle)
         .color(iad::color::from_index(id));
     stack![

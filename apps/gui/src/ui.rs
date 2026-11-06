@@ -5,11 +5,12 @@
 
 use iad::adaptive::adaptive;
 use iad::prelude::{self as w, typography as ty};
+use iad::styles as style;
 use iad::windows::{Chrome, State as WindowState};
-use iad::{Icon, styles as style};
 use iced::widget::{column, container, row};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 use crate::{App, DensityPref, Dest, Element, Layout, Message, Sheet};
 
@@ -215,9 +216,11 @@ impl App {
         let narrow = self.is_narrow();
         let mut h = self.bar(true, true);
         if self.save_manual && self.save_name.is_some() {
-            h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::CancelSaveJam));
+            h = h.pack_start(
+                crate::icons::icon_button(Icon::GoPrevious).on_press(Message::CancelSaveJam),
+            );
         } else if self.history.can_back() {
-            h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::Back));
+            h = h.pack_start(crate::icons::icon_button(Icon::GoPrevious).on_press(Message::Back));
         }
         h = h.title(self.page_title());
         // The later a button is packed, the further from the window controls it sits.
@@ -252,7 +255,7 @@ impl App {
     /// The main menu: the density switch and the unified file/folder import action.
     fn main_menu(&self) -> Element<'_> {
         if self.is_narrow() {
-            return w::icon_button(Icon::OpenMenu)
+            return crate::icons::icon_button(Icon::OpenMenu)
                 .on_press(Message::OpenSheet(Some(Sheet::Main)))
                 .into();
         }

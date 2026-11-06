@@ -2,9 +2,10 @@
 use iced::widget::{column, row, scrollable, space};
 use iced::{Alignment, Length};
 use iced_adaptive_design::{
-    Element, Icon,
+    Element,
     prelude::{self as w, typography as ty},
 };
+use weave_icons::Icon;
 
 pub struct FilterEditor<'a, M> {
     title: String,
@@ -59,7 +60,7 @@ impl<'a, M: Clone + 'a> From<FilterEditor<'a, M>> for Element<'a, M> {
         let header = row![
             heading,
             w::tooltip(
-                w::icon_button(Icon::WindowClose).on_press(editor.close),
+                crate::icons::icon_button(Icon::WindowClose).on_press(editor.close),
                 "Close filters",
                 w::TooltipPosition::Bottom
             )
@@ -72,7 +73,7 @@ impl<'a, M: Clone + 'a> From<FilterEditor<'a, M>> for Element<'a, M> {
             .push(space::horizontal());
         if let Some(cancel) = editor.cancel {
             footer = footer.push(w::tooltip(
-                w::icon_button(Icon::WindowClose).on_press(cancel),
+                crate::icons::icon_button(Icon::WindowClose).on_press(cancel),
                 "Cancel",
                 w::TooltipPosition::Top,
             ));

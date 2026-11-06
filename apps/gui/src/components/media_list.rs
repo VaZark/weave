@@ -13,7 +13,6 @@
 //! In compact mode the picture goes and the subtitle moves onto the title's line, dimmed and
 //! clipped: the title takes the room it needs and the subtitle what is left.
 
-use iad::Icon;
 use iad::prelude::typography as ty;
 use iad::primitives::sorting::{Direction, SortState};
 use iced::alignment::Horizontal;
@@ -21,6 +20,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, row, space, stack};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 type Element<'a, M> = iad::Element<'a, M>;
 

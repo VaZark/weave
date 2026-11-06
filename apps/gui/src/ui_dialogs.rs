@@ -1,11 +1,11 @@
 //! Dialogs (modal, closed by their buttons), the filter fields shared by search, jam and the
 //! playlist dialog, and the jam page.
 
-use iad::Icon;
 use iad::prelude::{self as w, typography as ty};
 use iced::widget::{column, container, row, scrollable, space};
 use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 use crate::components::tag_badge::tag_pill;
 use crate::data::{self, Filter};
@@ -125,7 +125,7 @@ impl App {
             .into(),
         );
         let mut controls = row![w::tooltip(
-            w::section_button(Icon::Tag, Message::TagBrowseToggle).active(all_tags),
+            crate::icons::section_button(Icon::Tag, Message::TagBrowseToggle, all_tags),
             if all_tags {
                 "Show categories"
             } else {
@@ -137,13 +137,13 @@ impl App {
         .align_y(Alignment::Center);
         if let Some((_, target)) = groups {
             controls = controls.push(w::tooltip(
-                w::section_button(Icon::ListAdd, Message::CommitTagGroup(target)),
+                crate::icons::section_button(Icon::ListAdd, Message::CommitTagGroup(target), false),
                 "Add selected tags as an OR group",
                 w::TooltipPosition::Bottom,
             ));
         }
         let back: Element<'a> = if matches!(self.tag_browse, TagBrowse::Category(_)) {
-            w::icon_button(Icon::GoPrevious)
+            crate::icons::icon_button(Icon::GoPrevious)
                 .on_press(Message::TagCategories)
                 .into()
         } else {
@@ -403,9 +403,10 @@ impl App {
             }
         });
         let metrics = iad::Metrics::desktop();
-        let button = iad::layouts::Indicator::new(w::icon_button(icon).on_press(on_press), dot)
-            .offset((metrics.button_min_height - metrics.icon_size) / 2.0)
-            .show(active);
+        let button =
+            iad::layouts::Indicator::new(crate::icons::icon_button(icon).on_press(on_press), dot)
+                .offset((metrics.button_min_height - metrics.icon_size) / 2.0)
+                .show(active);
         w::tooltip(button, tip, w::TooltipPosition::Bottom)
     }
 
@@ -506,7 +507,8 @@ impl App {
             .map(|(i, _)| *i);
         let save: Element<'_> = match saved {
             Some(i) => w::tooltip(
-                w::icon_button(Icon::Check).on_press(Message::Open(crate::Dest::Playlist(i))),
+                crate::icons::icon_button(Icon::Check)
+                    .on_press(Message::Open(crate::Dest::Playlist(i))),
                 format!("Saved as {}", self.lib.playlists[i].name),
                 w::TooltipPosition::Bottom,
             ),
@@ -534,7 +536,7 @@ impl App {
             .align_y(Alignment::Center)
             .into()
         });
-        let play = w::suggested_circular_button(self.action_icon(Icon::Play, 20.0, n > 0))
+        let play = w::suggested_circular_button(Icon::Play.view(20.0))
             .size(44.0)
             .on_press_maybe((n > 0).then_some(Message::StartJam));
         let tag_filters = self.active_filter_icon(
@@ -618,7 +620,7 @@ impl App {
             )
             .subtitle(format!("{} matches", self.matching(&self.filter).len()))
             .action(w::tooltip(
-                w::icon_button(Icon::Dice).on_press(Message::Surprise),
+                crate::icons::icon_button(Icon::Dice).on_press(Message::Surprise),
                 "Surprise me",
                 w::TooltipPosition::Bottom,
             ))
@@ -704,7 +706,7 @@ impl App {
             row![
                 space::horizontal(),
                 w::tooltip(
-                    w::icon_button(Icon::WindowClose).on_press(Message::CancelSaveJam),
+                    crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelSaveJam),
                     "Cancel",
                     w::TooltipPosition::Bottom
                 ),
@@ -776,8 +778,12 @@ impl App {
                             .subtitle(track.by_line())
                             .prefix(cover(track.id, 40.0))
                             .suffix(w::tooltip(
-                                w::icon_button(if present { Icon::Delete } else { Icon::ListAdd })
-                                    .on_press(Message::PlaylistTrackToggle(id)),
+                                crate::icons::icon_button(if present {
+                                    Icon::Delete
+                                } else {
+                                    Icon::ListAdd
+                                })
+                                .on_press(Message::PlaylistTrackToggle(id)),
                                 if present {
                                     "Remove from playlist"
                                 } else {
@@ -796,7 +802,8 @@ impl App {
                 ty::title_3("Playlist tracks"),
                 space::horizontal(),
                 w::tooltip(
-                    w::icon_button(Icon::WindowClose).on_press(Message::PlaylistTracksOpen(false)),
+                    crate::icons::icon_button(Icon::WindowClose)
+                        .on_press(Message::PlaylistTracksOpen(false)),
                     "Done",
                     w::TooltipPosition::Bottom
                 ),
@@ -905,7 +912,7 @@ impl App {
             row![
                 ty::title_3("Edit details"),
                 space::horizontal(),
-                w::icon_button(Icon::WindowClose).on_press(Message::CancelDetails),
+                crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelDetails),
             ]
             .align_y(Alignment::Center),
             row![cover, fields].spacing(16).align_y(Alignment::Center),
@@ -950,8 +957,8 @@ impl App {
             }),
             row![
                 space::horizontal(),
-                w::tooltip(w::icon_button(Icon::WindowClose).on_press(Message::CancelManualFilterReview), "Keep editing", w::TooltipPosition::Bottom),
-                w::tooltip(w::icon_button(Icon::Check).on_press(Message::ConfirmManualFilter), if n == 0 { "Save rules" } else { "Save rules and remove tracks" }, w::TooltipPosition::Bottom),
+                w::tooltip(crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelManualFilterReview), "Keep editing", w::TooltipPosition::Bottom),
+                w::tooltip(crate::icons::icon_button(Icon::Check).on_press(Message::ConfirmManualFilter), if n == 0 { "Save rules" } else { "Save rules and remove tracks" }, w::TooltipPosition::Bottom),
             ].spacing(8),
         ].spacing(12))
         .padding(20)
@@ -1179,10 +1186,11 @@ impl App {
             row![
                 ty::title_3("Themes"),
                 space::horizontal(),
-                w::icon_button(Icon::WindowClose).on_press(Message::Themes(false))
+                crate::icons::icon_button(Icon::WindowClose).on_press(Message::Themes(false))
             ]
             .align_y(Alignment::Center),
             ty::caption("Choose a theme to apply it immediately."),
+            w::SwitchRow::new("Dark mode", self.dark_mode, Message::DarkMode),
             scrollable(choices)
                 .direction(filter_scroll_direction())
                 .height(Length::Fill),
@@ -1198,7 +1206,7 @@ impl App {
                 ),
                 space::horizontal(),
                 w::tooltip(
-                    w::icon_button(Icon::Check).on_press(Message::Themes(false)),
+                    crate::icons::icon_button(Icon::Check).on_press(Message::Themes(false)),
                     "Done",
                     w::TooltipPosition::Top
                 )

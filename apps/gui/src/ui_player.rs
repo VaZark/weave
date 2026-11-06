@@ -3,10 +3,11 @@
 use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
-use iad::{Icon, styles as style};
+use iad::styles as style;
 use iced::widget::{button, column, container, mouse_area, row, space, vertical_slider};
 use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
@@ -26,22 +27,11 @@ impl App {
             .into()
     }
 
-    /// SVGs do not inherit a button's disabled foreground; fade the icon explicitly.
-    pub(super) fn action_icon(&self, icon: Icon, size: f32, available: bool) -> Element<'_> {
-        icon.view(size)
-            .opacity(if available {
-                1.0
-            } else {
-                self.theme().semantic.opacity.disabled
-            })
-            .into()
-    }
-
     /// Same geometry as the toolkit icon button, with a dimmed icon when unavailable.
     pub(super) fn icon_action(&self, icon: Icon, press: Option<Message>) -> Element<'_> {
         let metrics = iad::Metrics::desktop();
         button(
-            container(self.action_icon(icon, metrics.icon_size, press.is_some()))
+            container(icon.view(metrics.icon_size))
                 .center(Length::Fixed(metrics.button_min_height)),
         )
         .padding(0)
@@ -257,7 +247,7 @@ impl App {
     pub fn queue_body(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let timer = if narrow {
-            w::icon_button(Icon::Clock)
+            crate::icons::icon_button(Icon::Clock)
                 .on_press(Message::OpenSheet(Some(crate::Sheet::Sleep)))
                 .into()
         } else {
@@ -288,7 +278,7 @@ impl App {
                 .iter()
                 .position(|x| x == id)
                 .unwrap_or(0);
-            w::icon_button(Icon::Delete)
+            crate::icons::icon_button(Icon::Delete)
                 .on_press(Message::QueueRemove(at))
                 .into()
         })
@@ -316,7 +306,7 @@ impl App {
                 Icon::Delete,
                 (!self.player.up_next.items().is_empty()).then_some(Message::ClearQueue),
             ))
-            .push(w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue));
+            .push(crate::icons::icon_button(Icon::GoDown).on_press(Message::ToggleQueue));
         // The playing track is not listed: the player is right above.
         let played = self
             .player

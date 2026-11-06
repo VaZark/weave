@@ -4,7 +4,8 @@ use crate::{App, Dest, Element, Message};
 use iad::prelude::{self as w, surface, typography as ty};
 use iced::widget::{column, container, row, space};
 use iced::{Alignment, Length};
-use iced_adaptive_design::{self as iad, Icon};
+use iced_adaptive_design as iad;
+use weave_icons::Icon;
 use weave_player_lib::core::{AnalyticsPeriod, AnalyticsQuery, ListeningAnalytics, SortField};
 
 impl App {
@@ -153,7 +154,7 @@ impl App {
             );
         }
         if self.is_narrow() {
-            w::icon_button(Icon::GoUpDown)
+            crate::icons::icon_button(Icon::GoUpDown)
                 .on_press(Message::OpenSheet(Some(crate::Sheet::Sort)))
                 .into()
         } else {
@@ -187,7 +188,7 @@ impl App {
             .narrow(self.is_narrow());
         if self.dest == Dest::Playlists {
             header = header.action(w::tooltip(
-                w::icon_button(Icon::ListAdd).on_press(Message::NewManualPlaylist),
+                crate::icons::icon_button(Icon::ListAdd).on_press(Message::NewManualPlaylist),
                 "New playlist",
                 w::TooltipPosition::Bottom,
             ));
@@ -425,12 +426,7 @@ impl App {
             )))
             .facts(ty::caption(format!("{} matches", self.rows.len())))
             .primary(
-                w::suggested_circular_button(self.action_icon(
-                    Icon::Play,
-                    20.0,
-                    !self.rows.is_empty(),
-                ))
-                .on_press_maybe(
+                w::suggested_circular_button(Icon::Play.view(20.0)).on_press_maybe(
                     (!self.rows.is_empty())
                         .then(|| Message::PlayAll(self.rows.iter().map(|t| t.id).collect())),
                 ),

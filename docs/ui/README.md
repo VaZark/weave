@@ -53,7 +53,7 @@ Our own widgets live in `apps/gui/src/components`, with their headless logic in 
 
 ## Developing against a local iced-adaptive-design
 
-The GUI pins a revision of iced-adaptive-design. To build against a sibling checkout that is ahead of it, create `.cargo/config.toml` (ignored by git) with a `[patch."https://github.com/VaZark/iced-libadwaita"]` entry pointing at `../iced-libadwaita`. The tempo picker is iad's `ComposedComponent` (a `BarChart::histogram` over a `range_slider`), so it needs a revision with the composed component.
+The GUI and `weave-icons` iced adapter pin iced-adaptive-design to `52dff3836dd27b05eb44d5e0636a6da3ad710535` in the root workspace manifest. To build against a sibling checkout that is ahead of it, create `.cargo/config.toml` (ignored by git) with a `[patch."https://github.com/VaZark/iced-libadwaita"]` entry pointing at `../iced-libadwaita`. The tempo picker is iad's `ComposedComponent` (a `BarChart::histogram` over a `range_slider`), so it needs a revision with the composed component.
 
 Tag pickers initially show at most three complete lines; artist and album pickers
 show at most two. A downward chevron after the last chip on the final clamped line expands the picker;
@@ -240,3 +240,7 @@ active Jam, page, or playlist-draft context supplies fields/messages and actions
 Resizing keeps the same filter; live changes remain live and draft changes still
 require Save. Header close, Escape and desktop backdrop all use the context's
 close action. Actions use icon buttons with tooltips.
+
+Application icons come from `weave-icons` (`crates/icons`), preserving the earlier 16px stroke artwork instead of replacing it with desktop-theme drawings. Its optional `iced` feature provides cached `view`/`colored` rendering and conversion to the toolkit’s `IconSource`, so menus, chips, avatars and toggle buttons share the same artwork and inherit their current foreground. Existing stored tag/playlist keys keep their mappings. Toolkit-owned chrome still follows installed themes, and the GUI uses `utils::detect_theme` / `utils::follow_theme` for desktop changes.
+
+The **Themes** dialog (or its narrow-screen sheet) includes a **Dark mode** switch above the theme choices. It forces dark appearance for the current Weave session; turning it off resumes the selected skin’s scheme or the desktop preference. It does not write desktop settings, change the selected skin, or affect playback or density.

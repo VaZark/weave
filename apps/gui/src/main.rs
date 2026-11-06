@@ -123,7 +123,7 @@ pub enum FilterTarget {
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The desktop switched between light and dark; the theme is read again on redraw.
-    SystemScheme(iad::Scheme),
+    SystemTheme,
     // Resizing and the transitions between layouts.
     Resized(f32, f32),
     /// An animation frame (while a sheet or the queue slides).
@@ -204,6 +204,7 @@ pub enum Message {
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
+    DarkMode(bool),
     Themes(bool),
     ImportTheme,
     ThemeChosen(Option<std::path::PathBuf>),
@@ -585,6 +586,8 @@ pub struct App {
     history_seq: u64,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
+    /// Session-only dark appearance opt-in; false follows the selected theme/desktop.
+    pub dark_mode: bool,
     pub themes: appearance::ThemeLibrary,
     pub theme_scheme: Option<iad::palette::Scheme>,
     pub theme_import_pending: bool,
@@ -740,6 +743,7 @@ impl App {
             recent_order: RecentOrder::Played,
             history_seq: 0,
             density: DensityPref::Desktop,
+            dark_mode: false,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
             sleep_left: None,
@@ -889,7 +893,7 @@ impl App {
                     .map(Message::Captured),
             );
         }
-        tasks.push(iad::system::detect_color_scheme().map(Message::SystemScheme));
+        tasks.push(iad::utils::detect_theme().map(|_| Message::SystemTheme));
         (app, Task::batch(tasks))
     }
 
@@ -1792,6 +1796,10 @@ impl App {
             }
             Message::SetDensity(d) => {
                 self.density = d;
+                Vec::new()
+            }
+            Message::DarkMode(enabled) => {
+                self.dark_mode = enabled;
                 Vec::new()
             }
             Message::SetShufflePref(pref) => {
@@ -2755,7 +2763,7 @@ impl App {
                 }
                 Vec::new()
             }
-            Message::SystemScheme(_) => Vec::new(),
+            Message::SystemTheme => Vec::new(),
             Message::Poll => {
                 if self.dest == Dest::AboutMe
                     && !self.analytics_loading
@@ -2878,7 +2886,7 @@ impl App {
         let mut subs = vec![
             iced::window::resize_events().map(|(_, s)| Message::Resized(s.width, s.height)),
             self.adaptive.subscription(Message::Tick),
-            iad::system::follow_color_scheme().map(Message::SystemScheme),
+            iad::utils::follow_theme().map(|_| Message::SystemTheme),
         ];
         subs.push(iced::keyboard::listen().filter_map(|event| {
             use iced::keyboard::{Event, Key, key::Named};
@@ -2920,7 +2928,11 @@ impl App {
     }
 
     fn theme(&self) -> iad::Theme {
-        let theme = appearance::theme(self.theme_scheme, &self.theme_config);
+        let scheme = self
+            .dark_mode
+            .then_some(iad::Scheme::Dark)
+            .or(self.theme_scheme);
+        let theme = appearance::theme(scheme, &self.theme_config);
         if self.theme_config.bool("player", "ambient") == Some(true) {
             if let Some(track) = self.now() {
                 let color = iad::color::from_index(track.id);
@@ -3021,6 +3033,27 @@ mod tests {
     fn app() -> App {
         let (backend, lib) = backend::sample::backend();
         App::with(backend, lib).0
+    }
+
+    #[test]
+    fn dark_mode_opt_in_overrides_appearance_and_keeps_theme_density_and_queue() {
+        let mut a = app();
+        a.theme_scheme = Some(iad::Scheme::Light);
+        let queue = a.player.queue.clone();
+        let selected = a.themes.selected.clone();
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
+        assert!(!a.dark_mode);
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+        let _ = a.update(Message::DarkMode(true));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(Message::SystemTheme);
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(Message::DarkMode(false));
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+        assert_eq!(a.theme_scheme, Some(iad::Scheme::Light));
+        assert_eq!(a.themes.selected, selected);
+        assert_eq!(a.player.queue, queue);
+        assert!(a.compact());
     }
 
     #[test]
@@ -5619,6 +5652,11 @@ mod tests {
         ))));
         assert!(a.sheet.is_none());
         assert!(a.compact());
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::SheetAction(Box::new(Message::DarkMode(true))));
+        assert!(a.sheet.is_none());
+        assert!(a.dark_mode);
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
         let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
         let _ = a.view();
         // Creating the picker task does not run the OS dialog in this test.
