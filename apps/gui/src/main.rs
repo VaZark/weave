@@ -123,7 +123,7 @@ pub enum FilterTarget {
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The desktop switched between light and dark; the theme is read again on redraw.
-    SystemTheme,
+    SystemTheme(iad::utils::ThemeSettings),
     // Resizing and the transitions between layouts.
     Resized(f32, f32),
     /// An animation frame (while a sheet or the queue slides).
@@ -588,11 +588,12 @@ pub struct App {
     pub density: DensityPref,
     /// Session-only dark appearance opt-in; false follows the selected theme/desktop.
     pub dark_mode: bool,
+    /// Latest desktop event; kept in app state so mode changes invalidate the view.
+    pub desktop_scheme: iad::Scheme,
     pub themes: appearance::ThemeLibrary,
-    pub theme_scheme: Option<iad::palette::Scheme>,
     pub theme_import_pending: bool,
     pub themes_open: bool,
-    pub theme_config: iad::theme_config::ThemeConfig,
+    pub theme_config: appearance::ThemeConfig,
     /// "It's been a while" on Home: rated highly, not played for this many days.
     pub while_days: u32,
     pub favorites: std::collections::HashSet<String>,
@@ -641,11 +642,9 @@ impl App {
             .current()
             .map(|theme| theme.config.clone())
             .unwrap_or_else(|| appearance::config(""));
-        let theme_scheme = themes.current().and_then(|theme| theme.scheme);
         let mut app = Self {
             themes,
             theme_config,
-            theme_scheme,
             theme_import_pending: false,
             themes_open: false,
             backend,
@@ -744,6 +743,7 @@ impl App {
             history_seq: 0,
             density: DensityPref::Desktop,
             dark_mode: false,
+            desktop_scheme: iad::utils::theme_settings().scheme,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
             sleep_left: None,
@@ -893,7 +893,7 @@ impl App {
                     .map(Message::Captured),
             );
         }
-        tasks.push(iad::utils::detect_theme().map(|_| Message::SystemTheme));
+        tasks.push(iad::utils::detect_theme().map(Message::SystemTheme));
         (app, Task::batch(tasks))
     }
 
@@ -2763,7 +2763,10 @@ impl App {
                 }
                 Vec::new()
             }
-            Message::SystemTheme => Vec::new(),
+            Message::SystemTheme(settings) => {
+                self.desktop_scheme = settings.scheme;
+                Vec::new()
+            }
             Message::Poll => {
                 if self.dest == Dest::AboutMe
                     && !self.analytics_loading
@@ -2886,7 +2889,7 @@ impl App {
         let mut subs = vec![
             iced::window::resize_events().map(|(_, s)| Message::Resized(s.width, s.height)),
             self.adaptive.subscription(Message::Tick),
-            iad::utils::follow_theme().map(|_| Message::SystemTheme),
+            iad::utils::follow_theme().map(Message::SystemTheme),
         ];
         subs.push(iced::keyboard::listen().filter_map(|event| {
             use iced::keyboard::{Event, Key, key::Named};
@@ -2927,12 +2930,14 @@ impl App {
         }
     }
 
-    fn theme(&self) -> iad::Theme {
-        let scheme = self
-            .dark_mode
+    fn effective_scheme(&self) -> iad::Scheme {
+        self.dark_mode
             .then_some(iad::Scheme::Dark)
-            .or(self.theme_scheme);
-        let theme = appearance::theme(scheme, &self.theme_config);
+            .unwrap_or(self.desktop_scheme)
+    }
+
+    fn theme(&self) -> iad::Theme {
+        let theme = appearance::theme(self.effective_scheme(), &self.theme_config);
         if self.theme_config.bool("player", "ambient") == Some(true) {
             if let Some(track) = self.now() {
                 let color = iad::color::from_index(track.id);
@@ -3036,9 +3041,43 @@ mod tests {
     }
 
     #[test]
+    fn desktop_events_rebuild_adaptive_palette_and_tag_colors_without_resetting_state() {
+        let mut a = app();
+        let document = appearance::ThemeDocument::parse(appearance::EXAMPLES[0]).unwrap();
+        a.theme_config = document.config;
+        let queue = a.player.queue.clone();
+        let selected = a.themes.selected.clone();
+        let event = |scheme| {
+            Message::SystemTheme(iad::utils::ThemeSettings {
+                scheme,
+                icon_theme: "hicolor".into(),
+            })
+        };
+        let _ = a.update(event(iad::Scheme::Light));
+        let light = a.theme();
+        let light_tag = a.category_style(Some("genre")).color;
+        assert_eq!(light.scheme, iad::Scheme::Light);
+        let _ = a.update(event(iad::Scheme::Dark));
+        let dark = a.theme();
+        assert_eq!(dark.scheme, iad::Scheme::Dark);
+        assert_ne!(dark.semantic.window.bg, light.semantic.window.bg);
+        assert_ne!(a.category_style(Some("genre")).color, light_tag);
+        let _ = a.update(event(iad::Scheme::Light));
+        assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
+        let _ = a.update(Message::DarkMode(true));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(event(iad::Scheme::Light));
+        assert_eq!(a.theme().semantic.window.bg, dark.semantic.window.bg);
+        let _ = a.update(Message::DarkMode(false));
+        assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
+        assert_eq!(a.themes.selected, selected);
+        assert_eq!(a.player.queue, queue);
+    }
+
+    #[test]
     fn dark_mode_opt_in_overrides_appearance_and_keeps_theme_density_and_queue() {
         let mut a = app();
-        a.theme_scheme = Some(iad::Scheme::Light);
+        a.desktop_scheme = iad::Scheme::Light;
         let queue = a.player.queue.clone();
         let selected = a.themes.selected.clone();
         let _ = a.update(Message::SetDensity(DensityPref::Compact));
@@ -3046,11 +3085,14 @@ mod tests {
         assert_eq!(a.theme().scheme, iad::Scheme::Light);
         let _ = a.update(Message::DarkMode(true));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
-        let _ = a.update(Message::SystemTheme);
+        let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+            scheme: iad::Scheme::Light,
+            icon_theme: "hicolor".into(),
+        }));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
         let _ = a.update(Message::DarkMode(false));
         assert_eq!(a.theme().scheme, iad::Scheme::Light);
-        assert_eq!(a.theme_scheme, Some(iad::Scheme::Light));
+        assert_eq!(a.desktop_scheme, iad::Scheme::Light);
         assert_eq!(a.themes.selected, selected);
         assert_eq!(a.player.queue, queue);
         assert!(a.compact());
@@ -3089,111 +3131,119 @@ mod tests {
         let original_rows = a.rows.clone();
         for text in appearance::EXAMPLES {
             let document = appearance::ThemeDocument::parse(text).unwrap();
-            a.theme_config = document.config.clone();
-            a.theme_scheme = document.scheme;
-            a.themes.selected = Some(document.key.clone());
-            assert_eq!(a.filter, original_filter);
-            assert_eq!(a.rows, original_rows);
-            assert_eq!(
-                a.tag_style("genre:bachata").color,
-                a.category_style(Some("genre")).color
-            );
-            for (scene, width, height) in [
-                ("app", 1000, 720),
-                ("home", 1000, 720),
-                ("home-narrow", 390, 720),
-                ("filters", 560, 520),
-                ("themes", 480, 560),
-                ("themes-sheet", 390, 844),
-                ("playlist-narrow", 390, 844),
-                ("now-playing", 700, 780),
-                ("now-playing-narrow", 390, 844),
-                ("filter-jam-wide", 1000, 720),
-                ("filter-jam-narrow", 390, 844),
-                ("filter-page-wide", 1000, 720),
-                ("filter-page-narrow", 390, 844),
-                ("filter-playlist-wide", 1000, 720),
-                ("filter-playlist-narrow", 390, 844),
-            ] {
-                a.jam_open = scene.starts_with("filter-jam-");
-                a.jam_filters_open = a.jam_open;
-                a.page_filters_open = scene.starts_with("filter-page-");
-                a.draft = scene
-                    .starts_with("filter-playlist-")
-                    .then(|| a.filter.clone());
-                a.dest = if scene.starts_with("filter-page-") {
-                    Dest::Rediscover
-                } else if scene == "playlist-narrow" || scene.starts_with("filter-playlist-") {
-                    Dest::Playlist(0)
-                } else {
-                    Dest::Home
-                };
-                let _ = a.update(Message::Resized(width as f32, height as f32));
-                let _ = a.update(Message::Tick(
-                    Instant::now() + std::time::Duration::from_secs(2),
-                ));
-                a.now_playing = scene.starts_with("now-playing");
-                a.themes_open = scene == "themes-sheet";
-                let theme = a.theme();
-                let mut element = if scene == "filters" {
-                    crate::components::responsive_dialog::panel(
-                        a.filter_editor(FilterTarget::Jam),
-                        false,
-                        Size::new(width as f32, height as f32),
-                    )
-                } else if scene == "themes" {
-                    a.themes_form()
-                } else if scene == "themes-sheet" || scene.starts_with("filter-") {
-                    a.view()
-                } else if scene.starts_with("now-playing") {
-                    a.now_playing_view()
-                } else if scene == "app" {
-                    a.view()
-                } else {
-                    a.page()
-                };
-                let mut tree = Tree::new(&element);
-                let size = Size::new(width as f32, height as f32);
-                let node = element.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(Size::ZERO, size),
+            for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
+                a.desktop_scheme = scheme;
+                a.theme_config = document.config.clone();
+                a.themes.selected = Some(document.key.clone());
+                assert_eq!(a.filter, original_filter);
+                assert_eq!(a.rows, original_rows);
+                assert_eq!(
+                    a.tag_style("genre:bachata").color,
+                    a.category_style(Some("genre")).color
                 );
-                assert!(node.size().width <= size.width && node.size().height <= size.height);
-                iced::advanced::Renderer::reset(&mut renderer, Rectangle::new(Point::ORIGIN, size));
-                let mut messages = Vec::new();
-                let mut shell = iced::advanced::Shell::new(&mut messages);
-                element.as_widget_mut().update(
-                    &mut tree,
-                    &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
-                    layout::Layout::new(&node),
-                    mouse::Cursor::Unavailable,
-                    &renderer,
-                    &mut iced::advanced::clipboard::Null,
-                    &mut shell,
-                    &Rectangle::new(Point::ORIGIN, size),
-                );
-                element.as_widget().draw(
-                    &tree,
-                    &mut renderer,
-                    &theme,
-                    &Style {
-                        text_color: theme.semantic.window.fg,
-                    },
-                    layout::Layout::new(&node),
-                    mouse::Cursor::Unavailable,
-                    &Rectangle::new(Point::ORIGIN, size),
-                );
-                if let Some(dir) = std::env::var_os("WEAVE_THEME_REVIEW_DIR") {
-                    let physical = Size::new(width, height);
-                    let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
-                    let path =
-                        std::path::PathBuf::from(dir).join(format!("{}-{scene}.png", document.key));
-                    iad::dev::save_png(
-                        &iced::window::Screenshot::new(pixels, physical, 1.0),
-                        &path,
-                    )
-                    .unwrap();
+                for (scene, width, height) in [
+                    ("app", 1000, 720),
+                    ("home", 1000, 720),
+                    ("home-narrow", 390, 720),
+                    ("filters", 560, 520),
+                    ("themes", 480, 560),
+                    ("themes-sheet", 390, 844),
+                    ("playlist-narrow", 390, 844),
+                    ("now-playing", 700, 780),
+                    ("now-playing-narrow", 390, 844),
+                    ("filter-jam-wide", 1000, 720),
+                    ("filter-jam-narrow", 390, 844),
+                    ("filter-page-wide", 1000, 720),
+                    ("filter-page-narrow", 390, 844),
+                    ("filter-playlist-wide", 1000, 720),
+                    ("filter-playlist-narrow", 390, 844),
+                ] {
+                    a.jam_open = scene.starts_with("filter-jam-");
+                    a.jam_filters_open = a.jam_open;
+                    a.page_filters_open = scene.starts_with("filter-page-");
+                    a.draft = scene
+                        .starts_with("filter-playlist-")
+                        .then(|| a.filter.clone());
+                    a.dest = if scene.starts_with("filter-page-") {
+                        Dest::Rediscover
+                    } else if scene == "playlist-narrow" || scene.starts_with("filter-playlist-") {
+                        Dest::Playlist(0)
+                    } else {
+                        Dest::Home
+                    };
+                    let _ = a.update(Message::Resized(width as f32, height as f32));
+                    let _ = a.update(Message::Tick(
+                        Instant::now() + std::time::Duration::from_secs(2),
+                    ));
+                    a.now_playing = scene.starts_with("now-playing");
+                    a.themes_open = scene == "themes-sheet";
+                    let theme = a.theme();
+                    let mut element = if scene == "filters" {
+                        crate::components::responsive_dialog::panel(
+                            a.filter_editor(FilterTarget::Jam),
+                            false,
+                            Size::new(width as f32, height as f32),
+                        )
+                    } else if scene == "themes" {
+                        a.themes_form()
+                    } else if scene == "themes-sheet" || scene.starts_with("filter-") {
+                        a.view()
+                    } else if scene.starts_with("now-playing") {
+                        a.now_playing_view()
+                    } else if scene == "app" {
+                        a.view()
+                    } else {
+                        a.page()
+                    };
+                    let mut tree = Tree::new(&element);
+                    let size = Size::new(width as f32, height as f32);
+                    let node = element.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, size),
+                    );
+                    assert!(node.size().width <= size.width && node.size().height <= size.height);
+                    iced::advanced::Renderer::reset(
+                        &mut renderer,
+                        Rectangle::new(Point::ORIGIN, size),
+                    );
+                    let mut messages = Vec::new();
+                    let mut shell = iced::advanced::Shell::new(&mut messages);
+                    element.as_widget_mut().update(
+                        &mut tree,
+                        &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
+                        layout::Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut shell,
+                        &Rectangle::new(Point::ORIGIN, size),
+                    );
+                    element.as_widget().draw(
+                        &tree,
+                        &mut renderer,
+                        &theme,
+                        &Style {
+                            text_color: theme.semantic.window.fg,
+                        },
+                        layout::Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &Rectangle::new(Point::ORIGIN, size),
+                    );
+                    if let Some(dir) = std::env::var_os("WEAVE_THEME_REVIEW_DIR") {
+                        let physical = Size::new(width, height);
+                        let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
+                        let path = std::path::PathBuf::from(dir).join(format!(
+                            "{}-{}-{scene}.png",
+                            document.key,
+                            if scheme.is_dark() { "dark" } else { "light" }
+                        ));
+                        iad::dev::save_png(
+                            &iced::window::Screenshot::new(pixels, physical, 1.0),
+                            &path,
+                        )
+                        .unwrap();
+                    }
                 }
             }
         }

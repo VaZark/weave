@@ -1157,8 +1157,8 @@ impl App {
         for theme in &self.themes.themes {
             let accent = theme
                 .config
-                .color("colors", "accent")
-                .unwrap_or(Color::from_rgb8(128, 128, 128));
+                .light_dark(self.effective_scheme(), "accent", None)
+                .unwrap_or_else(|| self.theme().semantic.accent.bg);
             let swatch = container(space::horizontal().width(22).height(22)).style(move |_| {
                 iced::widget::container::Style {
                     background: Some(accent.into()),

@@ -26,7 +26,6 @@ or identity:
 [theme]
 name=My Night Player
 key=my-night-player
-scheme=dark
 
 [player]
 artwork=disc
@@ -34,6 +33,15 @@ radial-visualizer=true
 ambient=true
 
 [colors]
+accent=#a92777
+window-bg=#fff5fb
+window-fg=#35213b
+view-bg=#fffafd
+view-fg=#35213b
+card-bg=#f4e6f3
+card-fg=#35213b
+
+[dark:colors]
 accent=#ff6ac1
 window-bg=#18112b
 window-fg=#f6efff
@@ -54,7 +62,10 @@ lang=#64e6cf
 
 `name` is required (1–80 printable characters). `key` is required, starts with a
 lowercase letter and contains lowercase letters, digits or hyphens (up to 64
-characters). `scheme` is `light`, `dark` or `system` (default). Artwork is `square`
+characters). Appearance follows the desktop unless Dark mode is enabled in the
+Themes dialog. Unmarked `[colors]` are defaults, `[light:colors]` and `[dark:colors]`
+partially override them in the corresponding mode. There is no `scheme=` field.
+The same prefixes work for tag colors. Artwork is `square`
 or `disc`. Effects default to off. All toolkit ThemeConfig color, typography and
 metric tokens are available; category colors are in `[tags]`.
 
@@ -83,3 +94,8 @@ Tests cover metadata, rejected files, import/reimport, persisted selection, them
 switching, text contrast, and wide/narrow Now Playing renders. Set
 `WEAVE_THEME_REVIEW_DIR` to an existing directory when running the
 `theme_presets_render` test to export screenshots.
+
+Rust-side color lookup uses an optional fallback: `light_dark("window-bg", None)`
+uses configured/toolkit defaults; `light_dark("tags:genre", Some("#b892ff"))`
+supplies a fallback for an app variable. Theme files contain plain colors rather
+than `light-dark(...)` expressions. Partial overrides retain unmarked defaults.

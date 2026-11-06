@@ -485,14 +485,8 @@ impl App {
                         .width(Length::Fill)
                         .height(Length::Fill),
                 )
-                .style(|_| iced::widget::container::Style {
-                    background: Some(
-                        iced::Color {
-                            a: 0.25,
-                            ..iced::Color::BLACK
-                        }
-                        .into(),
-                    ),
+                .style(|theme: &iad::Theme| iced::widget::container::Style {
+                    background: Some(theme.semantic.shade.into()),
                     ..Default::default()
                 }),
             )
