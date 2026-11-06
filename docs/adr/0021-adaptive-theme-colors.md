@@ -2,8 +2,8 @@
 
 Desktop theme notifications cannot change a skin whose scheme and every palette
 color are fixed. Store the detected desktop scheme in app state and select the
-matching color cascade before drawing. The session Dark mode opt-in overrides
-that detected scheme; theme documents no longer declare a scheme.
+matching color cascade before drawing. The session sun/moon selection overrides
+that detected scheme; the system selection resumes following it, and theme documents no longer declare a scheme.
 
 `[colors]` supplies defaults. `[light:colors]` and `[dark:colors]` override only
 specified keys in their respective modes, regardless of file order. The same

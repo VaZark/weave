@@ -1144,6 +1144,34 @@ pub(super) fn tag_group_label(group: &weave_player_lib::core::TagFilter) -> Stri
 }
 
 impl App {
+    /// One row for system, light, and dark appearance, using application-owned icons.
+    pub(super) fn theme_mode_row(&self) -> Element<'_> {
+        let metrics = iad::Metrics::desktop();
+        let choice = |mode, icon: Icon, hint| {
+            w::ToggleItem::custom(
+                mode,
+                w::tooltip(
+                    icon.view(metrics.icon_size),
+                    hint,
+                    w::TooltipPosition::Bottom,
+                ),
+            )
+        };
+        let modes = w::toggle_group(
+            vec![
+                choice(None, Icon::Window, "Follow desktop appearance"),
+                choice(Some(iad::Scheme::Light), Icon::Sun, "Light appearance"),
+                choice(Some(iad::Scheme::Dark), Icon::Moon, "Dark appearance"),
+            ],
+            Some(self.theme_mode),
+            Message::ThemeMode,
+        );
+        w::action_row("Theme mode")
+            .suffix(modes)
+            .wrap_suffix(false)
+            .into()
+    }
+
     /// One theme chooser shared by the desktop dialog and mobile bottom sheet.
     pub(super) fn themes_form(&self) -> Element<'_> {
         let mut choices = column![].spacing(6).width(Length::Fill);
@@ -1190,7 +1218,7 @@ impl App {
             ]
             .align_y(Alignment::Center),
             ty::caption("Choose a theme to apply it immediately."),
-            w::SwitchRow::new("Dark mode", self.dark_mode, Message::DarkMode),
+            self.theme_mode_row(),
             scrollable(choices)
                 .direction(filter_scroll_direction())
                 .height(Length::Fill),

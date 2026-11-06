@@ -204,7 +204,7 @@ pub enum Message {
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
-    DarkMode(bool),
+    ThemeMode(Option<iad::Scheme>),
     Themes(bool),
     ImportTheme,
     ThemeChosen(Option<std::path::PathBuf>),
@@ -586,8 +586,8 @@ pub struct App {
     history_seq: u64,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
-    /// Session-only dark appearance opt-in; false follows the selected theme/desktop.
-    pub dark_mode: bool,
+    /// Application override; None follows the desktop, Some forces light or dark.
+    pub theme_mode: Option<iad::Scheme>,
     /// Latest desktop event; kept in app state so mode changes invalidate the view.
     pub desktop_scheme: iad::Scheme,
     pub themes: appearance::ThemeLibrary,
@@ -742,7 +742,7 @@ impl App {
             recent_order: RecentOrder::Played,
             history_seq: 0,
             density: DensityPref::Desktop,
-            dark_mode: false,
+            theme_mode: None,
             desktop_scheme: iad::utils::theme_settings().scheme,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
@@ -779,6 +779,7 @@ impl App {
         }
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
+                "themes" => vec![Message::Themes(true)],
                 "jam" => vec![Message::ToggleJam],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
                 "tag-categories" => vec![
@@ -1798,8 +1799,8 @@ impl App {
                 self.density = d;
                 Vec::new()
             }
-            Message::DarkMode(enabled) => {
-                self.dark_mode = enabled;
+            Message::ThemeMode(mode) => {
+                self.theme_mode = mode;
                 Vec::new()
             }
             Message::SetShufflePref(pref) => {
@@ -2931,9 +2932,7 @@ impl App {
     }
 
     fn effective_scheme(&self) -> iad::Scheme {
-        self.dark_mode
-            .then_some(iad::Scheme::Dark)
-            .unwrap_or(self.desktop_scheme)
+        self.theme_mode.unwrap_or(self.desktop_scheme)
     }
 
     fn theme(&self) -> iad::Theme {
@@ -3064,33 +3063,129 @@ mod tests {
         assert_ne!(a.category_style(Some("genre")).color, light_tag);
         let _ = a.update(event(iad::Scheme::Light));
         assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
-        let _ = a.update(Message::DarkMode(true));
+        let _ = a.update(Message::ThemeMode(Some(iad::Scheme::Dark)));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
         let _ = a.update(event(iad::Scheme::Light));
         assert_eq!(a.theme().semantic.window.bg, dark.semantic.window.bg);
-        let _ = a.update(Message::DarkMode(false));
+        let _ = a.update(Message::ThemeMode(None));
         assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
         assert_eq!(a.themes.selected, selected);
         assert_eq!(a.player.queue, queue);
     }
 
     #[test]
-    fn dark_mode_opt_in_overrides_appearance_and_keeps_theme_density_and_queue() {
+    fn clicking_theme_mode_icons_emits_real_widget_messages_and_switches_the_palette() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Font, Pixels, Point, Size, mouse};
+        fn leaves(layout: layout::Layout<'_>, size: f32, points: &mut Vec<Point>) {
+            let children = layout.children().collect::<Vec<_>>();
+            let bounds = layout.bounds();
+            if children.is_empty()
+                && (bounds.width - size).abs() < 0.01
+                && (bounds.height - size).abs() < 0.01
+            {
+                points.push(bounds.center());
+            }
+            for child in children {
+                leaves(child, size, points);
+            }
+        }
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        a.desktop_scheme = iad::Scheme::Dark;
+        assert_eq!(a.theme_mode, None);
+        let original_dark = a.theme().semantic.window.bg;
+        for (index, expected) in [
+            (1, Some(iad::Scheme::Light)),
+            (2, Some(iad::Scheme::Dark)),
+            (0, None),
+        ] {
+            let messages = {
+                let mut element = a.theme_mode_row();
+                let mut tree = Tree::new(&element);
+                let size = Size::new(480.0, 100.0);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut points = Vec::new();
+                leaves(
+                    layout::Layout::new(&node),
+                    iad::Metrics::desktop().icon_size,
+                    &mut points,
+                );
+                assert_eq!(
+                    points.len(),
+                    3,
+                    "system, sun and moon icons must all be clickable"
+                );
+                let cursor = mouse::Cursor::Available(points[index]);
+                let mut messages = Vec::new();
+                for event in [
+                    iced::Event::Mouse(mouse::Event::CursorMoved {
+                        position: points[index],
+                    }),
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                ] {
+                    let mut shell = iced::advanced::Shell::new(&mut messages);
+                    element.as_widget_mut().update(
+                        &mut tree,
+                        &event,
+                        layout::Layout::new(&node),
+                        cursor,
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut shell,
+                        &iced::Rectangle::with_size(size),
+                    );
+                }
+                messages
+            };
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message,Message::ThemeMode(mode) if *mode == expected))
+            );
+            for message in messages {
+                let _ = a.update(message);
+            }
+            assert_eq!(a.theme_mode, expected);
+            assert_eq!(a.theme().scheme, expected.unwrap_or(iad::Scheme::Dark));
+            if expected == Some(iad::Scheme::Light) {
+                assert_ne!(a.theme().semantic.window.bg, original_dark);
+            }
+        }
+        let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+            scheme: iad::Scheme::Light,
+            icon_theme: "hicolor".into(),
+        }));
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+    }
+
+    #[test]
+    fn explicit_theme_mode_overrides_appearance_and_keeps_theme_density_and_queue() {
         let mut a = app();
         a.desktop_scheme = iad::Scheme::Light;
         let queue = a.player.queue.clone();
         let selected = a.themes.selected.clone();
         let _ = a.update(Message::SetDensity(DensityPref::Compact));
-        assert!(!a.dark_mode);
+        assert_eq!(a.theme_mode, None);
         assert_eq!(a.theme().scheme, iad::Scheme::Light);
-        let _ = a.update(Message::DarkMode(true));
+        let _ = a.update(Message::ThemeMode(Some(iad::Scheme::Dark)));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
         let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
             scheme: iad::Scheme::Light,
             icon_theme: "hicolor".into(),
         }));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
-        let _ = a.update(Message::DarkMode(false));
+        let _ = a.update(Message::ThemeMode(None));
         assert_eq!(a.theme().scheme, iad::Scheme::Light);
         assert_eq!(a.desktop_scheme, iad::Scheme::Light);
         assert_eq!(a.themes.selected, selected);
@@ -5703,9 +5798,11 @@ mod tests {
         assert!(a.sheet.is_none());
         assert!(a.compact());
         let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
-        let _ = a.update(Message::SheetAction(Box::new(Message::DarkMode(true))));
+        let _ = a.update(Message::SheetAction(Box::new(Message::ThemeMode(Some(
+            iad::Scheme::Dark,
+        )))));
         assert!(a.sheet.is_none());
-        assert!(a.dark_mode);
+        assert_eq!(a.theme_mode, Some(iad::Scheme::Dark));
         assert_eq!(a.theme().scheme, iad::Scheme::Dark);
         let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
         let _ = a.view();

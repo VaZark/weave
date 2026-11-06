@@ -62,8 +62,8 @@ lang=#64e6cf
 
 `name` is required (1–80 printable characters). `key` is required, starts with a
 lowercase letter and contains lowercase letters, digits or hyphens (up to 64
-characters). Appearance follows the desktop unless Dark mode is enabled in the
-Themes dialog. Unmarked `[colors]` are defaults, `[light:colors]` and `[dark:colors]`
+characters). Appearance follows the desktop unless the sun or moon mode is selected in the
+Themes dialog. The system button restores desktop-following. Unmarked `[colors]` are defaults, `[light:colors]` and `[dark:colors]`
 partially override them in the corresponding mode. There is no `scheme=` field.
 The same prefixes work for tag colors. Artwork is `square`
 or `disc`. Effects default to off. All toolkit ThemeConfig color, typography and
