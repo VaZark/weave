@@ -3073,9 +3073,15 @@ mod tests {
                 ("filters", 560, 520),
                 ("themes", 480, 560),
                 ("themes-sheet", 390, 844),
+                ("playlist-narrow", 390, 844),
                 ("now-playing", 700, 780),
                 ("now-playing-narrow", 390, 844),
             ] {
+                a.dest = if scene == "playlist-narrow" {
+                    Dest::Playlist(0)
+                } else {
+                    Dest::Home
+                };
                 let _ = a.update(Message::Resized(width as f32, height as f32));
                 let _ = a.update(Message::Tick(
                     Instant::now() + std::time::Duration::from_secs(2),

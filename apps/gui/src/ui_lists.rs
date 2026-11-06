@@ -271,7 +271,14 @@ impl App {
             line.push_str(" · ");
             line.push_str(&e);
         }
-        ty::caption(line).into()
+        ty::caption(line)
+            .width(Length::Fill)
+            .align_x(if self.is_narrow() {
+                Alignment::Center
+            } else {
+                Alignment::Start
+            })
+            .into()
     }
 
     pub(super) fn play_all(&self) -> Element<'_> {
@@ -778,11 +785,17 @@ impl App {
             .and_then(|k| self.descriptions.get(&k))
             .filter(|d| !d.is_empty())
         {
-            Some(text) => w::Spoiler::new(ty::body(text.as_str()))
-                .max_height(44.0)
-                .expanded(self.desc_expanded)
-                .on_toggle(Message::DescExpanded)
-                .into(),
+            Some(text) => w::Spoiler::new(ty::body(text.as_str()).width(Length::Fill).align_x(
+                if narrow {
+                    Alignment::Center
+                } else {
+                    Alignment::Start
+                },
+            ))
+            .max_height(44.0)
+            .expanded(self.desc_expanded)
+            .on_toggle(Message::DescExpanded)
+            .into(),
             None => space::vertical().height(0).into(),
         };
         let (cover_el, kind, title, facts, actions): (
@@ -801,7 +814,11 @@ impl App {
                     let summary = self.filter_sentence(&remaining);
                     (summary != "everything").then_some(summary)
                 });
-                let mut facts = column![self.facts(extra)].spacing(6);
+                let mut facts = column![self.facts(extra)].spacing(6).align_x(if narrow {
+                    Alignment::Center
+                } else {
+                    Alignment::Start
+                });
                 if let Some(filter) = &p.filter {
                     let chips = self.tag_selection_chips(
                         &filter.tags,
@@ -810,7 +827,25 @@ impl App {
                         None,
                     );
                     if !chips.is_empty() {
-                        facts = facts.push(row(chips).spacing(6).align_y(Alignment::Center).wrap());
+                        facts = facts.push(
+                            container(
+                                row(chips)
+                                    .spacing(6)
+                                    .align_y(Alignment::Center)
+                                    .wrap()
+                                    .align_x(if narrow {
+                                        Alignment::Center
+                                    } else {
+                                        Alignment::Start
+                                    }),
+                            )
+                            .width(Length::Fill)
+                            .align_x(if narrow {
+                                Alignment::Center
+                            } else {
+                                Alignment::Start
+                            }),
+                        );
                     }
                 }
                 (
@@ -833,17 +868,31 @@ impl App {
                 let name = self.lib.artists()[i].0.clone();
                 let avg = self.lib.artist_rating(&name);
                 let fav = self.favorites.contains(&name);
-                let facts = row![
-                    ty::body(stars(avg)),
-                    ty::caption(if avg > 0.0 {
-                        format!("{avg:.1}")
+                let facts = container(
+                    row![
+                        ty::body(stars(avg)),
+                        ty::caption(if avg > 0.0 {
+                            format!("{avg:.1}")
+                        } else {
+                            "not rated".into()
+                        }),
+                        ty::caption(format!("· {} tracks", self.rows.len())),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .wrap()
+                    .align_x(if narrow {
+                        Alignment::Center
                     } else {
-                        "not rated".into()
+                        Alignment::Start
                     }),
-                    ty::caption(format!("· {} tracks", self.rows.len())),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center);
+                )
+                .width(Length::Fill)
+                .align_x(if narrow {
+                    Alignment::Center
+                } else {
+                    Alignment::Start
+                });
                 (
                     w::avatar(big, name.clone()).into(),
                     "Artist".into(),
@@ -878,12 +927,8 @@ impl App {
             }
             _ => unreachable!("detail_page is for playlists, artists and albums"),
         };
-        // The kind ("Dynamic playlist", "Album") sits above the facts and tags line, not over the
-        // name.
-        let facts: Element<'_> = column![ty::caption(kind).style(iad::styles::text::dim), facts]
-            .spacing(2)
-            .into();
         let mut header = crate::components::MediaHeader::new(title)
+            .kind(kind)
             .cover(cover_el)
             .description(description)
             .facts(facts)

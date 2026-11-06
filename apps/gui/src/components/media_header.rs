@@ -113,9 +113,22 @@ impl<'a, M: 'a> MediaHeader<'a, M> {
 
 impl<'a, M: 'a> From<MediaHeader<'a, M>> for Element<'a, M> {
     fn from(h: MediaHeader<'a, M>) -> Self {
-        let mut after = column![].spacing(h.metrics.space_s);
+        let alignment = if h.narrow {
+            Alignment::Center
+        } else {
+            Alignment::Start
+        };
+        let mut after = column![]
+            .spacing(h.metrics.space_s)
+            .width(Length::Fill)
+            .align_x(alignment);
         if let Some(kind) = h.kind {
-            after = after.push(ty::caption(kind));
+            after = after.push(
+                ty::caption(kind)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .style(iced_adaptive_design::styles::text::dim),
+            );
         }
         if let Some(facts) = h.facts {
             after = after.push(facts);
