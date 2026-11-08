@@ -15,6 +15,23 @@ use crate::icons::cover;
 use crate::{App, Element, LYRICS, Message};
 use iad::prelude::surface;
 
+fn now_playing_style(theme: &iad::Theme, radius: f32) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(
+            Color {
+                a: 1.0,
+                ..theme.semantic.window.bg
+            }
+            .into(),
+        ),
+        border: iced::Border {
+            radius: radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 impl App {
     fn play_pause(&self, size: f32) -> Element<'_> {
         let g = if self.player.playing {
@@ -487,22 +504,45 @@ impl App {
                 .on_press(Message::Window(iad::windows::Action::Drag)),
         ]
         .align_y(Alignment::Center);
+        let radius = self.chrome(true, true).radius();
         container(column![
             close,
             surface::full(container(body).center_x(Length::Fill))
         ])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|theme: &iad::Theme| iced::widget::container::Style {
-            background: Some(
-                Color {
-                    a: 1.0,
-                    ..theme.semantic.window.bg
-                }
-                .into(),
-            ),
-            ..Default::default()
-        })
+        .style(move |theme| now_playing_style(theme, radius))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iad::windows::{Chrome, State};
+
+    #[test]
+    fn now_playing_background_is_opaque_and_matches_window_corners() {
+        let theme = iad::Theme::light();
+        for (fullscreen, csd) in [(false, true), (true, true), (false, false)] {
+            let chrome = Chrome::new(State {
+                maximized: false,
+                fullscreen,
+            })
+            .csd_override(csd);
+            let radius = chrome.radius();
+            let style = now_playing_style(&theme, radius);
+            assert_eq!(style.border.radius, iced::border::Radius::from(radius));
+            assert_eq!(
+                style.background,
+                Some(
+                    Color {
+                        a: 1.0,
+                        ..theme.semantic.window.bg
+                    }
+                    .into()
+                )
+            );
+        }
     }
 }

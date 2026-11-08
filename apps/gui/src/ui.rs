@@ -139,7 +139,7 @@ impl App {
             })
     }
 
-    fn chrome(&self, left: bool, right: bool) -> Chrome {
+    pub(super) fn chrome(&self, left: bool, right: bool) -> Chrome {
         Chrome::new(WindowState {
             maximized: false,
             fullscreen: self.fullscreen,
@@ -311,6 +311,8 @@ impl App {
     /// it with its slide, in both directions.
     fn np_dock<'a>(&'a self, base: Element<'a>) -> Element<'a> {
         w::Dock::new(base, self.now_playing_view())
+            .scope(w::DockScope::Window)
+            .window_radius(self.chrome(true, true).radius())
             .open(self.now_playing)
             .size(w::DockSize::FullScreen)
             .mode(w::DockMode::Overlay)
@@ -449,6 +451,7 @@ impl App {
         let base = match self.sheet {
             Some(sheet) => w::Dock::new(base, self.sheet_view(sheet))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::OpenSheet(None))
                 .into(),
@@ -458,6 +461,7 @@ impl App {
         let base = match &self.delete_playlist {
             Some(name) => w::Dock::new(base, self.delete_playlist_sheet(name))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelDeletePlaylist)
                 .into(),
@@ -466,6 +470,7 @@ impl App {
         let base = if self.playlist_tracks_open {
             w::Dock::new(base, container(self.playlist_tracks_form()).padding(20))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .size(w::DockSize::Fraction(0.8))
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::PlaylistTracksOpen(false))
@@ -477,6 +482,7 @@ impl App {
         let base = if self.save_name.is_some() && !self.save_manual {
             w::Dock::new(base, self.save_sheet())
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelSaveJam)
                 .into()
@@ -487,51 +493,20 @@ impl App {
         let base = match &self.edit {
             Some(draft) => w::Dock::new(base, self.details_sheet(draft))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelDetails)
                 .into(),
             None => base,
         };
         let base = if self.themes_open {
-            let shade = iced::widget::mouse_area(
-                container(
-                    iced::widget::space()
-                        .width(Length::Fill)
-                        .height(Length::Fill),
-                )
-                .style(|theme: &iad::Theme| iced::widget::container::Style {
-                    background: Some(theme.semantic.shade.into()),
-                    ..Default::default()
-                }),
-            )
-            .on_press(Message::Themes(false));
-            let panel = container(self.themes_form())
-                .padding(20)
-                .width(Length::Fill)
-                .height(Length::Fixed((self.win_h * 0.75).clamp(240.0, 640.0)))
-                .style(|theme: &iad::Theme| {
-                    let mut style = style::container::dialog(theme);
-                    style.border.radius = iced::border::Radius {
-                        top_left: theme.metrics.radius_l,
-                        top_right: theme.metrics.radius_l,
-                        bottom_left: 0.0,
-                        bottom_right: 0.0,
-                    };
-                    style
-                });
-            iced::widget::stack![
-                base,
-                shade,
-                column![
-                    iced::widget::space().height(Length::Fill),
-                    iced::widget::opaque(panel)
-                ]
-                .width(Length::Fill)
-                .height(Length::Fill)
-            ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            w::Dock::new(base, container(self.themes_form()).padding(20))
+                .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
+                .size(w::DockSize::Fixed((self.win_h * 0.75).clamp(240.0, 640.0)))
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::Themes(false))
+                .into()
         } else {
             base
         };
@@ -544,6 +519,7 @@ impl App {
                     .style(style::container::window),
             )
             .scope(w::DockScope::Window)
+            .window_radius(self.chrome(true, true).radius())
             .size(w::DockSize::Fraction(0.8))
             .mode(w::DockMode::Overlay)
             .on_outside(Message::DismissImportReport)

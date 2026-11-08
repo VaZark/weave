@@ -1,5 +1,5 @@
 //! One modal flow: bounded desktop dialog, full-screen narrow sheet.
-use iced::widget::{Stack, container, opaque};
+use iced::widget::{container, space};
 use iced::{Length, Size};
 use iced_adaptive_design::{self as iad, Element, prelude as w};
 
@@ -49,13 +49,14 @@ pub fn present<'a, M: Clone + 'a>(
         None => (None, None),
     };
     if narrow {
-        let mut layers = Stack::with_children(vec![base])
-            .width(Length::Fill)
-            .height(Length::Fill);
-        if let Some(content) = content {
-            layers = layers.push(opaque(w::FocusScope::new(content).trap(true)));
-        }
-        layers.into()
+        let open = content.is_some();
+        w::Dock::new(base, content.unwrap_or_else(|| space().into()))
+            .open(open)
+            .scope(w::DockScope::Window)
+            .window_radius(window_radius)
+            .size(w::DockSize::FullScreen)
+            .mode(w::DockMode::Overlay)
+            .into()
     } else {
         w::present_dialog(base, content, close, 0.0)
     }
