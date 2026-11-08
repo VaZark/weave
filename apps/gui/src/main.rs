@@ -3097,6 +3097,7 @@ mod tests {
         ))
         .unwrap();
         let mut a = app();
+        a.theme_config = appearance::config(appearance::EXAMPLES[0]);
         a.desktop_scheme = iad::Scheme::Dark;
         assert_eq!(a.theme_mode, None);
         let original_dark = a.theme().semantic.window.bg;
@@ -3278,6 +3279,7 @@ mod tests {
                             a.filter_editor(FilterTarget::Jam),
                             false,
                             Size::new(width as f32, height as f32),
+                            0.0,
                         )
                     } else if scene == "themes" {
                         a.themes_form()
@@ -4566,12 +4568,14 @@ mod tests {
                     a.filter_editor(FilterTarget::Jam),
                     true,
                     Size::new(width as f32, height as f32),
+                    0.0,
                 )
             } else {
                 crate::components::responsive_dialog::panel(
                     a.filter_editor(FilterTarget::Jam),
                     false,
                     Size::new(width as f32, height as f32),
+                    0.0,
                 )
             };
             let mut tree = Tree::new(&el);

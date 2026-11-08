@@ -895,17 +895,23 @@ impl App {
         let mut rows: Vec<Element<'_>> = Vec::new();
         if let Some(name) = &draft.name {
             rows.push(
-                w::EntryRow::new("Name", name.as_str())
-                    .on_input(Message::NameInput)
-                    .on_submit(Message::SaveDetails)
-                    .into(),
+                w::TextEntry::from_input(
+                    "Name",
+                    w::entry("", name.as_str())
+                        .on_input(Message::NameInput)
+                        .on_submit(Message::SaveDetails),
+                )
+                .into(),
             );
         }
         rows.push(
-            w::EntryRow::new("Description", draft.description.as_str())
-                .on_input(Message::DescInput)
-                .on_submit(Message::SaveDetails)
-                .into(),
+            w::TextEntry::from_input(
+                "Description",
+                w::entry("", draft.description.as_str())
+                    .on_input(Message::DescInput)
+                    .on_submit(Message::SaveDetails),
+            )
+            .into(),
         );
         let fields = container(w::boxed_list(rows)).width(Length::Fill);
         column![

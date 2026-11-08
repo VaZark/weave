@@ -1703,6 +1703,7 @@ dependencies = [
 [[package]]
 name = "iced-adaptive-design"
 version = "0.1.0"
+source = "git+https://github.com/VaZark/iced-libadwaita?rev=526e4aaac674c718c2dd69d57f8d20763586f337#526e4aaac674c718c2dd69d57f8d20763586f337"
 dependencies = [
  "iced",
  "image",

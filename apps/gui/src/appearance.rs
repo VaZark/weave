@@ -135,7 +135,7 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
             // Mode-specific sections contain colors, leaving identity and behavior mode-neutral.
             if full_schema
                 .get(base, key)
-                .is_some_and(|spec| spec.default.kind() == Kind::Color)
+                .is_some_and(|spec| spec.ty.kind() == Kind::Color)
             {
                 values.insert((base.to_owned(), key.clone()), value.clone());
             } else {
@@ -453,32 +453,15 @@ mod tests {
     fn mode_sections_cascade_over_defaults_independently_of_file_order() {
         let document = ThemeDocument::parse("[theme]\nname=Cascade\nkey=cascade\n[dark:colors]\nwindow-bg=#111111\n[light:colors]\naccent=#123456\n[colors]\nwindow-bg=#eeeeee\nwindow-fg=#333333\naccent=#456789\n[tags]\ngenre=#123456\n[dark:tags]\ngenre=#abcdef\n").unwrap();
         let cfg = &document.config;
-        let read = |scheme, key| cfg.light_dark(scheme, key, Some("#987654")).unwrap();
-        assert_eq!(
-            read(iad::Scheme::Light, "window-bg"),
-            iad::color::parse("#eeeeee").unwrap()
-        );
-        assert_eq!(
-            read(iad::Scheme::Dark, "window-bg"),
-            iad::color::parse("#111111").unwrap()
-        );
-        assert_eq!(
-            read(iad::Scheme::Light, "accent"),
-            iad::color::parse("#123456").unwrap()
-        );
-        assert_eq!(
-            read(iad::Scheme::Dark, "accent"),
-            iad::color::parse("#456789").unwrap()
-        );
+        let read =
+            |scheme, key| iad::color::to_hex(cfg.light_dark(scheme, key, Some("#987654")).unwrap());
+        assert_eq!(read(iad::Scheme::Light, "window-bg"), "#eeeeee");
+        assert_eq!(read(iad::Scheme::Dark, "window-bg"), "#111111");
+        assert_eq!(read(iad::Scheme::Light, "accent"), "#123456");
+        assert_eq!(read(iad::Scheme::Dark, "accent"), "#456789");
         for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
-            assert_eq!(
-                read(scheme, "window-fg"),
-                iad::color::parse("#333333").unwrap()
-            );
-            assert_eq!(
-                read(scheme, "missing"),
-                iad::color::parse("#987654").unwrap()
-            );
+            assert_eq!(read(scheme, "window-fg"), "#333333");
+            assert_eq!(read(scheme, "missing"), "#987654");
         }
         assert_ne!(
             read(iad::Scheme::Light, "tags:genre"),

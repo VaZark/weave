@@ -20,6 +20,18 @@ pub const BAR_H: f32 = 65.0;
 pub const TAB_H: f32 = 56.0;
 pub const MINI_H: f32 = 60.0;
 
+fn page_wash(theme: &iad::Theme, tint: iced::Color, radius: f32) -> container::Style {
+    let mut style = style::container::wash(tint)(theme);
+    // The window frame clips rectangularly; corner-touching surfaces must round themselves.
+    style.border.radius = iced::border::Radius {
+        top_left: radius,
+        top_right: radius,
+        bottom_left: 0.0,
+        bottom_right: 0.0,
+    };
+    style
+}
+
 impl App {
     pub fn view(&self) -> Element<'_> {
         let body: Element<'_> = adaptive(&self.adaptive)
@@ -35,6 +47,7 @@ impl App {
             editor,
             self.is_narrow(),
             iced::Size::new(self.win_w, self.win_h),
+            self.chrome(true, true).radius(),
         );
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
         let saving = self.save_name.is_some() && !self.save_manual && !self.is_narrow();
@@ -163,6 +176,7 @@ impl App {
     /// `body` with the page's colour wash behind it, fading down from the top of the window
     /// through the header line and the top of the page.
     fn with_wash<'a>(&'a self, body: Element<'a>) -> Element<'a> {
+        let radius = self.chrome(true, true).radius();
         match self.page_tint() {
             // The bottom layer fills the window (a stack takes the size of its first layer), with
             // the wash at its top.
@@ -171,7 +185,7 @@ impl App {
                     container(iced::widget::space())
                         .width(Length::Fill)
                         .height(Length::Fixed(HEADER_H + 300.0))
-                        .style(style::container::wash(tint)),
+                        .style(move |theme| page_wash(theme, tint, radius)),
                 ]
                 .width(Length::Fill)
                 .height(Length::Fill),
@@ -535,6 +549,34 @@ impl App {
             .on_outside(Message::DismissImportReport)
             .into(),
             None => base,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_wash_matches_chrome_top_corners_and_preserves_gradient() {
+        let theme = iad::Theme::light();
+        let tint = iad::color::from_index(7);
+        for (fullscreen, csd) in [(false, true), (true, true), (false, false)] {
+            let chrome = Chrome::new(WindowState {
+                maximized: false,
+                fullscreen,
+            })
+            .csd_override(csd);
+            let radius = chrome.radius();
+            let wash = page_wash(&theme, tint, radius);
+            assert_eq!(wash.border.radius.top_left, radius);
+            assert_eq!(wash.border.radius.top_right, radius);
+            assert_eq!(wash.border.radius.bottom_left, 0.0);
+            assert_eq!(wash.border.radius.bottom_right, 0.0);
+            assert_eq!(
+                wash.background,
+                style::container::wash(tint)(&theme).background
+            );
         }
     }
 }
