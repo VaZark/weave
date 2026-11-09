@@ -366,7 +366,7 @@ impl App {
     // ---- grids ----------------------------------------------------------------------------
 
     pub(super) fn collection_layout(&self) -> crate::components::collection::CollectionLayout {
-        crate::components::collection::CollectionLayout::new(self.is_narrow(), self.compact())
+        crate::components::collection::CollectionLayout::new(self.is_narrow())
     }
 
     pub(super) fn media_grid<'a>(&self, items: Vec<Element<'a>>) -> Element<'a> {
@@ -388,8 +388,6 @@ impl App {
             name,
             subtitle,
             |s| cover(i, s),
-            40.0,
-            false,
             Message::Open(Dest::Album(i)),
         )
     }
@@ -406,8 +404,6 @@ impl App {
             p.name.clone(),
             format!("{kind} · {n} tracks"),
             |s| playlist_avatar(&p.name, p.icon, s),
-            40.0,
-            true,
             Message::Open(Dest::Playlist(i)),
         )
     }
@@ -428,8 +424,6 @@ impl App {
             name.clone(),
             subtitle.unwrap_or_default(),
             |s| w::avatar(s, name.clone()).into(),
-            40.0,
-            false,
             Message::Open(Dest::Artist(i)),
         )
     }

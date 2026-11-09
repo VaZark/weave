@@ -243,6 +243,10 @@ pub enum Message {
     SelectTagGroup(FilterTarget, Option<(usize, usize)>),
     FilterTagToggle(FilterTarget, String),
     RemoveGroupedTag(FilterTarget, usize, usize, String),
+    /// Toggles a tag in the editable group at (block, index), making it the active one.
+    ToggleInTagGroup(FilterTarget, (usize, usize), String),
+    /// Does nothing (an event the controls send that has no effect here).
+    Noop,
     TagQuery(String),
     TagBrowseToggle,
     TagCategories,
@@ -2108,6 +2112,12 @@ impl App {
                 return iced::widget::operation::focus(iced::widget::Id::new(
                     crate::ui_dialogs::TAG_QUERY_ID,
                 ));
+            }
+            Message::Noop => Vec::new(),
+            Message::ToggleInTagGroup(target, at, tag) => {
+                let select = self.update(Message::SelectTagGroup(target, Some(at)));
+                let toggle = self.update(Message::FilterTagToggle(target, tag));
+                return Task::batch([select, toggle]);
             }
             Message::FilterTagToggle(target, tag) => {
                 let active = self

@@ -6,20 +6,18 @@ use iced_adaptive_design::{Element, prelude::FlowGrid};
 #[derive(Clone, Copy)]
 pub struct CollectionFlow {
     narrow: bool,
-    compact: bool,
     cards_only: bool,
 }
 
 impl CollectionFlow {
-    pub fn new(narrow: bool, compact: bool) -> Self {
+    pub fn new(narrow: bool) -> Self {
         Self {
             narrow,
-            compact,
             cards_only: false,
         }
     }
 
-    /// Recents keep cards at every width while sharing grid sizing and density.
+    /// Recents keep cards at every width while sharing the grid sizing.
     pub fn cards(mut self) -> Self {
         self.cards_only = true;
         self
@@ -34,8 +32,8 @@ impl CollectionFlow {
             column(items).spacing(4).width(Length::Fill).into()
         } else {
             FlowGrid::new(items)
-                .max_width(if self.compact { 220.0 } else { 260.0 })
-                .spacing(if self.compact { 8.0 } else { 12.0 })
+                .max_width(220.0)
+                .spacing(8.0)
                 .into()
         }
     }

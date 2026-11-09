@@ -12,7 +12,6 @@ pub mod tag_badge;
 pub mod media_header;
 pub use media_header::MediaHeader;
 
-pub mod tags_input;
 
 pub mod collection;
 

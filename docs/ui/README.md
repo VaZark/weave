@@ -42,7 +42,7 @@ Our own widgets live in `apps/gui/src/components`, with their headless logic in 
 - **On desktop every header button is a toggle:** unselecting it returns to Home (Explore, Search, Jam; on narrow Explore and Jam are tabs, not header buttons). On narrow, tabs and Back apply.
 - **Back is the previous place** (see [layout](layout.md#back)).
 - **Jam is a page**, not a sheet. Its header button toggles it: pressed, the jam shows; pressed again, the page you were on returns. Filters are open by default and fold on request; the round play button sits right after them; the matches are a virtualised list.
-- **Track lists are flat:** no surfaces, no separators, the whole row lights up on hover. A row is the picture, the title with its artist beneath it, the album (not on an album's own page), the duration, and a menu. Tempo and rating are not in the rows: tempo is in the jam's list and under **More info**; **Rate** and **Edit tags** are menu entries. **Compact mode** (Settings) drops the picture and uses one line for tracks (every list and the jam's), and turns the cards for albums, artists and playlists into tight rows with a small picture and the name beside it, several to a line, as a music app's compact library does.
+- **Track lists are flat:** no surfaces, no separators, the whole row lights up on hover. A row is the picture, the title with its artist beneath it, the album (not on an album's own page), the duration, and a menu. Tempo and rating are not in the rows: tempo is in the jam's list and under **More info**; **Rate** and **Edit tags** are menu entries. **Compact mode** (Settings) drops the picture and uses one line for tracks (every list and the jam's); it changes nothing else. Albums, artists and playlists are always tight tiles with a small picture and the name beside it, several to a line, as a music app's compact library does.
 - **Settings is a dialog** (the header gear; iad's `preferences_dialog` with a page of groups and rows): compact mode, and how many days before Explore resurfaces a highly rated track. It closes with its button or a click outside.
 - **Menus put their icons (and checks) on the right edge**, after the label.
 - **Now Playing and the queue animate both ways, and only animate.** iad's sheet entrance has no exit animation, so the app drives a small `Slide` (0.28 s, eased, skipped when animations are off) from iced's frame subscription, which runs only while something moves. Now Playing slides up over the page and back down. The queue is a push of the final layout: the now-playing bar rises from the bottom to the top, the page (or Now Playing, if it was open) is pushed up ahead of it, and the space below becomes the queue; closing runs it backwards. A non-scrolling `scrollable` gives the content unbounded room, so it is translated, not squeezed. The layouts at either end are unchanged.
@@ -223,8 +223,8 @@ pills, and page summaries, including Custom and user-defined tag keys.
 
 Recent and All artist, album, and playlist collections use the shared
 `components::collection::CollectionLayout` for both entries and their layout.
-The shared `CollectionFlow` primitive flows into a grid in wide mode (260 px
-cards, 220 px compact), and full-width rows in narrow mode. Home recent artists,
+The shared `CollectionFlow` primitive flows into a grid in wide mode (220 px
+tiles, at every density), and full-width rows in narrow mode. Home recent artists,
 albums, and playlists explicitly use cards at both widths. All playlists uses the same artwork, counts, and card rendering
 as Recent playlists. Collection search and ordering only change the items.
 

@@ -33,6 +33,16 @@ fn tag_group_separator(
     }
 }
 
+/// What `tag_picker_content` hands the library's tag filter.
+struct TagGroupView<'a> {
+    groups: iad::primitives::tag_groups::TagGroups<String>,
+    picked: Vec<w::ChipOption<String>>,
+    before: Vec<Element<'a>>,
+    after: Vec<Element<'a>>,
+    separator: Box<dyn Fn(usize) -> String + 'a>,
+    on_change: Box<dyn Fn(iad::primitives::tag_groups::GroupEvent<String>) -> Message + 'a>,
+}
+
 pub(super) fn editable_tag_group(group: &weave_player_lib::core::TagFilter) -> bool {
     (group.all.is_empty() || group.any.is_empty())
         && group.exclude.is_empty()
@@ -127,129 +137,6 @@ impl App {
                 }
             })
             .unwrap_or(selected);
-        let mut input_items = Vec::new();
-        let mut caret_index = None;
-        let mut positions = Vec::new();
-        if let Some((filter, target)) = groups {
-            for (block, alternatives) in filter.retained.tag_blocks.iter().enumerate() {
-                for (index, group) in alternatives.iter().enumerate() {
-                    let editable = editable_tag_group(group);
-                    let item = self.tag_group_chip(group, Some((target, block, index)));
-                    input_items.push(if editable {
-                        iced::widget::mouse_area(item)
-                            .on_press(Message::SelectTagGroup(target, Some((block, index))))
-                            .into()
-                    } else {
-                        item
-                    });
-                    if editable {
-                        positions.push(((block, index), input_items.len()));
-                    }
-                    if active == Some((block, index)) {
-                        caret_index = Some(input_items.len());
-                    }
-                    if let Some(separator) =
-                        tag_group_separator(&filter.retained.tag_blocks, block, index)
-                    {
-                        input_items.push(ty::label(separator).into());
-                    }
-                }
-            }
-            if !input_items.is_empty() && !filter.tags.is_empty() {
-                input_items.push(ty::label("AND").into());
-            }
-            input_items.extend(self.tag_selection_chips(&filter.tags, &[], Some(on_toggle), None));
-            if active.is_some() {
-                input_items.push(
-                    iced::widget::mouse_area(space::horizontal().width(20).height(28))
-                        .on_press(Message::SelectTagGroup(target, None))
-                        .into(),
-                );
-            }
-        } else {
-            input_items = self.tag_selection_chips(selected, &[], Some(on_toggle), None);
-        }
-        let caret_index = caret_index.unwrap_or(input_items.len());
-        let active_position = active
-            .and_then(|group| positions.iter().position(|(id, _)| *id == group))
-            .unwrap_or(positions.len());
-        let previous = groups.and_then(|(_, target)| {
-            active_position
-                .checked_sub(1)
-                .map(|index| Message::SelectTagGroup(target, Some(positions[index].0)))
-        });
-        let next = groups.and_then(|(_, target)| {
-            (active_position < positions.len()).then(|| {
-                Message::SelectTagGroup(
-                    target,
-                    positions.get(active_position + 1).map(|(id, _)| *id),
-                )
-            })
-        });
-        input_items.push(
-            iced::widget::text_input(
-                if input_items.is_empty() {
-                    "Find a tag or category"
-                } else {
-                    ""
-                },
-                &self.tag_query,
-            )
-            .id(iced::widget::Id::new(TAG_QUERY_ID))
-            .on_input(Message::TagQuery)
-            .style(iad::styles::text_input::embedded)
-            .padding([4, 2])
-            .size(14)
-            .width(Length::Fill)
-            .into(),
-        );
-        let mut controls = row![w::tooltip(
-            crate::icons::section_button(Icon::Tag, Message::TagBrowseToggle, all_tags),
-            if all_tags {
-                "Show categories"
-            } else {
-                "Show all tags"
-            },
-            w::TooltipPosition::Bottom,
-        )]
-        .spacing(2)
-        .align_y(Alignment::Center);
-        if let Some((_, target)) = groups {
-            controls = controls.push(w::tooltip(
-                crate::icons::section_button(Icon::ListAdd, Message::CommitTagGroup(target), false),
-                "Finish this tag group and start a new one",
-                w::TooltipPosition::Bottom,
-            ));
-        }
-        let back: Element<'a> = if matches!(self.tag_browse, TagBrowse::Category(_)) {
-            crate::icons::icon_button(Icon::GoPrevious)
-                .on_press(Message::TagCategories)
-                .into()
-        } else {
-            space::horizontal().width(0).into()
-        };
-        let input = if groups.is_some() {
-            crate::components::tags_input::flow_with_caret(
-                input_items,
-                caret_index,
-                &self.tag_query,
-                previous,
-                next,
-            )
-        } else {
-            crate::components::tags_input::flow(input_items)
-        };
-        let search = w::EntryRow::new(
-            "Tags",
-            w::EntryInput::Custom(
-                row![back, input, controls]
-                    .spacing(4)
-                    .align_y(Alignment::Center)
-                    .into(),
-            ),
-        )
-        .flat(true);
-        let content = column![search].spacing(8).width(Length::Fill);
         let choices: Result<Element<'a>, String> = match &self.tag_browse {
             TagBrowse::Categories => {
                 self.backend
@@ -295,12 +182,174 @@ impl App {
                     })
             }
         };
-        match choices {
-            Ok(choices) => content.push(choices).into(),
-            Err(error) => content
-                .push(ty::caption(format!("Cannot load tags: {error}")))
-                .into(),
+        let choices: Element<'a> = match choices {
+            Ok(choices) => choices,
+            Err(error) => ty::caption(format!("Cannot load tags: {error}")).into(),
+        };
+
+        // The entry: picked tags as pills (the library's TagFilter), with the groups the filter
+        // edits and, beside them, what it only shows.
+        let view = self.tag_group_view(selected, groups, active, on_toggle);
+        let mut back = None;
+        if matches!(self.tag_browse, TagBrowse::Category(_)) {
+            back = Some(
+                crate::icons::icon_button(Icon::GoPrevious).on_press(Message::TagCategories),
+            );
         }
+        let toggle = w::tooltip(
+            crate::icons::section_button(Icon::Tag, Message::TagBrowseToggle, all_tags),
+            if all_tags {
+                "Show categories"
+            } else {
+                "Show all tags"
+            },
+            w::TooltipPosition::Bottom,
+        );
+        let mut filter = iad::widgets::TagFilter::owned(
+            view.groups,
+            Vec::new(),
+            &self.tag_query,
+            view.on_change,
+            Message::TagQuery,
+        )
+        .multiple(groups.is_some())
+        .label("Tags")
+        .placeholder("Find a tag or category")
+        .flat(true)
+        .picked(view.picked)
+        .field_id(iced::widget::Id::new(TAG_QUERY_ID))
+        .before(view.before)
+        .after(view.after)
+        .separator(view.separator)
+        .trailing(toggle)
+        .choices(choices);
+        if let Some(back) = back {
+            filter = filter.leading(back);
+        }
+        if let Some((_, target)) = groups {
+            filter = filter.add_group_button(w::tooltip(
+                crate::icons::section_button(Icon::ListAdd, Message::CommitTagGroup(target), false),
+                "Finish this tag group and start a new one",
+                w::TooltipPosition::Bottom,
+            ));
+        }
+        filter.into()
+    }
+
+    /// What the library's tag filter needs of a filter's tags: the groups it edits (the editable
+    /// ones, then a slot for the loose tags), how its events become messages, and the groups it
+    /// can only show.
+    fn tag_group_view<'a>(
+        &'a self,
+        selected: &'a [String],
+        groups: Option<(&'a Filter, FilterTarget)>,
+        active: Option<(usize, usize)>,
+        on_toggle: fn(String) -> Message,
+    ) -> TagGroupView<'a> {
+        use iad::primitives::tag_groups::{GroupEvent, Step, TagGroups};
+        let Some((filter, target)) = groups else {
+            // No groups: the picked tags are one group, and toggling is the caller's.
+            let picked = self.picked_options(selected.iter());
+            return TagGroupView {
+                groups: TagGroups::from_parts(vec![selected.to_vec()], 0),
+                picked,
+                before: Vec::new(),
+                after: Vec::new(),
+                separator: Box::new(|_| String::new()),
+                on_change: Box::new(move |event| match event {
+                    GroupEvent::Toggle(_, tag) => on_toggle(tag),
+                    _ => Message::Noop,
+                }),
+            };
+        };
+        let blocks = &filter.retained.tag_blocks;
+        let mut positions = Vec::new();
+        let mut tags = Vec::new();
+        let mut before: Vec<Element<'a>> = Vec::new();
+        for (block, alternatives) in blocks.iter().enumerate() {
+            for (index, group) in alternatives.iter().enumerate() {
+                if editable_tag_group(group) {
+                    positions.push((block, index));
+                    tags.push(if group.any.is_empty() {
+                        group.all.clone()
+                    } else {
+                        group.any.clone()
+                    });
+                } else {
+                    before.push(self.tag_group_chip(group, None));
+                    if let Some(separator) = tag_group_separator(blocks, block, index) {
+                        before.push(ty::label(separator).into());
+                    }
+                }
+            }
+        }
+        let slot = positions.len();
+        // Loose tags are the first group until a group is committed; after that they are ANDed
+        // with the committed alternatives, and only shown.
+        let mut after: Vec<Element<'a>> = Vec::new();
+        if blocks.is_empty() {
+            tags.push(filter.tags.clone());
+        } else {
+            tags.push(Vec::new());
+            if !filter.tags.is_empty() {
+                after.push(ty::label("AND").into());
+                after.extend(
+                    filter
+                        .tags
+                        .iter()
+                        .map(|tag| self.selection_tag_chip(tag, Some(on_toggle(tag.clone())))),
+                );
+            }
+        }
+        let active_group = active
+            .and_then(|a| positions.iter().position(|p| *p == a))
+            .unwrap_or(slot);
+        let picked = self.picked_options(tags.iter().flatten());
+        let block_of: Vec<usize> = positions.iter().map(|p| p.0).collect();
+        let separator = Box::new(move |index: usize| match (block_of.get(index - 1), block_of.get(index)) {
+            (Some(a), Some(b)) if a != b => "AND".to_string(),
+            (Some(_), Some(_)) => ",".to_string(),
+            _ => String::new(),
+        });
+        let place = move |group: usize| positions.get(group).copied();
+        let on_change = Box::new(move |event: GroupEvent<String>| match event {
+            GroupEvent::Toggle(group, tag) => match place(group) {
+                Some(at) => Message::ToggleInTagGroup(target, at, tag),
+                None => on_toggle(tag),
+            },
+            GroupEvent::Select(group) => Message::SelectTagGroup(target, place(group)),
+            GroupEvent::Step(Step::Previous) => match active_group.checked_sub(1) {
+                Some(group) => Message::SelectTagGroup(target, place(group)),
+                None => Message::Noop,
+            },
+            GroupEvent::Step(Step::Next) if active_group < slot => {
+                Message::SelectTagGroup(target, place(active_group + 1))
+            }
+            GroupEvent::Step(Step::Next) => Message::Noop,
+            GroupEvent::AddGroup => Message::CommitTagGroup(target),
+        });
+        TagGroupView {
+            groups: TagGroups::from_parts(tags, active_group),
+            picked,
+            before,
+            after,
+            separator,
+            on_change,
+        }
+    }
+
+    /// How the library's tag filter draws these tags: their value, with the tag's icon and colour.
+    fn picked_options<'t>(
+        &self,
+        tags: impl Iterator<Item = &'t String>,
+    ) -> Vec<w::ChipOption<String>> {
+        tags.map(|tag| {
+            let style = self.tag_style(tag);
+            w::ChipOption::new(tag.clone(), crate::components::tag_badge::value_of(tag))
+                .icon(crate::icons::for_key(&style.icon))
+                .color(style.color)
+        })
+        .collect()
     }
 
     /// The fields of a filter, as chips: the tags (all of them are listed, with a search), the
@@ -1019,21 +1068,25 @@ impl App {
         let mut rows: Vec<Element<'_>> = Vec::new();
         if let Some(name) = &draft.name {
             rows.push(
-                w::TextEntry::from_input(
+                w::EntryRow::new(
                     "Name",
-                    w::entry("", name.as_str())
-                        .on_input(Message::NameInput)
-                        .on_submit(Message::SaveDetails),
+                    w::EntryInput::Text(
+                        w::entry("", name.as_str())
+                            .on_input(Message::NameInput)
+                            .on_submit(Message::SaveDetails),
+                    ),
                 )
                 .into(),
             );
         }
         rows.push(
-            w::TextEntry::from_input(
+            w::EntryRow::new(
                 "Description",
-                w::entry("", draft.description.as_str())
-                    .on_input(Message::DescInput)
-                    .on_submit(Message::SaveDetails),
+                w::EntryInput::Text(
+                    w::entry("", draft.description.as_str())
+                        .on_input(Message::DescInput)
+                        .on_submit(Message::SaveDetails),
+                ),
             )
             .into(),
         );
