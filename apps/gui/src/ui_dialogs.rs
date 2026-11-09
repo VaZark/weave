@@ -3,7 +3,7 @@
 
 use iad::prelude::{self as w, typography as ty};
 use iced::widget::{column, container, row, scrollable, space};
-use iced::{Alignment, Color, Length};
+use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
 use weave_icons::Icon;
 
@@ -17,6 +17,28 @@ use iad::primitives::histogram::Histogram;
 
 /// The id of the Save as playlist name field.
 const SAVE_NAME_ID: &str = "save-name";
+pub(super) const TAG_QUERY_ID: &str = "tag-filter-query";
+
+fn tag_group_separator(
+    blocks: &[Vec<weave_player_lib::core::TagFilter>],
+    block: usize,
+    index: usize,
+) -> Option<&'static str> {
+    if index + 1 < blocks[block].len() {
+        Some(",")
+    } else if blocks[block + 1..].iter().any(|block| !block.is_empty()) {
+        Some("AND")
+    } else {
+        None
+    }
+}
+
+pub(super) fn editable_tag_group(group: &weave_player_lib::core::TagFilter) -> bool {
+    (group.all.is_empty() || group.any.is_empty())
+        && group.exclude.is_empty()
+        && group.clauses.is_empty()
+        && group.blocks.is_empty()
+}
 
 /// What the controls of a filter send: the jam's Tag filters and the playlist-filter editor show
 /// the same fields and differ only in this.
@@ -86,14 +108,84 @@ impl App {
         groups: Option<(&'a Filter, FilterTarget)>,
     ) -> Element<'a> {
         let all_tags = self.tag_browse == TagBrowse::All;
-        let mut input_items = self.tag_selection_chips(
-            selected,
-            groups
-                .map(|(filter, _)| filter.retained.tag_blocks.as_slice())
-                .unwrap_or(&[]),
-            Some(on_toggle),
-            groups.map(|(_, target)| target),
-        );
+        let active = groups.and_then(|(_, target)| {
+            self.active_tag_group
+                .filter(|(context, _, _)| *context == target)
+                .map(|(_, block, index)| (block, index))
+        });
+        let selected = active
+            .and_then(|(block, index)| {
+                groups
+                    .and_then(|(filter, _)| filter.retained.tag_blocks.get(block))
+                    .and_then(|b| b.get(index))
+            })
+            .map(|group| {
+                if group.any.is_empty() {
+                    group.all.as_slice()
+                } else {
+                    group.any.as_slice()
+                }
+            })
+            .unwrap_or(selected);
+        let mut input_items = Vec::new();
+        let mut caret_index = None;
+        let mut positions = Vec::new();
+        if let Some((filter, target)) = groups {
+            for (block, alternatives) in filter.retained.tag_blocks.iter().enumerate() {
+                for (index, group) in alternatives.iter().enumerate() {
+                    let editable = editable_tag_group(group);
+                    let item = self.tag_group_chip(group, Some((target, block, index)));
+                    input_items.push(if editable {
+                        iced::widget::mouse_area(item)
+                            .on_press(Message::SelectTagGroup(target, Some((block, index))))
+                            .into()
+                    } else {
+                        item
+                    });
+                    if editable {
+                        positions.push(((block, index), input_items.len()));
+                    }
+                    if active == Some((block, index)) {
+                        caret_index = Some(input_items.len());
+                    }
+                    if let Some(separator) =
+                        tag_group_separator(&filter.retained.tag_blocks, block, index)
+                    {
+                        input_items.push(ty::label(separator).into());
+                    }
+                }
+            }
+            if !input_items.is_empty() && !filter.tags.is_empty() {
+                input_items.push(ty::label("AND").into());
+            }
+            input_items.extend(self.tag_selection_chips(&filter.tags, &[], Some(on_toggle), None));
+            if active.is_some() {
+                input_items.push(
+                    iced::widget::mouse_area(space::horizontal().width(20).height(28))
+                        .on_press(Message::SelectTagGroup(target, None))
+                        .into(),
+                );
+            }
+        } else {
+            input_items = self.tag_selection_chips(selected, &[], Some(on_toggle), None);
+        }
+        let caret_index = caret_index.unwrap_or(input_items.len());
+        let active_position = active
+            .and_then(|group| positions.iter().position(|(id, _)| *id == group))
+            .unwrap_or(positions.len());
+        let previous = groups.and_then(|(_, target)| {
+            active_position
+                .checked_sub(1)
+                .map(|index| Message::SelectTagGroup(target, Some(positions[index].0)))
+        });
+        let next = groups.and_then(|(_, target)| {
+            (active_position < positions.len()).then(|| {
+                Message::SelectTagGroup(
+                    target,
+                    positions.get(active_position + 1).map(|(id, _)| *id),
+                )
+            })
+        });
         input_items.push(
             iced::widget::text_input(
                 if input_items.is_empty() {
@@ -103,22 +195,9 @@ impl App {
                 },
                 &self.tag_query,
             )
+            .id(iced::widget::Id::new(TAG_QUERY_ID))
             .on_input(Message::TagQuery)
-            .style(|theme: &iad::Theme, status| {
-                let mut style = iad::styles::text_input::default(theme, status);
-                style.background = Color::TRANSPARENT.into();
-                style.border = if matches!(status, iced::widget::text_input::Status::Focused { .. })
-                {
-                    iced::Border {
-                        color: theme.semantic.accent.bg,
-                        width: 1.0,
-                        radius: theme.metrics.radius_m.into(),
-                    }
-                } else {
-                    iced::Border::default()
-                };
-                style
-            })
+            .style(iad::styles::text_input::embedded)
             .padding([4, 2])
             .size(14)
             .width(Length::Fill)
@@ -138,7 +217,7 @@ impl App {
         if let Some((_, target)) = groups {
             controls = controls.push(w::tooltip(
                 crate::icons::section_button(Icon::ListAdd, Message::CommitTagGroup(target), false),
-                "Add selected tags as an OR group",
+                "Finish this tag group and start a new one",
                 w::TooltipPosition::Bottom,
             ));
         }
@@ -149,25 +228,27 @@ impl App {
         } else {
             space::horizontal().width(0).into()
         };
-        let search = container(
-            row![
-                back,
-                crate::components::tags_input::flow(input_items),
-                controls
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center),
+        let input = if groups.is_some() {
+            crate::components::tags_input::flow_with_caret(
+                input_items,
+                caret_index,
+                &self.tag_query,
+                previous,
+                next,
+            )
+        } else {
+            crate::components::tags_input::flow(input_items)
+        };
+        let search = w::EntryRow::new(
+            "Tags",
+            w::EntryInput::Custom(
+                row![back, input, controls]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into(),
+            ),
         )
-        .padding(4)
-        .style(|theme: &iad::Theme| iced::widget::container::Style {
-            background: Some(theme.semantic.view.bg.into()),
-            border: iced::Border {
-                color: theme.semantic.border,
-                width: 1.0,
-                radius: theme.metrics.radius_m.into(),
-            },
-            ..Default::default()
-        });
+        .flat(true);
         let content = column![search].spacing(8).width(Length::Fill);
         let choices: Result<Element<'a>, String> = match &self.tag_browse {
             TagBrowse::Categories => {
@@ -201,13 +282,16 @@ impl App {
                                 .icon(crate::icons::for_key(&style.icon))
                                 .color(style.color)
                         });
-                        ChipGroup::new(options, selected, on_toggle)
-                            .max_lines(self.chip_line_limit)
-                            .expandable(self.chip_expanded[picker as usize], move |on| {
-                                Message::ChipExpand(picker, on)
-                            })
-                            .empty_text("No matching tags")
-                            .into()
+                        ChipGroup::new(options, selected, move |tag| match groups {
+                            Some((_, target)) => Message::FilterTagToggle(target, tag),
+                            None => on_toggle(tag),
+                        })
+                        .max_lines(self.chip_line_limit)
+                        .expandable(self.chip_expanded[picker as usize], move |on| {
+                            Message::ChipExpand(picker, on)
+                        })
+                        .empty_text("No matching tags")
+                        .into()
                     })
             }
         };
@@ -311,7 +395,7 @@ impl App {
             iced::widget::text_input(placeholder, query)
                 .on_input(on_query)
                 .padding(10)
-                .style(filter_input),
+                .style(iad::styles::text_input::default),
             ChipGroup::new(options, selected, on_toggle)
                 .query(query)
                 .max_lines(self.name_chip_line_limit)
@@ -420,26 +504,65 @@ impl App {
         target: Option<FilterTarget>,
     ) -> Vec<Element<'a>> {
         let mut chips = Vec::new();
-        for tag in selected {
-            let mut chip = w::Chip::new(crate::components::tag_badge::value_of(tag))
-                .size(ChipSize::Medium)
-                .color(self.tag_style(tag).color);
-            if let Some(toggle) = on_toggle {
-                chip = chip.on_remove(toggle(tag.clone()));
-            }
-            chips.push(chip.into());
-        }
         for (block_index, block) in blocks.iter().enumerate() {
             for (index, group) in block.iter().enumerate() {
-                let mut chip = w::Chip::new(tag_group_label(group)).size(ChipSize::Medium);
-                if let Some(target) = target {
-                    chip = chip.on_remove(Message::RemoveTagGroup(target, block_index, index));
+                chips.push(
+                    self.tag_group_chip(group, target.map(|target| (target, block_index, index))),
+                );
+                if let Some(separator) = tag_group_separator(blocks, block_index, index) {
+                    chips.push(ty::label(separator).into());
                 }
-                chips.push(chip.into());
-                chips.push(ty::label(",").into());
             }
         }
+        if !chips.is_empty() && !selected.is_empty() {
+            chips.push(ty::label("AND").into());
+        }
+        for tag in selected {
+            chips.push(self.selection_tag_chip(tag, on_toggle.map(|toggle| toggle(tag.clone()))));
+        }
         chips
+    }
+
+    fn selection_tag_chip<'a>(&'a self, name: &str, remove: Option<Message>) -> Element<'a> {
+        let style = self.tag_style(name);
+        let mut chip = w::Chip::new(crate::components::tag_badge::value_of(name))
+            .size(ChipSize::Medium)
+            .icon(crate::icons::for_key(&style.icon))
+            .color(style.color);
+        if let Some(remove) = remove {
+            chip = chip.on_remove(remove);
+        }
+        chip.into()
+    }
+
+    fn tag_group_chip<'a>(
+        &'a self,
+        group: &weave_player_lib::core::TagFilter,
+        remove: Option<(FilterTarget, usize, usize)>,
+    ) -> Element<'a> {
+        let parts = tag_group_parts(group)
+            .into_iter()
+            .filter(|part| {
+                !matches!(part, TagGroupPart::Operator("(" | ")"))
+                    && !(editable_tag_group(group) && matches!(part, TagGroupPart::Operator("+")))
+            })
+            .map(|part| match part {
+                TagGroupPart::Tag(name) => {
+                    let remove = remove.filter(|_| editable_tag_group(group)).map(
+                        |(target, block, index)| {
+                            Message::RemoveGroupedTag(target, block, index, name.clone())
+                        },
+                    );
+                    self.selection_tag_chip(&name, remove)
+                }
+                TagGroupPart::Operator(",") if editable_tag_group(group) => ty::label("OR").into(),
+                TagGroupPart::Operator(text) => ty::label(text).into(),
+            });
+        row(parts)
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .wrap()
+            .into()
     }
 
     /// The active filters as chips, each clearing itself. `None` when nothing is active. The search
@@ -578,6 +701,7 @@ impl App {
     // ---- jam filters --------------------------------------------------------------------
 
     pub(super) fn prepare_filter_editor(&mut self) {
+        self.active_tag_group = None;
         self.chip_expanded = [false; 4];
         self.tag_browse = TagBrowse::Categories;
         self.tag_query.clear();
@@ -1095,22 +1219,67 @@ pub(super) fn filter_scroll_direction() -> iced::widget::scrollable::Direction {
     )
 }
 
-fn filter_input(
-    theme: &iad::Theme,
-    status: iced::widget::text_input::Status,
-) -> iced::widget::text_input::Style {
-    let mut style = iad::styles::text_input::default(theme, status);
-    style.background = theme.semantic.view.bg.into();
-    style.border = iced::Border {
-        color: if matches!(status, iced::widget::text_input::Status::Focused { .. }) {
-            theme.semantic.accent.bg
-        } else {
-            theme.semantic.border
-        },
-        width: 1.0,
-        radius: theme.metrics.radius_m.into(),
-    };
-    style
+#[derive(Debug, PartialEq)]
+enum TagGroupPart {
+    Tag(String),
+    Operator(&'static str),
+}
+
+fn tag_group_parts(group: &weave_player_lib::core::TagFilter) -> Vec<TagGroupPart> {
+    use TagGroupPart::{Operator, Tag};
+    use weave_player_lib::core::TagOp;
+
+    fn append(
+        parts: &mut Vec<TagGroupPart>,
+        names: impl IntoIterator<Item = String>,
+        separator: &'static str,
+        exact: bool,
+    ) {
+        for (index, name) in names.into_iter().enumerate() {
+            if index > 0 {
+                parts.push(Operator(separator));
+            }
+            if exact {
+                parts.push(Operator("="));
+            }
+            parts.push(Tag(name));
+        }
+    }
+
+    let mut parts = Vec::new();
+    append(&mut parts, group.all.clone(), "+", false);
+    for (names, prefix, suffix) in [(&group.any, "(", ")"), (&group.exclude, "without", "")] {
+        if !names.is_empty() {
+            if !parts.is_empty() {
+                parts.push(Operator("+"));
+            }
+            parts.push(Operator(prefix));
+            append(&mut parts, names.clone(), ",", false);
+            if !suffix.is_empty() {
+                parts.push(Operator(suffix));
+            }
+        }
+    }
+    for clause in &group.clauses {
+        if !parts.is_empty() {
+            parts.push(Operator("+"));
+        }
+        match clause.op {
+            TagOp::Any => parts.push(Operator("(")),
+            TagOp::Exclude => parts.push(Operator("without")),
+            TagOp::All => {}
+        }
+        for (index, alternatives) in clause.names().into_iter().enumerate() {
+            if index > 0 {
+                parts.push(Operator(if clause.op == TagOp::All { "+" } else { "," }));
+            }
+            append(&mut parts, alternatives, ",", clause.exact);
+        }
+        if clause.op == TagOp::Any {
+            parts.push(Operator(")"));
+        }
+    }
+    parts
 }
 
 pub(super) fn tag_group_label(group: &weave_player_lib::core::TagFilter) -> String {
@@ -1251,5 +1420,78 @@ impl App {
         .height(Length::Fill)
         .width(Length::Fill)
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tag_group_tests {
+    use super::*;
+    use TagGroupPart::{Operator, Tag};
+    use weave_player_lib::core::{TagClause, TagFilter, TagOp};
+
+    #[test]
+    fn separators_only_appear_between_groups() {
+        let group = TagFilter {
+            any: vec!["genre:bachata".into()],
+            ..Default::default()
+        };
+        let single = vec![vec![group.clone()]];
+        assert_eq!(tag_group_separator(&single, 0, 0), None);
+        let alternatives = vec![vec![group.clone(), group.clone()]];
+        assert_eq!(tag_group_separator(&alternatives, 0, 0), Some(","));
+        assert_eq!(tag_group_separator(&alternatives, 0, 1), None);
+        let blocks = vec![vec![group.clone()], vec![group]];
+        assert_eq!(tag_group_separator(&blocks, 0, 0), Some("AND"));
+        assert_eq!(tag_group_separator(&blocks, 1, 0), None);
+    }
+
+    #[test]
+    fn or_groups_keep_individual_tag_identities_for_styled_pills() {
+        let group = TagFilter {
+            any: vec!["genre:bachata".into(), "mood:romantic".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            tag_group_parts(&group),
+            vec![
+                Operator("("),
+                Tag("genre:bachata".into()),
+                Operator(","),
+                Tag("mood:romantic".into()),
+                Operator(")"),
+            ]
+        );
+    }
+
+    #[test]
+    fn grouped_clauses_preserve_operators_and_exact_matching() {
+        let group = TagFilter {
+            all: vec!["mood:romantic".into()],
+            exclude: vec!["genre:rock".into()],
+            clauses: vec![TagClause {
+                op: TagOp::Any,
+                keys: vec!["genre".into(), "style".into()],
+                values: vec!["bachata".into()],
+                exact: true,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            tag_group_parts(&group),
+            vec![
+                Tag("mood:romantic".into()),
+                Operator("+"),
+                Operator("without"),
+                Tag("genre:rock".into()),
+                Operator("+"),
+                Operator("("),
+                Operator("="),
+                Tag("genre:bachata".into()),
+                Operator(","),
+                Operator("="),
+                Tag("style:bachata".into()),
+                Operator(")"),
+            ]
+        );
     }
 }

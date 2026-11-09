@@ -229,6 +229,59 @@ fn a_tag_has_an_icon_and_a_color() {
 }
 
 #[test]
+fn any_alternatives_union_within_a_block_intersect_across_blocks_and_and_shared_conditions() {
+    let db = fixture();
+    let first = TagFilter {
+        any: s(&["genre:zouk", "=genre:bachata"]),
+        ..Default::default()
+    };
+    let second = TagFilter {
+        any: s(&["genre:bachata-traditional", "=genre:bachata"]),
+        ..Default::default()
+    };
+    let union = TagFilter {
+        blocks: vec![vec![first.clone(), second.clone()]],
+        ..Default::default()
+    };
+    assert_eq!(find(&db, union.clone()), ["B", "T", "Z"]);
+    assert_eq!(
+        find(
+            &db,
+            TagFilter {
+                all: s(&["genre:bachata"]),
+                ..union.clone()
+            }
+        ),
+        ["B", "T"]
+    );
+    assert_eq!(
+        find(
+            &db,
+            TagFilter {
+                exclude: s(&["=genre:bachata"]),
+                ..union
+            }
+        ),
+        ["T", "Z"]
+    );
+    let intersection = TagFilter {
+        blocks: vec![vec![first], vec![second]],
+        ..Default::default()
+    };
+    assert_eq!(find(&db, intersection.clone()), ["B"]);
+    assert!(
+        find(
+            &db,
+            TagFilter {
+                exclude: s(&["=genre:bachata"]),
+                ..intersection
+            }
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn flat_or_blocks_chain_with_and_and_keep_shared_conditions() {
     let db = fixture();
     let tag = |name: &str| TagFilter {

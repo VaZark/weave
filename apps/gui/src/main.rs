@@ -240,7 +240,9 @@ pub enum Message {
     // The filter page, shared by search and jam.
     ToggleTag(String),
     CommitTagGroup(FilterTarget),
-    RemoveTagGroup(FilterTarget, usize, usize),
+    SelectTagGroup(FilterTarget, Option<(usize, usize)>),
+    FilterTagToggle(FilterTarget, String),
+    RemoveGroupedTag(FilterTarget, usize, usize, String),
     TagQuery(String),
     TagBrowseToggle,
     TagCategories,
@@ -529,6 +531,7 @@ pub struct App {
     pub explicit_sort: bool,
     /// Narrows the tag chips of the filter page as you type.
     pub tag_query: String,
+    pub active_tag_group: Option<(FilterTarget, usize, usize)>,
     pub tag_browse: TagBrowse,
     pub import_report: Option<weave_player_lib::core::ImportReport>,
     pub import_chooser_open: bool,
@@ -694,6 +697,7 @@ impl App {
             analytics_loading: false,
             last_analytics: Instant::now(),
             tag_query: String::new(),
+            active_tag_group: None,
             tag_browse: TagBrowse::Categories,
             import_report: None,
             import_chooser_open: false,
@@ -2087,22 +2091,73 @@ impl App {
                 self.show_lyrics = !self.show_lyrics;
                 Vec::new()
             }
-            Message::CommitTagGroup(target) => {
+            Message::SelectTagGroup(target, group) => {
                 let filter = match target {
                     FilterTarget::Draft => self.playlist_filter_draft_mut(),
                     FilterTarget::Page => Some(self.page_filter_mut()),
                     FilterTarget::Jam => Some(&mut self.filter),
                 };
-                if let Some(filter) = filter
-                    && !filter.tags.is_empty()
-                {
-                    if filter.retained.tag_blocks.is_empty() {
-                        filter.retained.tag_blocks.push(Vec::new());
+                let group = group.filter(|&(block, index)| {
+                    filter
+                        .as_ref()
+                        .and_then(|f| f.retained.tag_blocks.get(block))
+                        .and_then(|b| b.get(index))
+                        .is_some_and(crate::ui_dialogs::editable_tag_group)
+                });
+                self.active_tag_group = group.map(|(block, index)| (target, block, index));
+                return iced::widget::operation::focus(iced::widget::Id::new(
+                    crate::ui_dialogs::TAG_QUERY_ID,
+                ));
+            }
+            Message::FilterTagToggle(target, tag) => {
+                let active = self
+                    .active_tag_group
+                    .filter(|(context, _, _)| *context == target);
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                let mut next_active = active;
+                if let Some(filter) = filter {
+                    if let Some((_, block, index)) = active
+                        && let Some(group) = filter
+                            .retained
+                            .tag_blocks
+                            .get_mut(block)
+                            .and_then(|b| b.get_mut(index))
+                        && crate::ui_dialogs::editable_tag_group(group)
+                    {
+                        let tags = if group.any.is_empty() {
+                            &mut group.all
+                        } else {
+                            &mut group.any
+                        };
+                        toggle(tags, tag);
+                        if tags.is_empty() {
+                            filter.retained.tag_blocks[block].remove(index);
+                            filter.retained.tag_blocks.retain(|b| !b.is_empty());
+                            next_active = None;
+                        }
+                    } else if !filter.retained.tag_blocks.is_empty()
+                        && filter.retained.tag_all.is_empty()
+                        && filter.tags.is_empty()
+                    {
+                        // New selections belong beside the committed alternatives, not in
+                        // tag_all, which would AND them with the entire OR block.
+                        let index = filter.retained.tag_blocks[0].len();
+                        filter.retained.tag_blocks[0].push(weave_player_lib::core::TagFilter {
+                            all: vec![tag],
+                            ..Default::default()
+                        });
+                        next_active = Some((target, 0, index));
+                    } else {
+                        toggle(&mut filter.tags, tag);
+                        next_active = None;
                     }
-                    filter.retained.tag_blocks[0].push(weave_player_lib::core::TagFilter {
-                        any: std::mem::take(&mut filter.tags),
-                        ..Default::default()
-                    });
+                }
+                if active.is_some() || next_active.is_some() {
+                    self.active_tag_group = next_active;
                 }
                 if target != FilterTarget::Draft {
                     self.refresh();
@@ -2112,19 +2167,86 @@ impl App {
                 }
                 Vec::new()
             }
-            Message::RemoveTagGroup(target, block, index) => {
+            Message::CommitTagGroup(target) => {
+                let editing = self
+                    .active_tag_group
+                    .is_some_and(|(context, _, _)| context == target);
+                self.active_tag_group = None;
                 let filter = match target {
                     FilterTarget::Draft => self.playlist_filter_draft_mut(),
                     FilterTarget::Page => Some(self.page_filter_mut()),
                     FilterTarget::Jam => Some(&mut self.filter),
                 };
                 if let Some(filter) = filter
-                    && block < filter.retained.tag_blocks.len()
-                    && index < filter.retained.tag_blocks[block].len()
+                    && !editing
+                    && !filter.tags.is_empty()
                 {
-                    filter.retained.tag_blocks[block].remove(index);
-                    filter.retained.tag_blocks.retain(|b| !b.is_empty());
+                    if filter.retained.tag_blocks.is_empty() {
+                        filter.retained.tag_blocks.push(Vec::new());
+                    }
+                    filter.retained.tag_all.clear();
+                    filter.retained.tag_blocks[0].push(weave_player_lib::core::TagFilter {
+                        all: std::mem::take(&mut filter.tags),
+                        ..Default::default()
+                    });
                 }
+                if target != FilterTarget::Draft {
+                    self.refresh();
+                }
+                if target == FilterTarget::Page && self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                return iced::widget::operation::focus(iced::widget::Id::new(
+                    crate::ui_dialogs::TAG_QUERY_ID,
+                ));
+            }
+            Message::RemoveGroupedTag(target, block, index, tag) => {
+                let mut active = self.active_tag_group;
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                if let Some(filter) = filter
+                    && let Some(group) = filter
+                        .retained
+                        .tag_blocks
+                        .get_mut(block)
+                        .and_then(|groups| groups.get_mut(index))
+                    && crate::ui_dialogs::editable_tag_group(group)
+                {
+                    let tags = if group.any.is_empty() {
+                        &mut group.all
+                    } else {
+                        &mut group.any
+                    };
+                    tags.retain(|name| *name != tag);
+                    if tags.is_empty() {
+                        filter.retained.tag_blocks[block].remove(index);
+                        let removed_block = filter.retained.tag_blocks[block].is_empty();
+                        if removed_block {
+                            filter.retained.tag_blocks.remove(block);
+                        }
+                        active = active.and_then(|(context, active_block, active_index)| {
+                            if context != target {
+                                Some((context, active_block, active_index))
+                            } else if (active_block, active_index) == (block, index) {
+                                None
+                            } else {
+                                Some((
+                                    context,
+                                    active_block
+                                        - usize::from(removed_block && active_block > block),
+                                    active_index
+                                        - usize::from(
+                                            active_block == block && active_index > index,
+                                        ),
+                                ))
+                            }
+                        });
+                    }
+                }
+                self.active_tag_group = active;
                 if target != FilterTarget::Draft {
                     self.refresh();
                 }
@@ -3486,6 +3608,211 @@ mod tests {
     }
 
     #[test]
+    fn caret_selection_edits_only_the_active_tag_group() {
+        let mut a = app();
+        for tag in ["genre:bachata", "mood:romantic"] {
+            let _ = a.update(Message::ToggleTag(tag.into()));
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        for (index, tag) in [(0, "genre:zouk"), (1, "practice")] {
+            let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, index))));
+            let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, index)));
+            assert!(a.filter.tags.is_empty());
+        }
+        assert_eq!(
+            a.filter.retained.tag_blocks[0][0].all,
+            ["genre:bachata", "genre:zouk"]
+        );
+        assert_eq!(
+            a.filter.retained.tag_blocks[0][1].all,
+            ["mood:romantic", "practice"]
+        );
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, None));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:salsa".into(),
+        ));
+        assert!(a.filter.tags.is_empty());
+        assert_eq!(a.filter.retained.tag_blocks[0].len(), 3);
+        assert_eq!(a.filter.retained.tag_blocks[0][2].all, ["genre:salsa"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 2)));
+
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 0))));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(
+            a.active_tag_group, None,
+            "plus leaves the edited group for the new-group slot"
+        );
+        assert_eq!(
+            a.filter.retained.tag_blocks[0].len(),
+            3,
+            "switching slots must not create another group"
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(a.filter.retained.tag_blocks[0].len(), 3);
+        assert!(a.filter.tags.is_empty());
+    }
+
+    #[test]
+    fn active_group_edits_stay_in_their_filter_context_and_parent_block() {
+        let mut a = app();
+        let mut filter = Filter::default();
+        filter.retained.tag_blocks = vec![
+            vec![weave_player_lib::core::TagFilter {
+                any: vec!["genre:bachata".into()],
+                ..Default::default()
+            }],
+            vec![weave_player_lib::core::TagFilter {
+                any: vec!["mood:romantic".into()],
+                ..Default::default()
+            }],
+        ];
+        a.draft = Some(filter.clone());
+        a.rediscover_filter = filter.clone();
+        a.dest = Dest::Rediscover;
+        let live = a.filter.clone();
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Draft, Some((1, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Draft,
+            "practice".into(),
+        ));
+        assert_eq!(
+            a.draft.as_ref().unwrap().retained.tag_blocks[1][0].any,
+            ["mood:romantic", "practice"]
+        );
+        assert_eq!(
+            a.draft.as_ref().unwrap().retained.tag_blocks[0],
+            filter.retained.tag_blocks[0]
+        );
+        assert_eq!(a.rediscover_filter, filter);
+        assert_eq!(a.filter, live);
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Page, Some((0, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Page,
+            "genre:zouk".into(),
+        ));
+        assert_eq!(
+            a.rediscover_filter.retained.tag_blocks[0][0].any,
+            ["genre:bachata", "genre:zouk"]
+        );
+        assert_eq!(
+            a.rediscover_filter.retained.tag_blocks[1],
+            filter.retained.tag_blocks[1]
+        );
+        assert_eq!(a.filter, live);
+        a.prepare_filter_editor();
+        assert_eq!(a.active_tag_group, None);
+    }
+
+    #[test]
+    fn removing_the_last_active_tag_does_not_leave_an_unrestricted_or_group() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("genre:bachata".into()));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:bachata".into(),
+        ));
+        assert!(a.filter.retained.tag_blocks.is_empty());
+        assert_eq!(a.active_tag_group, None);
+    }
+
+    #[test]
+    fn caret_arrows_can_leave_the_first_group_and_return_to_new_group() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Font, Pixels, Size, keyboard, mouse};
+        let renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        for tag in ["genre:bachata", "mood:romantic"] {
+            let _ = a.update(Message::ToggleTag(tag.into()));
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        a.filter
+            .retained
+            .tag_blocks
+            .push(vec![weave_player_lib::core::TagFilter {
+                any: vec!["practice".into()],
+                ..Default::default()
+            }]);
+        let mut tree = Tree::empty();
+        for (key, expected) in [
+            (keyboard::key::Named::ArrowLeft, Some((1, 0))),
+            (keyboard::key::Named::ArrowLeft, Some((0, 1))),
+            (keyboard::key::Named::ArrowLeft, Some((0, 0))),
+            (keyboard::key::Named::ArrowRight, Some((0, 1))),
+            (keyboard::key::Named::ArrowRight, Some((1, 0))),
+            (keyboard::key::Named::ArrowRight, None),
+            (keyboard::key::Named::ArrowLeft, Some((1, 0))),
+            (keyboard::key::Named::ArrowRight, None),
+        ] {
+            let messages = {
+                let mut element = a.filter_editor(FilterTarget::Jam);
+                tree.diff(element.as_widget());
+                let size = Size::new(480.0, 800.0);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut focus = iced::advanced::widget::operation::focusable::focus::<()>(
+                    iced::widget::Id::new(crate::ui_dialogs::TAG_QUERY_ID),
+                );
+                element.as_widget_mut().operate(
+                    &mut tree,
+                    layout::Layout::new(&node),
+                    &renderer,
+                    &mut focus,
+                );
+                let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    modified_key: keyboard::Key::Named(key),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                });
+                let mut messages = Vec::new();
+                let mut shell = iced::advanced::Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    layout::Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &iced::Rectangle::with_size(size),
+                );
+                assert!(shell.is_event_captured());
+                messages
+            };
+            assert!(
+                messages.iter().any(|message| matches!(
+                    message, Message::SelectTagGroup(FilterTarget::Jam, group) if *group == expected
+                )),
+                "caret must navigate to {expected:?}, got {messages:?}"
+            );
+            for message in messages {
+                let _ = a.update(message);
+            }
+            assert_eq!(
+                a.active_tag_group,
+                expected.map(|(block, index)| (FilterTarget::Jam, block, index))
+            );
+        }
+    }
+
+    #[test]
     fn selected_and_grouped_tags_share_input_and_page_rendering() {
         let mut a = app();
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
@@ -3513,10 +3840,10 @@ mod tests {
                 Some(FilterTarget::Jam)
             )
             .len(),
-            2,
-            "group chip and trailing comma"
+            1,
+            "one group without a trailing comma"
         );
-        assert_eq!(a.tag_selection_chips(&[], grouped, None, None).len(), 2);
+        assert_eq!(a.tag_selection_chips(&[], grouped, None, None).len(), 1);
         assert!(a.filter_sentence(&a.filter).contains("romantic"));
         let _ = a.update(Message::ToggleTag("genre:bachata".into()));
         assert_eq!(
@@ -3524,6 +3851,81 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn new_tag_groups_are_ored_immediately_and_after_commit_or_reload() {
+        let mut a = app();
+        let mut expected = Vec::new();
+        for tag in ["mood:romantic", "genre:bachata"] {
+            a.filter = Filter::default();
+            let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            expected.extend(a.rows.iter().map(|track| track.id));
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        a.filter = Filter::default();
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "mood:romantic".into(),
+        ));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:bachata".into(),
+        ));
+        let ids = |a: &App| {
+            let mut ids: Vec<_> = a.rows.iter().map(|track| track.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(
+            ids(&a),
+            expected,
+            "new group must join the union before pressing plus again"
+        );
+        assert!(a.filter.to_spec().tag_all.is_empty());
+        assert_eq!(a.filter.to_spec().tag_blocks[0].len(), 2);
+        assert_eq!(
+            a.tag_selection_chips(&a.filter.tags, &a.filter.retained.tag_blocks, None, None)
+                .len(),
+            3
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(
+            ids(&a),
+            expected,
+            "finishing a group must not change the union"
+        );
+        let spec = a.filter.to_spec();
+        a.filter = Filter::from_spec(&spec);
+        a.refresh();
+        assert_eq!(
+            ids(&a),
+            expected,
+            "saved/reloaded group nesting must keep OR semantics"
+        );
+        assert_eq!(a.filter.to_spec(), spec);
+    }
+
+    #[test]
+    fn shared_tag_constraints_in_imported_filters_stay_anded_with_or_groups() {
+        let mut a = app();
+        let spec = weave_player_lib::core::FilterSpec {
+            tag_all: vec!["mood:romantic".into()],
+            tag_blocks: vec![vec![weave_player_lib::core::TagFilter {
+                any: vec!["genre:bachata".into()],
+                ..Default::default()
+            }]],
+            ..Default::default()
+        };
+        a.filter = Filter::from_spec(&spec);
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "practice".into(),
+        ));
+        assert_eq!(a.filter.to_spec().tag_all, ["mood:romantic", "practice"]);
+        assert_eq!(a.filter.to_spec().tag_blocks, spec.tag_blocks);
     }
 
     #[test]
@@ -3552,13 +3954,59 @@ mod tests {
     }
 
     #[test]
+    fn grouped_tags_are_removed_individually_and_keep_other_group_caret_positions() {
+        let mut a = app();
+        for tags in [vec!["genre:bachata", "genre:zouk"], vec!["mood:romantic"]] {
+            for tag in tags {
+                let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            }
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 1))));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "genre:bachata".into(),
+        ));
+        assert_eq!(a.filter.retained.tag_blocks[0][0].all, ["genre:zouk"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 1)));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "genre:zouk".into(),
+        ));
+        assert_eq!(a.filter.retained.tag_blocks[0][0].all, ["mood:romantic"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 0)));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
+        assert!(a.filter.retained.tag_blocks.is_empty());
+        assert_eq!(a.active_tag_group, None);
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
+        assert!(
+            a.filter.retained.tag_blocks.is_empty(),
+            "stale remove must not re-add a tag"
+        );
+    }
+
+    #[test]
     fn selection_groups_are_removable_and_preserved_in_saved_definitions() {
         let mut a = app();
         let _ = a.update(Message::ToggleTag("mood:romantic".into()));
         let before = a.rows.clone();
         let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
         assert!(a.filter.tags.is_empty());
-        assert_eq!(a.filter.to_spec().tag_blocks[0][0].any, ["mood:romantic"]);
+        assert_eq!(a.filter.to_spec().tag_blocks[0][0].all, ["mood:romantic"]);
         assert_eq!(a.rows, before);
         assert!(a.filter.is_saveable());
         assert!(
@@ -3569,7 +4017,12 @@ mod tests {
         let spec = a.filter.to_spec();
         assert_eq!(Filter::from_spec(&spec).to_spec(), spec);
         let _ = a.view();
-        let _ = a.update(Message::RemoveTagGroup(FilterTarget::Jam, 0, 0));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
         assert!(a.filter.to_spec().tag_blocks.is_empty());
         assert!(a.active_chips().is_none());
         assert!(

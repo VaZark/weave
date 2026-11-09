@@ -58,6 +58,64 @@ fn titles(storage: &Storage, filter: &FilterSpec) -> Vec<String> {
         .collect()
 }
 #[test]
+fn tag_blocks_union_any_alternatives_intersect_blocks_and_and_shared_conditions() {
+    use weave_player_core::TagFilter;
+
+    let mut storage = Storage::open_in_memory().unwrap();
+    populate(&mut storage);
+    let first = TagFilter {
+        any: vec!["mood:romantic".into(), "mood:other".into()],
+        ..Default::default()
+    };
+    let second = TagFilter {
+        any: vec!["mood:party".into(), "mood:other".into()],
+        ..Default::default()
+    };
+    let union = FilterSpec {
+        tag_blocks: vec![vec![first.clone(), second.clone()]],
+        ..Default::default()
+    };
+    assert_eq!(
+        titles(&storage, &union),
+        [
+            "neither",
+            "party fast",
+            "party slow",
+            "romantic fast",
+            "romantic slow",
+            "romantic unknown",
+        ]
+    );
+    let shared = FilterSpec {
+        tag_all: vec!["mood:romantic".into()],
+        bpm_max: Some(90.0),
+        ..union.clone()
+    };
+    assert_eq!(titles(&storage, &shared), ["romantic slow"]);
+    let normalized = shared.normalized();
+    let restored: FilterSpec =
+        serde_json::from_str(&serde_json::to_string(&normalized).unwrap()).unwrap();
+    assert_eq!(restored, normalized);
+    assert_eq!(titles(&storage, &restored), ["romantic slow"]);
+
+    let intersection = FilterSpec {
+        tag_blocks: vec![vec![first], vec![second]],
+        ..Default::default()
+    };
+    assert_eq!(titles(&storage, &intersection), ["neither"]);
+    assert!(
+        titles(
+            &storage,
+            &FilterSpec {
+                tag_exclude: vec!["mood:other".into()],
+                ..intersection
+            }
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn or_combines_complete_and_groups_with_global_constraints_and_result_paging() {
     let mut storage = Storage::open_in_memory().unwrap();
     populate(&mut storage);
