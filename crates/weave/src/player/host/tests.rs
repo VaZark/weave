@@ -395,7 +395,7 @@ mod fake_player {
         fn tick(&mut self) -> Vec<PlayerEvent> {
             self.host
                 .tick(&mut self.lib)
-                .unwrap_or_else(|_| panic!("tick failed"))
+                .unwrap_or_else(|e| panic!("tick failed: {e}"))
         }
 
         fn calls(&self) -> Vec<String> {
@@ -617,5 +617,79 @@ mod fake_player {
             PlayStatus::Playing,
             "nothing ends a track without audio"
         );
+    }
+    #[test]
+    fn measured_host_time_excludes_pauses_seeks_and_failed_output() {
+        use weave_player_core::{AnalyticsQuery, ListenEnd};
+        let mut r = Rig::new();
+        r.lib.play_track(&r.id("a")).unwrap();
+        r.tick();
+        let id = r.host.listening.as_ref().unwrap().id.clone();
+        // Inject monotonic elapsed time without sleeping. The wall clock caps the report.
+        r.host.listening.as_mut().unwrap().elapsed = Duration::from_secs(2);
+        r.host.listening.as_mut().unwrap().running_since = None;
+        r.advance(2000);
+        r.tick();
+        r.lib.pause().unwrap();
+        r.tick();
+        r.advance(60_000);
+        r.tick();
+        let query = AnalyticsQuery {
+            until_ms: Some(r.clock.get() + 1),
+            ..Default::default()
+        };
+        let events = r.lib.listening_events(&query).unwrap();
+        assert_eq!(events[0].listened_ms, 2000);
+        assert_eq!(events[0].id, id);
+        r.lib.seek(Duration::from_secs(90)).unwrap();
+        r.tick();
+        assert_eq!(r.lib.listening_events(&query).unwrap()[0].listened_ms, 2000);
+        r.lib.resume().unwrap();
+        r.tick();
+        r.host.listening.as_mut().unwrap().running_since = None;
+        r.host.listening.as_mut().unwrap().elapsed += Duration::from_secs(1);
+        r.advance(1000);
+        r.fake.borrow_mut().finished = true;
+        r.tick();
+        let query = AnalyticsQuery {
+            until_ms: Some(r.clock.get() + 1),
+            ..Default::default()
+        };
+        let events = r.lib.listening_events(&query).unwrap();
+        assert_eq!(events[0].listened_ms, 3000);
+        assert_eq!(events[0].reason, Some(ListenEnd::Completed));
+        // Starting/controlling a session without an audio output never produces measured events.
+        let mut quiet = Host::new(None);
+        r.lib.play_track(&r.id("b")).unwrap();
+        quiet.tick(&mut r.lib).unwrap();
+        assert_eq!(r.lib.listening_events(&query).unwrap().len(), 1);
+        r.fake.borrow_mut().fail_start = true;
+        r.tick();
+        assert_eq!(r.lib.listening_events(&query).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn host_shutdown_flushes_and_restart_does_not_fill_the_gap() {
+        use weave_player_core::{AnalyticsQuery, ListenEnd};
+        let mut r = Rig::new();
+        r.lib.play_track(&r.id("a")).unwrap();
+        r.tick();
+        r.host.listening.as_mut().unwrap().elapsed = Duration::from_secs(1);
+        r.host.listening.as_mut().unwrap().running_since = None;
+        r.advance(1000);
+        r.host.shutdown(&mut r.lib).unwrap();
+        r.advance(100_000);
+        let query = AnalyticsQuery {
+            until_ms: Some(r.clock.get() + 1),
+            ..Default::default()
+        };
+        let events = r.lib.listening_events(&query).unwrap();
+        assert_eq!(events[0].reason, Some(ListenEnd::Interrupted));
+        assert_eq!(events[0].listened_ms, 1000);
+        let mut replacement = Host::new(Some(Box::new(FakePlayback(r.fake.clone()))));
+        replacement.tick(&mut r.lib).unwrap();
+        let events = r.lib.listening_events(&query).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events.iter().map(|e| e.listened_ms).sum::<u64>(), 1000);
     }
 }

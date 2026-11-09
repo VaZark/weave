@@ -5,13 +5,14 @@
 
 use iad::adaptive::adaptive;
 use iad::prelude::{self as w, typography as ty};
+use iad::styles as style;
 use iad::windows::{Chrome, State as WindowState};
-use iad::{Icon, styles as style};
 use iced::widget::{column, container, row};
 use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
-use crate::{App, DensityPref, Dest, Element, Layout, Message};
+use crate::{App, DensityPref, Dest, Element, Layout, Message, Sheet};
 
 /// Rough heights of the fixed parts of a layout, to know how far a sliding layer travels.
 pub const HEADER_H: f32 = 47.0;
@@ -19,29 +20,45 @@ pub const BAR_H: f32 = 65.0;
 pub const TAB_H: f32 = 56.0;
 pub const MINI_H: f32 = 60.0;
 
-pub fn card<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-    container(content)
-        .padding(12) // gutter-ok: a component's own padding, not a page gutter
-        .style(style::container::card)
-        .into()
+fn page_wash(theme: &iad::Theme, tint: iced::Color, radius: f32) -> container::Style {
+    let mut style = style::container::wash(tint)(theme);
+    // The window frame clips rectangularly; corner-touching surfaces must round themselves.
+    style.border.radius = iced::border::Radius {
+        top_left: radius,
+        top_right: radius,
+        bottom_left: 0.0,
+        bottom_right: 0.0,
+    };
+    style
 }
 
 impl App {
     pub fn view(&self) -> Element<'_> {
-        let body: Element<'_> = if self.minimal {
-            self.minimal_view()
-        } else {
-            adaptive(&self.adaptive)
-                .layout(Layout::Narrow, || self.narrow())
-                .layout(Layout::Wide, || self.wide())
-                .into()
-        };
+        let body: Element<'_> = adaptive(&self.adaptive)
+            .layout(Layout::Narrow, || self.narrow())
+            .layout(Layout::Wide, || self.wide())
+            .into();
         let framed = self.chrome(true, true).frame(body, Message::Window);
+        let editor = self
+            .active_filter_context()
+            .map(|context| (self.filter_editor(context), self.filter_close(context)));
+        let framed = crate::components::responsive_dialog::present(
+            framed,
+            editor,
+            self.is_narrow(),
+            iced::Size::new(self.win_w, self.win_h),
+            self.chrome(true, true).radius(),
+        );
         // Dialogs are modal and cannot be dismissed from outside: Cancel or Save closes them.
-        let jam_filters = self.jam_filters_showing() && !self.is_narrow();
-        let saving = self.save_name.is_some() && !self.is_narrow();
-        let backdrop = if jam_filters {
-            Some(Message::JamFilters(false))
+        let saving = self.save_name.is_some() && !self.save_manual && !self.is_narrow();
+        let backdrop = if self.manual_filter_review.is_some() {
+            Some(Message::CancelManualFilterReview)
+        } else if self.themes_open && !self.is_narrow() {
+            Some(Message::Themes(false))
+        } else if self.import_report.is_some() && !self.is_narrow() {
+            Some(Message::DismissImportReport)
+        } else if self.playlist_tracks_open && !self.is_narrow() {
+            Some(Message::PlaylistTracksOpen(false))
         } else if saving {
             Some(Message::CancelSaveJam)
         } else {
@@ -60,30 +77,57 @@ impl App {
     /// Whether a dialog (not a sheet) is showing: for the tests.
     #[cfg(test)]
     pub fn dialog_open_for_test(&self) -> bool {
-        self.dialog().is_some()
-    }
-
-    /// Whether the jam's filters are open (a dialog wide, a sheet narrow).
-    fn jam_filters_showing(&self) -> bool {
-        self.jam_open && self.jam_filters_open
+        self.dialog().is_some() || self.active_filter_context().is_some() && !self.is_narrow()
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
-        if self.save_name.is_some() && !self.is_narrow() {
-            return Some(self.save_dialog());
+        // Rule changes remove curated tracks only after a dialog, at every window width.
+        if let Some(review) = &self.manual_filter_review {
+            return Some(self.manual_filter_confirmation(review));
         }
-        if self.jam_filters_showing() && !self.is_narrow() {
-            return Some(self.jam_filters_dialog());
+        if self.themes_open && !self.is_narrow() {
+            return Some(
+                container(self.themes_form())
+                    .padding(20)
+                    .width(Length::Fixed(480.0))
+                    .height(Length::Fixed((self.win_h - 100.0).clamp(240.0, 560.0)))
+                    .style(style::container::dialog)
+                    .into(),
+            );
+        }
+        if self.playlist_tracks_open && !self.is_narrow() {
+            return Some(
+                container(self.playlist_tracks_form())
+                    .padding(20)
+                    .width(Length::Fixed(560.0))
+                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 640.0)))
+                    .style(style::container::popover)
+                    .into(),
+            );
+        }
+        if let Some(report) = &self.import_report
+            && !self.is_narrow()
+        {
+            return Some(
+                container(crate::import_picker::report_view(report))
+                    .padding(20)
+                    .width(Length::Fixed(640.0))
+                    .height(Length::Fixed((self.win_h - 80.0).clamp(200.0, 680.0)))
+                    .style(style::container::popover)
+                    .into(),
+            );
+        }
+        if self.save_name.is_some() && !self.save_manual && !self.is_narrow() {
+            return Some(self.save_dialog());
         }
         if !self.is_narrow()
             && let Some(name) = &self.delete_playlist
         {
             return Some(self.delete_playlist_dialog(name));
         }
-        self.draft
+        self.edit_track
             .as_ref()
-            .map(|f| self.filter_dialog(f))
-            .or_else(|| self.edit_track.as_ref().map(|e| self.track_dialog(e)))
+            .map(|e| self.track_dialog(e))
             .or_else(|| self.rate_track.map(|id| self.rate_dialog(id)))
             .or_else(|| self.info_track.map(|id| self.info_dialog(id)))
             // On narrow, Edit details is a bottom sheet (see `narrow`), not a dialog.
@@ -95,7 +139,7 @@ impl App {
             })
     }
 
-    fn chrome(&self, left: bool, right: bool) -> Chrome {
+    pub(super) fn chrome(&self, left: bool, right: bool) -> Chrome {
         Chrome::new(WindowState {
             maximized: false,
             fullscreen: self.fullscreen,
@@ -103,8 +147,53 @@ impl App {
         .edges(left, right)
     }
 
+    /// The header line: flat, so the page under it (and its colour wash) runs to the top of the
+    /// window. It is shared by every page rather than a bar of its own.
     pub fn bar(&self, left: bool, right: bool) -> w::HeaderBar<'_, Message> {
-        w::header_bar().chrome(&self.chrome(left, right), Message::Window)
+        w::header_bar()
+            .chrome(&self.chrome(left, right), Message::Window)
+            .flat(true)
+    }
+
+    /// The colour of the page's wash, when it has one: a detail page's (playlist, artist, album)
+    /// or the jam's.
+    pub fn page_tint(&self) -> Option<iced::Color> {
+        use iad::color::{from_index, from_seed};
+        if self.jam_open {
+            return Some(from_index(7));
+        }
+        match self.dest {
+            Dest::Playlist(i) => self.lib.playlists.get(i).map(|p| from_seed(&p.name)),
+            Dest::Artist(i) | Dest::Album(i) => Some(from_index(i)),
+            Dest::Tracks => Some(from_seed("All tracks")),
+            Dest::Artists => Some(from_seed("All artists")),
+            Dest::Albums => Some(from_seed("All albums")),
+            Dest::Playlists => Some(from_seed("All playlists")),
+            _ => None,
+        }
+    }
+
+    /// `body` with the page's colour wash behind it, fading down from the top of the window
+    /// through the header line and the top of the page.
+    fn with_wash<'a>(&'a self, body: Element<'a>) -> Element<'a> {
+        let radius = self.chrome(true, true).radius();
+        match self.page_tint() {
+            // The bottom layer fills the window (a stack takes the size of its first layer), with
+            // the wash at its top.
+            Some(tint) => iced::widget::stack![
+                column![
+                    container(iced::widget::space())
+                        .width(Length::Fill)
+                        .height(Length::Fixed(HEADER_H + 300.0))
+                        .style(move |theme| page_wash(theme, tint, radius)),
+                ]
+                .width(Length::Fill)
+                .height(Length::Fill),
+                body,
+            ]
+            .into(),
+            None => body,
+        }
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -112,12 +201,17 @@ impl App {
     }
 
     pub fn page_title(&self) -> String {
+        if self.save_manual && self.save_name.is_some() {
+            return "Create playlist".into();
+        }
         if self.jam_open {
             return "Jam".into();
         }
         match self.dest {
             Dest::Home => "Home".into(),
             Dest::Explore => "Explore".into(),
+            Dest::Rediscover => "Rediscover".into(),
+            Dest::AboutMe => "About me".into(),
             Dest::Recent => "Recent tracks".into(),
             Dest::Tracks => "Tracks".into(),
             Dest::Artists => "Artists".into(),
@@ -135,8 +229,12 @@ impl App {
     fn header(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let mut h = self.bar(true, true);
-        if self.history.can_back() {
-            h = h.pack_start(w::icon_button(Icon::GoPrevious).on_press(Message::Back));
+        if self.save_manual && self.save_name.is_some() {
+            h = h.pack_start(
+                crate::icons::icon_button(Icon::GoPrevious).on_press(Message::CancelSaveJam),
+            );
+        } else if self.history.can_back() {
+            h = h.pack_start(crate::icons::icon_button(Icon::GoPrevious).on_press(Message::Back));
         }
         h = h.title(self.page_title());
         // The later a button is packed, the further from the window controls it sits.
@@ -158,27 +256,53 @@ impl App {
                         .on_toggle(move |_| Message::ToggleJam),
                 );
         }
+        if self.can_search_page() {
+            h = h.pack_end(
+                w::IconToggleButton::new(Icon::Search, self.search_open)
+                    .tooltip("Search this page")
+                    .on_toggle(Message::SearchOpen),
+            );
+        }
         h.into()
     }
 
-    /// The main menu: the density switch, and importing files or a folder.
+    /// The main menu: the density switch and the unified file/folder import action.
     fn main_menu(&self) -> Element<'_> {
+        if self.is_narrow() {
+            return crate::icons::icon_button(Icon::OpenMenu)
+                .on_press(Message::OpenSheet(Some(Sheet::Main)))
+                .into();
+        }
+        self.menu_button(Icon::OpenMenu, "Main menu", self.main_menu_def(|m| m))
+    }
+
+    /// Share the contents and checks between the desktop popover and narrow bottom sheet.
+    pub fn main_menu_def(&self, wrap: impl Fn(Message) -> Message) -> w::Menu<Message> {
         let compact = self.compact();
-        let menu = w::Menu::new("Menu")
+        w::Menu::new("Menu")
+            .check_style(w::MenuCheckStyle::Mark)
             .section([w::MenuItem::check(
                 "Compact",
                 compact,
-                Message::SetDensity(if compact {
+                wrap(Message::SetDensity(if compact {
                     DensityPref::Default
                 } else {
                     DensityPref::Compact
-                }),
+                })),
             )])
+            .section([w::MenuItem::action("Themes…", wrap(Message::Themes(true))).icon(Icon::Star)])
             .section([
-                w::MenuItem::action("Import files…", Message::Import(true)).icon(Icon::Document),
-                w::MenuItem::action("Import folder…", Message::Import(false)).icon(Icon::Folder),
-            ]);
-        self.menu_button(Icon::OpenMenu, "Main menu", menu)
+                w::MenuItem::action(
+                    "Import files…",
+                    wrap(Message::Import(crate::import_picker::Mode::Files)),
+                )
+                .icon(Icon::Document),
+                w::MenuItem::action(
+                    "Import folder…",
+                    wrap(Message::Import(crate::import_picker::Mode::Folder)),
+                )
+                .icon(Icon::Folder),
+            ])
     }
 
     // ---- sheets -----------------------------------------------------------------------
@@ -187,6 +311,8 @@ impl App {
     /// it with its slide, in both directions.
     fn np_dock<'a>(&'a self, base: Element<'a>) -> Element<'a> {
         w::Dock::new(base, self.now_playing_view())
+            .scope(w::DockScope::Window)
+            .window_radius(self.chrome(true, true).radius())
             .open(self.now_playing)
             .size(w::DockSize::FullScreen)
             .mode(w::DockMode::Overlay)
@@ -198,7 +324,11 @@ impl App {
 
     /// The page area. (There are no library pills: Home and Explore link to every list.)
     fn content(&self) -> Element<'_> {
-        self.page()
+        if self.save_manual && self.save_name.is_some() {
+            self.create_playlist_page()
+        } else {
+            self.page()
+        }
     }
 
     /// The queue opening or closing: the same final layout, only animated. The now-playing bar
@@ -240,12 +370,14 @@ impl App {
         }
         // Now Playing takes over the whole window: the header and the bar go under it.
         self.np_dock(
-            column![
-                self.header(),
-                container(self.content()).height(Length::Fill),
-                self.player_bar(),
-            ]
-            .into(),
+            self.with_wash(
+                column![
+                    self.header(),
+                    container(self.content()).height(Length::Fill),
+                    self.player_bar(),
+                ]
+                .into(),
+            ),
         )
     }
 
@@ -315,39 +447,42 @@ impl App {
                 self.tab_bar(),
             ]
         };
-        let base = self.np_dock(body.into());
+        let base = self.np_dock(self.with_wash(body.into()));
         let base = match self.sheet {
             Some(sheet) => w::Dock::new(base, self.sheet_view(sheet))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::OpenSheet(None))
                 .into(),
             None => base,
         };
-        // The jam's filters: a full-screen bottom sheet over the page.
-        let base = if self.jam_filters_showing() {
-            w::Dock::new(base, self.jam_filters_sheet())
-                .scope(w::DockScope::Window)
-                .size(w::DockSize::FullScreen)
-                .mode(w::DockMode::Overlay)
-                .scrim(false)
-                .into()
-        } else {
-            base
-        };
         // Delete playlist: a bottom sheet over everything.
         let base = match &self.delete_playlist {
             Some(name) => w::Dock::new(base, self.delete_playlist_sheet(name))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelDeletePlaylist)
                 .into(),
             None => base,
         };
+        let base = if self.playlist_tracks_open {
+            w::Dock::new(base, container(self.playlist_tracks_form()).padding(20))
+                .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
+                .size(w::DockSize::Fraction(0.8))
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::PlaylistTracksOpen(false))
+                .into()
+        } else {
+            base
+        };
         // Save as playlist: a bottom sheet over everything.
-        let base = if self.save_name.is_some() {
+        let base = if self.save_name.is_some() && !self.save_manual {
             w::Dock::new(base, self.save_sheet())
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelSaveJam)
                 .into()
@@ -355,13 +490,69 @@ impl App {
             base
         };
         // Edit details: a bottom sheet over everything, with the page behind it.
-        match &self.edit {
+        let base = match &self.edit {
             Some(draft) => w::Dock::new(base, self.details_sheet(draft))
                 .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
                 .mode(w::DockMode::Overlay)
                 .on_outside(Message::CancelDetails)
                 .into(),
             None => base,
+        };
+        let base = if self.themes_open {
+            w::Dock::new(base, container(self.themes_form()).padding(20))
+                .scope(w::DockScope::Window)
+                .window_radius(self.chrome(true, true).radius())
+                .size(w::DockSize::Fixed((self.win_h * 0.75).clamp(240.0, 640.0)))
+                .mode(w::DockMode::Overlay)
+                .on_outside(Message::Themes(false))
+                .into()
+        } else {
+            base
+        };
+        match &self.import_report {
+            Some(report) => w::Dock::new(
+                base,
+                container(crate::import_picker::report_view(report))
+                    .padding(20)
+                    .height(Length::Fill)
+                    .style(style::container::window),
+            )
+            .scope(w::DockScope::Window)
+            .window_radius(self.chrome(true, true).radius())
+            .size(w::DockSize::Fraction(0.8))
+            .mode(w::DockMode::Overlay)
+            .on_outside(Message::DismissImportReport)
+            .into(),
+            None => base,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_wash_matches_chrome_top_corners_and_preserves_gradient() {
+        let theme = iad::Theme::light();
+        let tint = iad::color::from_index(7);
+        for (fullscreen, csd) in [(false, true), (true, true), (false, false)] {
+            let chrome = Chrome::new(WindowState {
+                maximized: false,
+                fullscreen,
+            })
+            .csd_override(csd);
+            let radius = chrome.radius();
+            let wash = page_wash(&theme, tint, radius);
+            assert_eq!(wash.border.radius.top_left, radius);
+            assert_eq!(wash.border.radius.top_right, radius);
+            assert_eq!(wash.border.radius.bottom_left, 0.0);
+            assert_eq!(wash.border.radius.bottom_right, 0.0);
+            assert_eq!(
+                wash.background,
+                style::container::wash(tint)(&theme).background
+            );
         }
     }
 }

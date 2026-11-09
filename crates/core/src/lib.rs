@@ -3,11 +3,13 @@
 #[macro_use]
 mod text_enum;
 
+mod analytics;
 mod credits;
 mod duration;
 mod entity;
 mod error;
 mod filter;
+mod import;
 mod instance;
 mod lyrics;
 mod playback;
@@ -19,6 +21,7 @@ pub mod spectrum;
 mod tag;
 mod track;
 
+pub use analytics::*;
 pub use credits::{Credits, parse_credits};
 pub use duration::{parse_duration, parse_span};
 pub use entity::{
@@ -27,7 +30,10 @@ pub use entity::{
     TrackDetail, entity_norm, loose_key,
 };
 pub use error::{Error, Result};
-pub use filter::{FilterSpec, Sort, SortField, TagClause, TagFilter, TagOp};
+pub use filter::{
+    CollectionOrder, FilterJoin, FilterSpec, Sort, SortField, TagClause, TagFilter, TagOp,
+};
+pub use import::{ImportIssue, ImportReport};
 pub use instance::{Instance, default_instance_name, parse_instance_name};
 pub use lyrics::{LyricLine, Lyrics};
 pub use playback::Playback;

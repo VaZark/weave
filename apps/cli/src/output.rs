@@ -253,8 +253,26 @@ pub fn print_playlists(json: bool, show_ids: bool, playlists: &[Playlist]) -> Re
 fn ruleset(p: &Playlist) -> String {
     match p.kind {
         PlaylistKind::Dynamic => describe(&p.filter),
+        PlaylistKind::Manual if p.filter != FilterSpec::default() => {
+            format!("additions: {}", describe(&p.filter))
+        }
         PlaylistKind::Manual => dash(),
     }
+}
+
+fn compact_group(filter: &FilterSpec) -> serde_json::Value {
+    let mut value = serde_json::to_value(filter).expect("FilterSpec is serializable");
+    let defaults = serde_json::to_value(FilterSpec::default()).expect("FilterSpec is serializable");
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|name, value| defaults.get(name) != Some(value));
+        if !filter.groups.is_empty() {
+            fields.insert(
+                "groups".into(),
+                serde_json::Value::Array(filter.groups.iter().map(compact_group).collect()),
+            );
+        }
+    }
+    value
 }
 
 /// A filter as the CLI flags that would create it.
@@ -285,11 +303,39 @@ pub fn describe(f: &FilterSpec) -> String {
             c.values.join(",")
         ));
     }
+    for (block_index, block) in f.tag_blocks.iter().enumerate() {
+        for (index, tags) in block.iter().enumerate() {
+            parts.push(
+                if block_index > 0 && index == 0 {
+                    "--and-group"
+                } else {
+                    "--or-group"
+                }
+                .into(),
+            );
+            parts.push(describe(&FilterSpec {
+                tag_all: tags.all.clone(),
+                tag_any: tags.any.clone(),
+                tag_exclude: tags.exclude.clone(),
+                tag_clauses: tags.clauses.clone(),
+                ..Default::default()
+            }));
+        }
+    }
     let numbers = [
         ("bpm-min", f.bpm_min.map(|v| v.to_string())),
         ("bpm-max", f.bpm_max.map(|v| v.to_string())),
         ("year-min", f.year_min.map(|v| v.to_string())),
         ("year-max", f.year_max.map(|v| v.to_string())),
+        (
+            "not-played-for-days",
+            f.not_played_for_days.map(|v| v.to_string()),
+        ),
+        ("has-played", f.has_played.map(|v| v.to_string())),
+        (
+            "imported-within-days",
+            f.imported_within_days.map(|v| v.to_string()),
+        ),
         ("rating-min", f.rating_min.map(|v| v.to_string())),
         ("rating-max", f.rating_max.map(|v| v.to_string())),
     ];
@@ -299,6 +345,7 @@ pub fn describe(f: &FilterSpec) -> String {
         }
     }
     for (k, v) in [
+        ("query", &f.query),
         ("title", &f.title),
         ("artist", &f.artist),
         ("album", &f.album),
@@ -313,6 +360,13 @@ pub fn describe(f: &FilterSpec) -> String {
     }
     if let Some(n) = f.limit {
         parts.push(format!("--limit {n}"));
+    }
+    if !f.groups.is_empty() {
+        parts.push(format!("--group-join {}", f.group_join));
+        for group in &f.groups {
+            let json = compact_group(group).to_string();
+            parts.push(format!("--filter-group '{}'", json.replace('\'', "'\\''")));
+        }
     }
     if parts.is_empty() {
         "(all tracks)".into()
@@ -502,6 +556,7 @@ mod tests {
             },
             tags: tags.iter().map(|t| t.to_string()).collect(),
             rating: None,
+            added_at: 0,
         }
     }
 
@@ -514,5 +569,26 @@ mod tests {
             "genre:Bachata,genre:bachata-sensual,period:90s"
         );
         assert_eq!(tags_cell(&track(&["genre:Bachata"]), true), dash());
+    }
+    #[test]
+    fn grouped_rules_are_displayed_without_omitting_branches_or_default_noise() {
+        let group = FilterSpec {
+            tag_all: vec!["mood:romantic".into()],
+            bpm_max: Some(90.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            compact_group(&group),
+            serde_json::json!({"tag_all":["mood:romantic"],"bpm_max":90.0})
+        );
+        let filter = FilterSpec {
+            groups: vec![group],
+            group_join: weave_player_lib::core::FilterJoin::Or,
+            ..Default::default()
+        };
+        let description = describe(&filter);
+        assert!(description.contains("--group-join or --filter-group '"));
+        assert!(description.contains("mood:romantic") && description.contains("bpm_max"));
+        assert!(!description.contains("null"));
     }
 }

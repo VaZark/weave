@@ -18,6 +18,14 @@ weave-player playlist create "Slow Spanish nights" --tag-all mood:romantic,lang:
 weave-player playlist create "Wedding, upbeat" --tag-all wedding --tag-exclude mood:sad --bpm-min 100
 weave-player playlist create "Dance floor" --tag-any mood=party,energetic --tag-exclude live --bpm-min 110
 
+# Flat OR tag groups; tempo applies to every alternative
+weave-player search --or-group --tag-any genre:zouk,genre:bachata --tag-all mood:romantic \
+  --or-group --tag-all lang:tamil,tag:romantic,90s --bpm-max 90
+
+# (romantic OR calm) AND (Tamil OR French)
+weave-player search --or-group --tag-all mood:romantic --or-group --tag-all mood:calm \
+  --and-group --tag-all lang:tamil --or-group --tag-all lang:french
+
 # build on other playlists: a manual one limits the candidates, a dynamic one contributes what it matches now
 weave-player playlist create "Slow Spanish, upbeat end" --from "Slow Spanish nights" --from "Road trip" --bpm-min 95
 

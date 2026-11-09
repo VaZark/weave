@@ -16,6 +16,10 @@ pub enum SortField {
     Rating,
     /// When the track was first indexed.
     Added,
+    PlayCount,
+    LastPlayed,
+    /// Rating, then completed listens, then lifetime starts.
+    Preference,
 }
 text_enum!(SortField {
     Title => "title",
@@ -27,7 +31,32 @@ text_enum!(SortField {
     Duration => "duration",
     Rating => "rating",
     Added => "added",
+    PlayCount => "plays",
+    LastPlayed => "last-played",
+    Preference => "preference",
 });
+
+/// Ordering for library collection pages. Groups use their member tracks; unknown values sort last.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionOrder {
+    #[default]
+    Recent,
+    ReleaseDate,
+    AddedDate,
+    Rating,
+}
+
+impl std::fmt::Display for CollectionOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Recent => "Recent",
+            Self::ReleaseDate => "Release date",
+            Self::AddedDate => "Added date",
+            Self::Rating => "Rating",
+        })
+    }
+}
 
 /// Unknown values always sort last, in either direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,14 +65,30 @@ pub struct Sort {
     pub descending: bool,
 }
 
+/// How complete child filter groups combine. Conditions within each group remain ANDed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterJoin {
+    #[default]
+    And,
+    Or,
+}
+text_enum!(FilterJoin { And => "and", Or => "or" });
+
 /// Structured, serializable filter shared by the CLI, GUI and saved playlists.
-/// Groups combine with AND; empty/omitted groups do not restrict results.
+/// Fields within each group combine with AND. Child groups use `group_join` (AND by default).
+/// Empty/omitted groups do not restrict results; sort and limit apply only to the final result.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilterSpec {
+    /// Complete child filters. Empty groups are ignored; own fields constrain their combined result.
+    pub groups: Vec<FilterSpec>,
+    pub group_join: FilterJoin,
     /// Tag groups. `genre:bachata` matches the tag and its descendants (`has`);
     /// `=genre:bachata` matches explicit assignments of that tag only (`has_exact`).
     pub tag_all: Vec<String>,
+    /// AND blocks of flat OR tag alternatives, owned by the reusable tag engine.
+    pub tag_blocks: Vec<Vec<TagFilter>>,
     pub tag_any: Vec<String>,
     pub tag_exclude: Vec<String>,
     /// Playlists to draw from, by ID or name. Empty means the whole library. A track must be in at
@@ -58,6 +103,14 @@ pub struct FilterSpec {
     pub bpm_max: Option<f64>,
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
+    /// Imported in the last N rolling 24-hour days, inclusive. ANDed with other filters.
+    pub imported_within_days: Option<u32>,
+    /// Substring of title, artist OR album (case insensitive), ANDed with other fields.
+    pub query: Option<String>,
+    /// Last known playback at least N rolling days ago; never-played tracks also match.
+    pub not_played_for_days: Option<u32>,
+    /// Restrict to previously played (`true`) or never played (`false`).
+    pub has_played: Option<bool>,
     /// Case-insensitive substrings of the track's identifying fields. The genre is a tag:
     /// use `genre:bachata`.
     pub title: Option<String>,
@@ -84,6 +137,7 @@ impl FilterSpec {
     /// The tag conditions, for `weaver`.
     pub fn tag_filter(&self) -> TagFilter {
         TagFilter {
+            blocks: self.tag_blocks.clone(),
             all: self.tag_all.clone(),
             any: self.tag_any.clone(),
             exclude: self.tag_exclude.clone(),
@@ -93,7 +147,17 @@ impl FilterSpec {
 
     /// Trim, drop empties and duplicates (by normalized form, keeping first spelling).
     pub fn normalized(mut self) -> Self {
+        self.groups = self
+            .groups
+            .into_iter()
+            .map(Self::normalized)
+            .filter(|group| group != &Self::default())
+            .collect();
+        if self.groups.is_empty() {
+            self.group_join = FilterJoin::And;
+        }
         let tags = self.tag_filter().normalized();
+        self.tag_blocks = tags.blocks.clone();
         (
             self.tag_all,
             self.tag_any,
@@ -122,7 +186,12 @@ impl FilterSpec {
                 true
             });
         }
-        for field in [&mut self.title, &mut self.artist, &mut self.album] {
+        for field in [
+            &mut self.title,
+            &mut self.artist,
+            &mut self.album,
+            &mut self.query,
+        ] {
             if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *field = None;
             }
@@ -130,7 +199,65 @@ impl FilterSpec {
         self
     }
 
+    /// Source references at every level, used for dependency and cycle checks.
+    pub fn all_sources(&self) -> Vec<&String> {
+        self.sources
+            .iter()
+            .chain(self.groups.iter().flat_map(Self::all_sources))
+            .collect()
+    }
+
+    pub fn clear_sources(&mut self) {
+        self.sources.clear();
+        for group in &mut self.groups {
+            group.clear_sources();
+        }
+    }
+
+    pub fn remove_source(&mut self, id: &str) {
+        self.sources.retain(|source| source != id);
+        for group in &mut self.groups {
+            group.remove_source(id);
+        }
+    }
+
+    /// Earliest accepted import timestamp (Unix seconds), evaluated against the supplied clock.
+    pub fn import_cutoff(&self, now: i64) -> Option<i64> {
+        self.imported_within_days
+            .map(|days| now.saturating_sub(i64::from(days) * 86_400))
+    }
+
     pub fn validate(&self) -> Result<()> {
+        let mut count = 0;
+        self.validate_groups(0, &mut count)?;
+        self.validate_fields()
+    }
+
+    fn validate_groups(&self, depth: usize, count: &mut usize) -> Result<()> {
+        *count += 1;
+        if depth > 8 || *count > 64 {
+            return Err(Error::InvalidFilter(
+                "At most 8 levels and 64 filter groups are supported".into(),
+            ));
+        }
+        if depth > 0 && (self.sort.is_some() || self.limit.is_some()) {
+            return Err(Error::InvalidFilter(
+                "Sort and limit belong to the complete result, not a filter group".into(),
+            ));
+        }
+        for group in &self.groups {
+            group.validate_groups(depth + 1, count)?;
+            group.validate_fields()?;
+        }
+        Ok(())
+    }
+
+    fn validate_fields(&self) -> Result<()> {
+        if self.imported_within_days == Some(0) {
+            return Err(Error::InvalidFilter(
+                "imported-within-days must be at least 1".into(),
+            ));
+        }
         self.tag_filter().validate()?;
         for (name, v) in [("bpm-min", self.bpm_min), ("bpm-max", self.bpm_max)] {
             if let Some(v) = v
@@ -184,6 +311,13 @@ impl FilterSpec {
     /// the existing ones; everything else is retained.
     pub fn merged(mut self, update: FilterSpec) -> Self {
         let update = update.normalized();
+        if !update.groups.is_empty() {
+            self.groups = update.groups;
+            self.group_join = update.group_join;
+        }
+        if !update.tag_blocks.is_empty() {
+            self.tag_blocks = update.tag_blocks;
+        }
         if !update.tag_all.is_empty() {
             self.tag_all = update.tag_all;
         }
@@ -203,6 +337,10 @@ impl FilterSpec {
         self.bpm_max = update.bpm_max.or(self.bpm_max);
         self.year_min = update.year_min.or(self.year_min);
         self.year_max = update.year_max.or(self.year_max);
+        self.query = update.query.or(self.query);
+        self.not_played_for_days = update.not_played_for_days.or(self.not_played_for_days);
+        self.has_played = update.has_played.or(self.has_played);
+        self.imported_within_days = update.imported_within_days.or(self.imported_within_days);
         self.title = update.title.or(self.title);
         self.artist = update.artist.or(self.artist);
         self.album = update.album.or(self.album);
@@ -223,6 +361,30 @@ impl FilterSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_window_is_rolling_validated_and_preserved() {
+        let f = FilterSpec {
+            imported_within_days: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(f.import_cutoff(1_000_000), Some(395_200));
+        assert!(f.validate().is_ok());
+        assert_eq!(f.clone().merged(FilterSpec::default()), f);
+        let merged = f.merged(FilterSpec {
+            imported_within_days: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(merged.import_cutoff(1_000_000), Some(913_600));
+        assert!(
+            FilterSpec {
+                imported_within_days: Some(0),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
 
     #[test]
     fn artist_and_album_lists_are_trimmed_deduped_and_merge_by_replacing() {
@@ -404,5 +566,66 @@ mod tests {
             (vec!["a".to_string()], vec!["b".to_string()])
         );
         assert_eq!(m.title.as_deref(), Some("x"));
+    }
+    #[test]
+    fn complete_groups_default_to_and_normalize_and_validate_recursively() {
+        let branch = FilterSpec {
+            tag_all: vec![" romantic ".into(), "ROMANTIC".into()],
+            ..Default::default()
+        };
+        let normalized = FilterSpec {
+            groups: vec![FilterSpec::default(), branch.clone()],
+            group_join: FilterJoin::Or,
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(normalized.groups.len(), 1);
+        assert_eq!(normalized.groups[0].tag_all, ["romantic"]);
+        assert_eq!(FilterSpec::default().group_join, FilterJoin::And);
+        assert_eq!(normalized.clone().merged(FilterSpec::default()), normalized);
+        let replaced = normalized.merged(FilterSpec {
+            groups: vec![branch],
+            ..Default::default()
+        });
+        assert_eq!(replaced.group_join, FilterJoin::And);
+        assert!(
+            FilterSpec {
+                groups: vec![FilterSpec {
+                    bpm_min: Some(120.0),
+                    bpm_max: Some(90.0),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FilterSpec {
+                groups: vec![FilterSpec {
+                    limit: Some(1),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        let mut nested = FilterSpec::default();
+        for _ in 0..9 {
+            nested = FilterSpec {
+                groups: vec![nested],
+                ..Default::default()
+            };
+        }
+        assert!(nested.validate().is_err());
+        assert!(
+            FilterSpec {
+                groups: vec![FilterSpec::default(); 64],
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
     }
 }

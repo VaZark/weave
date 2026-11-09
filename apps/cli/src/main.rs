@@ -9,6 +9,7 @@ macro_rules! outln {
 }
 
 mod ask;
+mod clause_args;
 mod dedup;
 mod host;
 mod lyrics;
@@ -121,6 +122,8 @@ enum ArtistCmd {
     List {
         #[command(flatten)]
         tags: TagFilterArgs,
+        #[arg(long, default_value = "")]
+        query: String,
     },
     /// Add or remove tags on an artist.
     Tag(TagEdit),
@@ -166,6 +169,8 @@ enum AlbumCmd {
         artist: Option<String>,
         #[command(flatten)]
         tags: TagFilterArgs,
+        #[arg(long, default_value = "")]
+        query: String,
     },
     /// Add or remove tags on an album.
     Tag(TagEdit),
@@ -195,7 +200,19 @@ enum TagCmd {
         parent: Option<String>,
     },
     /// List tags with their parents and track counts.
-    List,
+    List {
+        #[arg(long, default_value = "")]
+        query: String,
+        /// Named tag key; use --custom for unkeyed tags.
+        #[arg(long, conflicts_with = "custom")]
+        category: Option<String>,
+        #[arg(long)]
+        custom: bool,
+        /// Direct children of this tag; pass an empty string for roots.
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    Categories,
     /// Set a tag's parent, or clear it. Assignments do not change, only what the parent matches.
     Parent {
         name: String,
@@ -235,10 +252,20 @@ enum Cmd {
     /// one already in the library; afterwards it asks about new artists, albums and tracks that
     /// look like existing ones, and merges only what you say.
     Import {
-        path: PathBuf,
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
         /// Do not ask about duplicates; review them later with `dedup`.
         #[arg(long)]
         disable_dedup_check: bool,
+    },
+    /// Measured listening statistics; --json includes every chart dataset.
+    Stats(AnalyticsArgs),
+    /// Previously played tracks inactive for 180 days, ordered by preference by default.
+    Rediscover {
+        #[command(flatten)]
+        filter: FilterArgs,
+        #[command(flatten)]
+        page: PageArgs,
     },
     /// Find and settle artists, albums and tracks that look alike.
     #[command(subcommand)]
@@ -408,13 +435,13 @@ enum PlayCmd {
 
 #[derive(Subcommand)]
 enum PlaylistCmd {
-    /// Save a dynamic playlist (filters, sort and limit, not membership), or an empty manual one.
+    /// Save a dynamic playlist, or an empty curated playlist with rules for adding tracks.
     Create {
         name: String,
         /// What the playlist is for.
         #[arg(long)]
         description: Option<String>,
-        /// Create an ordered list you fill with `playlist add` instead of a saved filter.
+        /// Curate an ordered list with `playlist add/remove`; filters guide track selection in the GUI.
         #[arg(long)]
         manual: bool,
         #[command(flatten)]
@@ -434,7 +461,7 @@ enum PlaylistCmd {
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Change the specified filters of a dynamic playlist; retain the others.
+    /// Change playlist membership rules (dynamic) or addition rules (manual); retain the others.
     Update {
         name: String,
         /// New description; pass "" to clear it.
@@ -466,7 +493,10 @@ enum PlaylistCmd {
         track_ids: Vec<String>,
     },
     /// List saved playlists.
-    List,
+    List {
+        #[arg(long, default_value = "")]
+        query: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -595,6 +625,23 @@ struct TagFilterArgs {
 
 #[derive(Args, Default)]
 struct FilterArgs {
+    /// Start a filter clause: following filter flags belong to it until the next --filter-group.
+    /// Flags before the first clause constrain all clauses. An optional JSON definition is also accepted.
+    #[arg(long = "filter-group", value_name = "JSON", num_args = 0..=1,
+        default_missing_value = "{}", value_parser = parse_filter_group)]
+    groups: Vec<FilterSpec>,
+    /// Start an OR tag alternative. BPM and other non-tag flags constrain all groups.
+    #[arg(long, action = clap::ArgAction::Count)]
+    or_group: u8,
+    /// Start another AND block of OR tag alternatives.
+    #[arg(long, action = clap::ArgAction::Count)]
+    and_group: u8,
+    /// Internal representation of flat AND/OR tag blocks.
+    #[arg(long = "tag-block", hide = true, value_parser = parse_tag_block)]
+    tag_blocks: Vec<Vec<weave_player_lib::core::TagFilter>>,
+    /// Combine complete groups with AND (default) or OR.
+    #[arg(long, default_value = "and")]
+    group_join: weave_player_lib::core::FilterJoin,
     /// Draw only on these playlists (repeatable): a track in any of them, then the filters below on top. A manual playlist limits to its tracks, a dynamic one to what it matches now.
     #[arg(long = "from", value_name = "PLAYLIST")]
     sources: Vec<String>,
@@ -610,6 +657,18 @@ struct FilterArgs {
     year_min: Option<i32>,
     #[arg(long)]
     year_max: Option<i32>,
+    /// Only tracks first imported within this many rolling 24-hour days.
+    #[arg(long)]
+    imported_within_days: Option<u32>,
+    /// Substring of title, artist or album.
+    #[arg(long)]
+    query: Option<String>,
+    /// Tracks whose last start was at least N days ago (also matches never played).
+    #[arg(long)]
+    not_played_for_days: Option<u32>,
+    /// Restrict to played (true) or never played (false) tracks.
+    #[arg(long, num_args = 1)]
+    has_played: Option<bool>,
     /// Case-insensitive part of the title. The genre is a tag: `--tag-any genre=bachata`.
     #[arg(long)]
     title: Option<String>,
@@ -627,6 +686,37 @@ struct FilterArgs {
     rating_max: Option<u8>,
     #[command(flatten)]
     result: ResultArgs,
+}
+
+#[derive(Args)]
+struct AnalyticsArgs {
+    /// Rolling day (24h), week (7d), month (30d) or year (365d).
+    #[arg(long, conflicts_with = "since_ms")]
+    period: Option<weave_player_lib::core::AnalyticsPeriod>,
+    /// Inclusive Unix millisecond lower bound (UTC).
+    #[arg(long)]
+    since_ms: Option<i64>,
+    /// Exclusive Unix millisecond upper bound (UTC); defaults to now.
+    #[arg(long)]
+    until_ms: Option<i64>,
+    #[arg(long, default_value_t = 10)]
+    top_n: usize,
+    /// Show measured events and clipped listening segments instead of aggregates.
+    #[arg(long)]
+    events: bool,
+    #[command(flatten)]
+    filter: FilterArgs,
+}
+impl AnalyticsArgs {
+    fn query(self) -> weave_player_lib::core::AnalyticsQuery {
+        weave_player_lib::core::AnalyticsQuery {
+            since_ms: self.since_ms,
+            until_ms: self.until_ms,
+            period: self.period,
+            filter: self.filter.into(),
+            top_n: self.top_n,
+        }
+    }
 }
 
 /// One `--tag-*` value. Bare (`mood:calm,live`): plain tag names. Keyed (`lang=spanish,french`):
@@ -699,15 +789,39 @@ impl TagFilterArgs {
     }
 }
 
+fn parse_tag_block(text: &str) -> Result<Vec<weave_player_lib::core::TagFilter>, String> {
+    let block: Vec<weave_player_lib::core::TagFilter> =
+        serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let filter = weave_player_lib::core::TagFilter {
+        blocks: vec![block.clone()],
+        ..Default::default()
+    };
+    filter.validate().map_err(|e| e.to_string())?;
+    Ok(block)
+}
+
+fn parse_filter_group(text: &str) -> Result<FilterSpec, String> {
+    let filter: FilterSpec = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    filter.validate().map_err(|error| error.to_string())?;
+    Ok(filter.normalized())
+}
+
 impl From<FilterArgs> for FilterSpec {
     fn from(a: FilterArgs) -> Self {
         let result = a.result.spec();
         FilterSpec {
             sources: a.sources,
+            groups: a.groups,
+            tag_blocks: a.tag_blocks,
+            group_join: a.group_join,
             bpm_min: a.bpm_min,
             bpm_max: a.bpm_max,
             year_min: a.year_min,
             year_max: a.year_max,
+            imported_within_days: a.imported_within_days,
+            query: a.query,
+            not_played_for_days: a.not_played_for_days,
+            has_played: a.has_played,
             title: a.title,
             artist: a.artist,
             album: a.album,
@@ -853,8 +967,16 @@ fn mock_db_args(args: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi:
     out
 }
 
+fn parse_cli_from(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Cli, clap::Error> {
+    let args = mock_db_args(args.into_iter());
+    Cli::try_parse_from(clause_args::expand(args)?)
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(mock_db_args(std::env::args_os()));
+    let cli = match parse_cli_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(f) => {
@@ -942,18 +1064,30 @@ fn run(cli: Cli) -> Result<(), Failure> {
 
     match cli.command {
         Cmd::Import {
-            path,
+            paths,
             disable_dedup_check,
         } => {
             let mark = lib.dedup_mark()?;
-            let s = lib.import(&path)?;
-            out(
-                json,
-                &serde_json::json!({ "added": s.added, "skipped": s.skipped }),
-                || outln!("imported {} new, {} already indexed", s.added, s.skipped),
-            )?;
+            let s = lib.import_paths(&paths)?;
+            out(json, &s, || {
+                outln!(
+                    "imported {} new, {} already indexed, {} non-audio, {} issues",
+                    s.added,
+                    s.skipped,
+                    s.ignored,
+                    s.issues.len()
+                );
+                for issue in &s.issues {
+                    outln!("{}: {}", issue.path, issue.message);
+                }
+            })?;
             if !disable_dedup_check {
                 review_similar(&mut lib, &dedup::KINDS, Some(&mark), json)?;
+            }
+            if !s.issues.is_empty() {
+                return Err(Failure::Other(
+                    "import completed with inaccessible inputs; see report".into(),
+                ));
             }
         }
         Cmd::List { result, page } => print_page(
@@ -961,6 +1095,89 @@ fn run(cli: Cli) -> Result<(), Failure> {
             show_ids,
             page,
             &lib.search(&result.spec(), page.page())?,
+        )?,
+        Cmd::Stats(args) => {
+            let events = args.events;
+            let query = args.query();
+            if events {
+                let found = lib.listening_events(&query)?;
+                out(json, &found, || {
+                    for e in &found {
+                        outln!(
+                            "{}  {}  {} ms  {}",
+                            e.id,
+                            e.track,
+                            e.listened_ms,
+                            e.reason
+                                .map(|r| r.to_string())
+                                .unwrap_or_else(|| "unfinished".into())
+                        );
+                    }
+                    if found.is_empty() {
+                        outln!(
+                            "No measured listening in this range. Statistics accumulate while audio plays; old start counts are not listening time."
+                        );
+                    }
+                })?;
+            } else {
+                let stats = lib.listening_analytics(&query)?;
+                out(json, &stats, || {
+                    if stats.listens == 0 {
+                        outln!(
+                            "No measured listening in this range. Statistics accumulate while audio plays; old start counts are not listening time."
+                        );
+                    }
+                    outln!(
+                        "Listening hours: {:.3}\nUnique tracks: {}\nListens: {}\nCompleted listens: {}",
+                        stats.listened_ms as f64 / 3_600_000.0,
+                        stats.unique_tracks,
+                        stats.listens,
+                        stats.completed_listens
+                    );
+                    for (label, share) in [
+                        ("Favorite track (rating)", &stats.favorite_track),
+                        ("Favorite artist (mean rating)", &stats.favorite_artist),
+                        ("Most listened track", &stats.most_listened_track),
+                        ("Most listened artist", &stats.most_listened_artist),
+                        ("Most listened tag", &stats.most_listened_tag),
+                    ] {
+                        outln!(
+                            "{label}: {}",
+                            share.as_ref().map(|s| s.name.as_str()).unwrap_or("—")
+                        );
+                    }
+                    outln!(
+                        "Longest session (listened ms): {}",
+                        stats.longest_session.as_ref().map_or(0, |s| s.listened_ms)
+                    );
+                    outln!(
+                        "Most replayed track: {}",
+                        stats
+                            .most_replayed_track
+                            .as_ref()
+                            .map_or("—", |s| s.track.as_str())
+                    );
+                    for l in &stats.loyalty {
+                        outln!(
+                            "{}: {} listens, {} completed, completion {}, replay {:.3}, repeats/day {:.3}",
+                            l.track,
+                            l.listens,
+                            l.completed_listens,
+                            l.completion_rate
+                                .map(|r| format!("{r:.3}"))
+                                .unwrap_or_else(|| "—".into()),
+                            l.replay_rate.unwrap_or(0.0),
+                            l.repeats_per_day
+                        );
+                    }
+                })?;
+            }
+        }
+        Cmd::Rediscover { filter, page } => print_page(
+            json,
+            show_ids,
+            page,
+            &lib.rediscover(&filter.into(), page.page())?,
         )?,
         Cmd::Search { filter, page } => print_page(
             json,
@@ -1039,8 +1256,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Cmd::Artist(ArtistArgs { cmd: Some(cmd), .. }) => match cmd {
             ArtistCmd::Show { .. } => unreachable!("handled above"),
-            ArtistCmd::List { tags } => {
-                profile::print_artists(json, show_ids, &lib.artists(&tags.spec())?)?
+            ArtistCmd::List { tags, query } => {
+                profile::print_artists(json, show_ids, &lib.search_artists(&query, &tags.spec())?)?
             }
             ArtistCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Artist, edit, json)?,
             ArtistCmd::Split {
@@ -1082,9 +1299,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Cmd::Album(AlbumArgs { cmd: Some(cmd), .. }) => match cmd {
             AlbumCmd::Show { .. } => unreachable!("handled above"),
-            AlbumCmd::List { artist, tags } => {
-                profile::print_albums(json, &lib.albums(&tags.spec(), artist.as_deref())?)?
-            }
+            AlbumCmd::List {
+                artist,
+                tags,
+                query,
+            } => profile::print_albums(
+                json,
+                &lib.search_albums(&query, &tags.spec(), artist.as_deref())?,
+            )?,
             AlbumCmd::Tag(edit) => edit_tags(&mut lib, EntityKind::Album, edit, json)?,
             AlbumCmd::Link { album, artist } => {
                 let a = lib.link_album(&album, Some(&artist))?;
@@ -1104,8 +1326,29 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let tag = lib.create_tag(&name, parent.as_deref())?;
             out(json, &tag, || outln!("created tag {}", tag.name))?;
         }
-        Cmd::Tag(TagCmd::List) => {
-            let tags = lib.list_tags()?;
+        Cmd::Tag(TagCmd::Categories) => {
+            let keys = lib.tag_categories()?;
+            out(json, &keys, || {
+                for key in &keys {
+                    outln!("{}", key.as_deref().unwrap_or("Custom"));
+                }
+            })?;
+        }
+        Cmd::Tag(TagCmd::List {
+            query,
+            category,
+            custom,
+            parent,
+        }) => {
+            let tags = lib.browse_tags(
+                &query,
+                if custom {
+                    Some("")
+                } else {
+                    category.as_deref()
+                },
+                parent.as_deref(),
+            )?;
             out(json, &tags, || {
                 let rows = tags
                     .iter()
@@ -1217,13 +1460,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             filter,
         }) => {
             let p = if manual {
-                if FilterSpec::from(filter) != FilterSpec::default() {
-                    return Err(Error::InvalidInput(
-                        "manual playlists have no filters; fill them with `playlist add`".into(),
-                    )
-                    .into());
-                }
-                lib.create_manual_playlist(&name, description.as_deref())?
+                lib.create_manual_playlist_with_filter(
+                    &name,
+                    description.as_deref(),
+                    filter.into(),
+                )?
             } else {
                 lib.create_playlist(&name, description.as_deref(), filter.into())?
             };
@@ -1287,7 +1528,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 outln!("removed {n} track(s)")
             })?;
         }
-        Cmd::Playlist(PlaylistCmd::List) => print_playlists(json, show_ids, &lib.playlists()?)?,
+        Cmd::Playlist(PlaylistCmd::List { query }) => {
+            print_playlists(json, show_ids, &lib.search_playlists(&query)?)?
+        }
 
         Cmd::Queue(QueueCmd::Show) => print_queue(json, show_ids, &lib.session()?)?,
         Cmd::Queue(QueueCmd::Add {
@@ -1502,7 +1745,365 @@ mod arg_tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(std::iter::once("weave-player").chain(args.iter().copied()))
+        parse_cli_from(
+            std::iter::once("weave-player")
+                .chain(args.iter().copied())
+                .map(std::ffi::OsString::from),
+        )
+    }
+
+    #[test]
+    fn discovery_import_and_analytics_commands_parse() {
+        for args in [
+            vec![
+                "weave-player",
+                "import",
+                "/music",
+                "/song.wav",
+                "--disable-dedup-check",
+            ],
+            vec![
+                "weave-player",
+                "artist",
+                "list",
+                "--query",
+                "Alice",
+                "--tag-all",
+                "mood:calm",
+            ],
+            vec!["weave-player", "album", "list", "--query", "morning"],
+            vec!["weave-player", "playlist", "list", "--query", "quiet"],
+            vec![
+                "weave-player",
+                "tag",
+                "list",
+                "--category",
+                "mood",
+                "--query",
+                "calm",
+            ],
+            vec!["weave-player", "tag", "list", "--custom"],
+            vec!["weave-player", "tag", "categories"],
+            vec![
+                "weave-player",
+                "rediscover",
+                "--not-played-for-days",
+                "90",
+                "--sort",
+                "rating",
+                "--desc",
+            ],
+            vec![
+                "weave-player",
+                "stats",
+                "--period",
+                "week",
+                "--tag-exclude",
+                "live",
+                "--json",
+            ],
+            vec![
+                "weave-player",
+                "stats",
+                "--since-ms",
+                "1000",
+                "--until-ms",
+                "5000",
+                "--events",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args.clone()).is_ok(), "{args:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "weave-player",
+                "stats",
+                "--period",
+                "day",
+                "--since-ms",
+                "1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "weave-player",
+                "tag",
+                "list",
+                "--custom",
+                "--category",
+                "mood"
+            ])
+            .is_err()
+        );
+        let Cmd::Import { paths, .. } = Cli::try_parse_from(["weave-player", "import", "/a", "/b"])
+            .unwrap()
+            .command
+        else {
+            panic!("import")
+        };
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn cli_complete_groups_match_romantic_slow_or_party_fast_in_the_engine() {
+        use weave_player_lib::core::{FilterJoin, Metadata, ScannedTrack};
+        let romantic = r#"{"tag_all":["mood:romantic"],"bpm_max":90}"#;
+        let party = r#"{"tag_all":["mood:party"],"bpm_min":120}"#;
+        let Cmd::Search { filter, .. } = parse(&[
+            "search",
+            "--group-join",
+            "or",
+            "--filter-group",
+            romantic,
+            "--filter-group",
+            party,
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("search");
+        };
+        let filter = FilterSpec::from(filter);
+        assert_eq!(filter.group_join, FilterJoin::Or);
+        assert_eq!(filter.groups.len(), 2);
+        let mut library = Library::open_in_memory().unwrap();
+        for (title, mood, bpm) in [
+            ("a", "romantic", 80.0),
+            ("b", "romantic", 140.0),
+            ("c", "party", 80.0),
+            ("d", "party", 140.0),
+        ] {
+            library
+                .import_scanned(&[ScannedTrack {
+                    path: format!("/{title}"),
+                    metadata: Metadata {
+                        title: title.into(),
+                        artist: Some("x".into()),
+                        bpm: Some(bpm),
+                        ..Default::default()
+                    },
+                }])
+                .unwrap();
+            library
+                .add_tags(&format!("x-{title}"), &[format!("mood:{mood}")])
+                .unwrap();
+        }
+        library
+            .create_playlist("Grouped dynamic", None, filter.clone())
+            .unwrap();
+        assert_eq!(
+            library
+                .playlist_tracks("Grouped dynamic", Page::ALL)
+                .unwrap()
+                .1
+                .total,
+            2
+        );
+        let results = library.search(&filter, Page::ALL).unwrap();
+        assert_eq!(
+            results
+                .tracks
+                .iter()
+                .map(|track| track.metadata.title.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "d"]
+        );
+        let Cmd::Search { filter, .. } = parse(&[
+            "search",
+            "--filter-group",
+            romantic,
+            "--filter-group",
+            party,
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("search");
+        };
+        let filter = FilterSpec::from(filter);
+        assert_eq!(filter.group_join, FilterJoin::And);
+        assert!(
+            library
+                .search(&filter, Page::ALL)
+                .unwrap()
+                .tracks
+                .is_empty()
+        );
+        let Cmd::Playlist(PlaylistCmd::Create { manual, filter, .. }) = parse(&[
+            "playlist",
+            "create",
+            "Curated",
+            "--manual",
+            "--group-join",
+            "or",
+            "--filter-group",
+            romantic,
+            "--filter-group",
+            party,
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("create");
+        };
+        assert!(manual);
+        library
+            .create_manual_playlist_with_filter("Curated", None, filter.into())
+            .unwrap();
+        assert_eq!(
+            library
+                .playlist_add_candidates("Curated", Page::ALL)
+                .unwrap()
+                .total,
+            2
+        );
+        assert_eq!(
+            library
+                .playlist_tracks("Curated", Page::ALL)
+                .unwrap()
+                .1
+                .total,
+            0
+        );
+        assert!(parse(&["search", "--filter-group", "not json"]).is_err());
+        assert!(
+            parse(&[
+                "search",
+                "--filter-group",
+                r#"{"bpm_min":120,"bpm_max":90}"#
+            ])
+            .is_err()
+        );
+        assert!(parse(&["search", "--group-join", "xor"]).is_err());
+        let Cmd::Search { filter, .. } = parse(&["search", "--filter-group", r#"{"limit":1}"#])
+            .unwrap()
+            .command
+        else {
+            panic!("search");
+        };
+        assert!(FilterSpec::from(filter).validate().is_err());
+    }
+
+    #[test]
+    fn flat_tag_groups_keep_bpm_global_and_chain_with_and() {
+        use weave_player_lib::core::{Metadata, ScannedTrack};
+        let command = [
+            "search",
+            "--or-group",
+            "--tag-any",
+            "genre:zouk,genre:bachata",
+            "--tag-all",
+            "mood:romantic",
+            "--or-group",
+            "--tag-all",
+            "lang:tamil,tag:romantic,90s",
+            "--bpm-max",
+            "90",
+        ];
+        let Cmd::Search { filter, .. } = parse(&command).unwrap().command else {
+            panic!("search")
+        };
+        let filter = FilterSpec::from(filter).normalized();
+        assert_eq!(filter.bpm_max, Some(90.0));
+        assert_eq!(filter.tag_blocks.len(), 1);
+        assert_eq!(filter.tag_blocks[0].len(), 2);
+        assert!(filter.groups.is_empty());
+        let mut library = Library::open_in_memory().unwrap();
+        for (title, tags, bpm) in [
+            ("a", vec!["genre:zouk", "mood:romantic"], 80.0),
+            ("b", vec!["genre:bachata", "mood:romantic"], 100.0),
+            ("c", vec!["lang:tamil", "tag:romantic", "90s"], 90.0),
+            ("d", vec!["lang:tamil", "tag:romantic"], 80.0),
+            ("e", vec!["genre:zouk"], 80.0),
+        ] {
+            library
+                .import_scanned(&[ScannedTrack {
+                    path: format!("/{title}"),
+                    metadata: Metadata {
+                        title: title.into(),
+                        artist: Some("x".into()),
+                        bpm: Some(bpm),
+                        ..Default::default()
+                    },
+                }])
+                .unwrap();
+            library
+                .add_tags(
+                    &format!("x-{title}"),
+                    &tags.into_iter().map(str::to_string).collect::<Vec<_>>(),
+                )
+                .unwrap();
+        }
+        let found = library.search(&filter, Page::ALL).unwrap();
+        assert_eq!(
+            found
+                .tracks
+                .iter()
+                .map(|t| t.metadata.title.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "c"]
+        );
+        library
+            .create_playlist("Flat blocks", None, filter.clone())
+            .unwrap();
+        assert_eq!(
+            library
+                .playlist_tracks("Flat blocks", Page::ALL)
+                .unwrap()
+                .1
+                .total,
+            2
+        );
+        let mut chained = command.to_vec();
+        chained.extend([
+            "--and-group",
+            "--tag-all",
+            "lang:tamil",
+            "--or-group",
+            "--tag-all",
+            "lang:french",
+        ]);
+        let Cmd::Search { filter, .. } = parse(&chained).unwrap().command else {
+            panic!("search")
+        };
+        let filter = FilterSpec::from(filter).normalized();
+        assert_eq!(filter.tag_blocks.len(), 2);
+        let found = library.search(&filter, Page::ALL).unwrap();
+        assert_eq!(
+            found
+                .tracks
+                .iter()
+                .map(|t| t.metadata.title.as_str())
+                .collect::<Vec<_>>(),
+            ["c"]
+        );
+        let description = output::describe(&filter);
+        assert!(description.contains("--and-group"));
+        assert!(description.contains("--bpm-max 90"));
+        assert!(parse(&["search", "--or-group", "--tag-all"]).is_err());
+        assert!(parse(&["search", "--tag-block", "bad JSON"]).is_err());
+    }
+
+    #[test]
+    fn recent_imports_cli_uses_the_shared_filter() {
+        let Cmd::Search { filter, .. } = Cli::try_parse_from([
+            "weave-player",
+            "search",
+            "--imported-within-days",
+            "7",
+            "--artist",
+            "x",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not search")
+        };
+        let f = FilterSpec::from(filter);
+        assert_eq!(f.imported_within_days, Some(7));
+        assert_eq!(f.artist.as_deref(), Some("x"));
+        assert!(output::describe(&f).contains("--imported-within-days 7"));
     }
 
     #[test]

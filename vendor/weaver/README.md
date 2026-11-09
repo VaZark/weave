@@ -5,7 +5,7 @@ Keyed, hierarchical tags on SQLite, vendored from [Weave](../../README.md) so ot
 - Names: optional key plus value (`genre:bachata`, `practice`), case-insensitive identity.
 - A tag has at most one parent. Assignments are flat; filters reach descendants unless exact (`=genre:bachata`).
 - Any number of tagged kinds (`Owner`) share one vocabulary and tree.
-- `TagFilter` (all / any / exclude, keyed clauses) compiles to parameterized SQL with `conditions`.
+- `TagFilter` (all / any / exclude, keyed clauses, flat AND blocks of OR alternatives) compiles to parameterized SQL with `conditions`. Nested tag blocks are rejected.
 - Cycle checks, delete policies (`Detach` / `Delete`) and merges (`copy`) run in transactions.
 
 > **Note:** `weaver` is vendored inside the Weave Player repo for now and should eventually move to its own repository. Until then, keep it free of any Weave dependency (see `agents.md`), so the move is just a copy and a version tag.

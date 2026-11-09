@@ -46,7 +46,7 @@ These are general; they belong in the library, not in this application. Build th
 - Cover with a blurred backdrop (downscale and blur on the CPU, cached per cover).
 - Transport buttons and the seek bar.
 - Synchronized lyrics list.
-- Symbolic icons for transport and tags, bundled as SVG until iced-libadwaita has an icon theme (`icons/` already exists in the repository).
+- Application-owned symbolic transport, navigation and tag artwork lives in the `weave-icons` workspace crate. It retains Weave’s earlier stroke-based appearance while the toolkit handles rendering and system-themed window chrome.
 
 ## Not in the first version
 

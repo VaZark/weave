@@ -1,0 +1,223 @@
+//! Weave's own 16px symbolic artwork, independent of installed desktop icon themes.
+//!
+//! Enable `iced` for cached handles, `view`/`colored`, and conversion to the
+//! toolkit's custom `IconSource`. The default build exposes only SVG source.
+
+#[cfg(feature = "iced")]
+mod iced;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Icon {
+    GoNext,
+    GoPrevious,
+    GoDown,
+    GoUp,
+    GoUpDown,
+    GoFirst,
+    GoLast,
+    Check,
+    WindowClose,
+    WindowMinimize,
+    WindowMaximize,
+    Window,
+    Sidebar,
+    WindowRestore,
+    OpenMenu,
+    ListAdd,
+    ListRemove,
+    Search,
+    ViewMore,
+    DialogInformation,
+    DialogWarning,
+    DialogError,
+    Edit,
+    Delete,
+    Reset,
+    Settings,
+    Filter,
+    Folder,
+    Document,
+    DragHandle,
+    Calendar,
+    Home,
+    Play,
+    Pause,
+    SkipBackward,
+    SkipForward,
+    Dice,
+    Shuffle,
+    Repeat,
+    Queue,
+    MusicNote,
+    Heart,
+    Moon,
+    Sun,
+    Bolt,
+    Globe,
+    Tag,
+    Star,
+    Lyrics,
+    Compass,
+    Sparkle,
+    Clock,
+    Target,
+    Volume,
+    VolumeMute,
+    Fullscreen,
+    FullscreenExit,
+    Compact,
+    Smile,
+    Library,
+}
+
+impl Icon {
+    /// Every application icon, including the music-library mark.
+    pub const ALL: &'static [Self] = &[
+        Self::GoNext,
+        Self::GoPrevious,
+        Self::GoDown,
+        Self::GoUp,
+        Self::GoUpDown,
+        Self::GoFirst,
+        Self::GoLast,
+        Self::Check,
+        Self::WindowClose,
+        Self::WindowMinimize,
+        Self::WindowMaximize,
+        Self::Window,
+        Self::Sidebar,
+        Self::WindowRestore,
+        Self::OpenMenu,
+        Self::ListAdd,
+        Self::ListRemove,
+        Self::Search,
+        Self::ViewMore,
+        Self::DialogInformation,
+        Self::DialogWarning,
+        Self::DialogError,
+        Self::Edit,
+        Self::Delete,
+        Self::Reset,
+        Self::Settings,
+        Self::Filter,
+        Self::Folder,
+        Self::Document,
+        Self::DragHandle,
+        Self::Calendar,
+        Self::Home,
+        Self::Play,
+        Self::Pause,
+        Self::SkipBackward,
+        Self::SkipForward,
+        Self::Dice,
+        Self::Shuffle,
+        Self::Repeat,
+        Self::Queue,
+        Self::MusicNote,
+        Self::Heart,
+        Self::Moon,
+        Self::Sun,
+        Self::Bolt,
+        Self::Globe,
+        Self::Tag,
+        Self::Star,
+        Self::Lyrics,
+        Self::Compass,
+        Self::Sparkle,
+        Self::Clock,
+        Self::Target,
+        Self::Volume,
+        Self::VolumeMute,
+        Self::Fullscreen,
+        Self::FullscreenExit,
+        Self::Compact,
+        Self::Smile,
+        Self::Library,
+    ];
+
+    /// The embedded application SVG. No filesystem or theme lookup is required.
+    pub fn source(self) -> &'static str {
+        match self {
+            Self::GoNext => include_str!("../assets/go-next.svg"),
+            Self::GoPrevious => include_str!("../assets/go-previous.svg"),
+            Self::GoDown => include_str!("../assets/go-down.svg"),
+            Self::GoUp => include_str!("../assets/go-up.svg"),
+            Self::GoUpDown => include_str!("../assets/go-up-down.svg"),
+            Self::GoFirst => include_str!("../assets/go-first.svg"),
+            Self::GoLast => include_str!("../assets/go-last.svg"),
+            Self::Check => include_str!("../assets/check.svg"),
+            Self::WindowClose => include_str!("../assets/window-close.svg"),
+            Self::WindowMinimize => include_str!("../assets/window-minimize.svg"),
+            Self::WindowMaximize => include_str!("../assets/window-maximize.svg"),
+            Self::Window => include_str!("../assets/window.svg"),
+            Self::Sidebar => include_str!("../assets/sidebar.svg"),
+            Self::WindowRestore => include_str!("../assets/window-restore.svg"),
+            Self::OpenMenu => include_str!("../assets/open-menu.svg"),
+            Self::ListAdd => include_str!("../assets/list-add.svg"),
+            Self::ListRemove => include_str!("../assets/list-remove.svg"),
+            Self::Search => include_str!("../assets/search.svg"),
+            Self::ViewMore => include_str!("../assets/view-more.svg"),
+            Self::DialogInformation => include_str!("../assets/dialog-information.svg"),
+            Self::DialogWarning => include_str!("../assets/dialog-warning.svg"),
+            Self::DialogError => include_str!("../assets/dialog-error.svg"),
+            Self::Edit => include_str!("../assets/edit.svg"),
+            Self::Delete => include_str!("../assets/delete.svg"),
+            Self::Reset => include_str!("../assets/reset.svg"),
+            Self::Settings => include_str!("../assets/settings.svg"),
+            Self::Filter => include_str!("../assets/filter.svg"),
+            Self::Folder => include_str!("../assets/folder.svg"),
+            Self::Document => include_str!("../assets/document.svg"),
+            Self::DragHandle => include_str!("../assets/drag-handle.svg"),
+            Self::Calendar => include_str!("../assets/calendar.svg"),
+            Self::Home => include_str!("../assets/home.svg"),
+            Self::Play => include_str!("../assets/play.svg"),
+            Self::Pause => include_str!("../assets/pause.svg"),
+            Self::SkipBackward => include_str!("../assets/skip-backward.svg"),
+            Self::SkipForward => include_str!("../assets/skip-forward.svg"),
+            Self::Dice => include_str!("../assets/dice.svg"),
+            Self::Shuffle => include_str!("../assets/shuffle.svg"),
+            Self::Repeat => include_str!("../assets/repeat.svg"),
+            Self::Queue => include_str!("../assets/queue.svg"),
+            Self::MusicNote => include_str!("../assets/music-note.svg"),
+            Self::Heart => include_str!("../assets/heart.svg"),
+            Self::Moon => include_str!("../assets/moon.svg"),
+            Self::Sun => include_str!("../assets/sun.svg"),
+            Self::Bolt => include_str!("../assets/bolt.svg"),
+            Self::Globe => include_str!("../assets/globe.svg"),
+            Self::Tag => include_str!("../assets/tag.svg"),
+            Self::Star => include_str!("../assets/star.svg"),
+            Self::Lyrics => include_str!("../assets/lyrics.svg"),
+            Self::Compass => include_str!("../assets/compass.svg"),
+            Self::Sparkle => include_str!("../assets/sparkle.svg"),
+            Self::Clock => include_str!("../assets/clock.svg"),
+            Self::Target => include_str!("../assets/target.svg"),
+            Self::Volume => include_str!("../assets/volume.svg"),
+            Self::VolumeMute => include_str!("../assets/volume-mute.svg"),
+            Self::Fullscreen => include_str!("../assets/fullscreen.svg"),
+            Self::FullscreenExit => include_str!("../assets/fullscreen-exit.svg"),
+            Self::Compact => include_str!("../assets/compact.svg"),
+            Self::Smile => include_str!("../assets/smile.svg"),
+            Self::Library => include_str!("../assets/library.svg"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn every_icon_is_a_unique_valid_16px_svg_with_artwork() {
+        let mut seen = std::collections::HashSet::new();
+        for icon in Icon::ALL {
+            assert!(seen.insert(*icon));
+            let doc = roxmltree::Document::parse(icon.source()).unwrap();
+            let root = doc.root_element();
+            assert_eq!(root.tag_name().name(), "svg");
+            assert_eq!(root.attribute("viewBox"), Some("0 0 16 16"));
+            assert!(
+                root.descendants()
+                    .any(|n| matches!(n.tag_name().name(), "path" | "circle" | "rect"))
+            );
+        }
+    }
+}

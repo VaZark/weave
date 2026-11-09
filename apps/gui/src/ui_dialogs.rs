@@ -1,25 +1,44 @@
 //! Dialogs (modal, closed by their buttons), the filter fields shared by search, jam and the
 //! playlist dialog, and the jam page.
 
-use iad::Icon;
 use iad::prelude::{self as w, typography as ty};
 use iced::widget::{column, container, row, scrollable, space};
-use iced::{Alignment, Color, Length};
+use iced::{Alignment, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
-use crate::components::tag_badge::{tag_chip_removable, tag_pill, value_of};
+use crate::components::tag_badge::tag_pill;
 use crate::data::{self, Filter};
 use crate::icons::{cover, playlist_avatar};
 use crate::ui_lists::RowOpts;
-use crate::{App, Dest, Element, Message};
-use iad::prelude::surface;
+use crate::{App, ChipPicker, Dest, Element, FilterTarget, Message, TagBrowse};
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
 use iad::primitives::histogram::Histogram;
 
-/// The id of the Jam search bar, which takes focus as it appears.
-const JAM_SEARCH_ID: &str = "jam-search";
 /// The id of the Save as playlist name field.
 const SAVE_NAME_ID: &str = "save-name";
+pub(super) const TAG_QUERY_ID: &str = "tag-filter-query";
+
+fn tag_group_separator(
+    blocks: &[Vec<weave_player_lib::core::TagFilter>],
+    block: usize,
+    index: usize,
+) -> Option<&'static str> {
+    if index + 1 < blocks[block].len() {
+        Some(",")
+    } else if blocks[block + 1..].iter().any(|block| !block.is_empty()) {
+        Some("AND")
+    } else {
+        None
+    }
+}
+
+pub(super) fn editable_tag_group(group: &weave_player_lib::core::TagFilter) -> bool {
+    (group.all.is_empty() || group.any.is_empty())
+        && group.exclude.is_empty()
+        && group.clauses.is_empty()
+        && group.blocks.is_empty()
+}
 
 /// What the controls of a filter send: the jam's Tag filters and the playlist-filter editor show
 /// the same fields and differ only in this.
@@ -29,42 +48,263 @@ pub struct FilterMsgs {
     pub artist: fn(String) -> Message,
     pub album: fn(String) -> Message,
     pub bpm: fn((f32, f32)) -> Message,
+    pub target: FilterTarget,
 }
 
-const JAM_FILTER: FilterMsgs = FilterMsgs {
-    tag: Message::ToggleTag,
-    artist: Message::JamArtistToggle,
-    album: Message::JamAlbumToggle,
-    bpm: Message::Bpm,
-};
-
-const DRAFT_FILTER: FilterMsgs = FilterMsgs {
-    tag: Message::DraftToggle,
-    artist: Message::DraftArtistToggle,
-    album: Message::DraftAlbumToggle,
-    bpm: Message::DraftBpm,
-};
+impl FilterMsgs {
+    pub(super) fn for_target(target: FilterTarget) -> Self {
+        match target {
+            FilterTarget::Jam => Self {
+                tag: Message::ToggleTag,
+                artist: Message::JamArtistToggle,
+                album: Message::JamAlbumToggle,
+                bpm: Message::Bpm,
+                target,
+            },
+            FilterTarget::Draft => Self {
+                tag: Message::DraftToggle,
+                artist: Message::DraftArtistToggle,
+                album: Message::DraftAlbumToggle,
+                bpm: Message::DraftBpm,
+                target,
+            },
+            FilterTarget::Page => Self {
+                tag: Message::PageTag,
+                artist: Message::PageArtist,
+                album: Message::PageAlbum,
+                bpm: Message::PageBpm,
+                target,
+            },
+        }
+    }
+}
 
 impl App {
-    /// The vocabulary as chip options: each tag's value as the label, with its own icon and colour.
-    /// `query` (when not empty) keeps only the tags whose value contains it.
-    pub fn tag_options(&self, query: &str) -> Vec<ChipOption<String>> {
-        let q = query.trim().to_lowercase();
-        self.lib
-            .tag_names()
-            .into_iter()
-            .filter(|t| q.is_empty() || value_of(t).to_lowercase().contains(&q))
-            .map(|t| {
-                let style = self.lib.style_of(&t);
-                ChipOption::new(t.clone(), value_of(&t))
-                    .icon(crate::icons::for_key(&style.icon))
-                    .color(style.color)
+    /// One tag picker shared by live filters, saved-filter drafts and track annotations.
+    /// The engine filters the vocabulary; navigation changes presentation, never selection.
+    pub fn tag_picker<'a>(
+        &'a self,
+        selected: &'a [String],
+        on_toggle: fn(String) -> Message,
+        picker: ChipPicker,
+    ) -> Element<'a> {
+        self.tag_picker_content(selected, on_toggle, picker, None)
+    }
+
+    fn filter_tag_picker<'a>(&'a self, filter: &'a Filter, msgs: FilterMsgs) -> Element<'a> {
+        self.tag_picker_content(
+            &filter.tags,
+            msgs.tag,
+            ChipPicker::Tags,
+            Some((filter, msgs.target)),
+        )
+    }
+
+    fn tag_picker_content<'a>(
+        &'a self,
+        selected: &'a [String],
+        on_toggle: fn(String) -> Message,
+        picker: ChipPicker,
+        groups: Option<(&'a Filter, FilterTarget)>,
+    ) -> Element<'a> {
+        let all_tags = self.tag_browse == TagBrowse::All;
+        let active = groups.and_then(|(_, target)| {
+            self.active_tag_group
+                .filter(|(context, _, _)| *context == target)
+                .map(|(_, block, index)| (block, index))
+        });
+        let selected = active
+            .and_then(|(block, index)| {
+                groups
+                    .and_then(|(filter, _)| filter.retained.tag_blocks.get(block))
+                    .and_then(|b| b.get(index))
             })
-            .collect()
+            .map(|group| {
+                if group.any.is_empty() {
+                    group.all.as_slice()
+                } else {
+                    group.any.as_slice()
+                }
+            })
+            .unwrap_or(selected);
+        let mut input_items = Vec::new();
+        let mut caret_index = None;
+        let mut positions = Vec::new();
+        if let Some((filter, target)) = groups {
+            for (block, alternatives) in filter.retained.tag_blocks.iter().enumerate() {
+                for (index, group) in alternatives.iter().enumerate() {
+                    let editable = editable_tag_group(group);
+                    let item = self.tag_group_chip(group, Some((target, block, index)));
+                    input_items.push(if editable {
+                        iced::widget::mouse_area(item)
+                            .on_press(Message::SelectTagGroup(target, Some((block, index))))
+                            .into()
+                    } else {
+                        item
+                    });
+                    if editable {
+                        positions.push(((block, index), input_items.len()));
+                    }
+                    if active == Some((block, index)) {
+                        caret_index = Some(input_items.len());
+                    }
+                    if let Some(separator) =
+                        tag_group_separator(&filter.retained.tag_blocks, block, index)
+                    {
+                        input_items.push(ty::label(separator).into());
+                    }
+                }
+            }
+            if !input_items.is_empty() && !filter.tags.is_empty() {
+                input_items.push(ty::label("AND").into());
+            }
+            input_items.extend(self.tag_selection_chips(&filter.tags, &[], Some(on_toggle), None));
+            if active.is_some() {
+                input_items.push(
+                    iced::widget::mouse_area(space::horizontal().width(20).height(28))
+                        .on_press(Message::SelectTagGroup(target, None))
+                        .into(),
+                );
+            }
+        } else {
+            input_items = self.tag_selection_chips(selected, &[], Some(on_toggle), None);
+        }
+        let caret_index = caret_index.unwrap_or(input_items.len());
+        let active_position = active
+            .and_then(|group| positions.iter().position(|(id, _)| *id == group))
+            .unwrap_or(positions.len());
+        let previous = groups.and_then(|(_, target)| {
+            active_position
+                .checked_sub(1)
+                .map(|index| Message::SelectTagGroup(target, Some(positions[index].0)))
+        });
+        let next = groups.and_then(|(_, target)| {
+            (active_position < positions.len()).then(|| {
+                Message::SelectTagGroup(
+                    target,
+                    positions.get(active_position + 1).map(|(id, _)| *id),
+                )
+            })
+        });
+        input_items.push(
+            iced::widget::text_input(
+                if input_items.is_empty() {
+                    "Find a tag or category"
+                } else {
+                    ""
+                },
+                &self.tag_query,
+            )
+            .id(iced::widget::Id::new(TAG_QUERY_ID))
+            .on_input(Message::TagQuery)
+            .style(iad::styles::text_input::embedded)
+            .padding([4, 2])
+            .size(14)
+            .width(Length::Fill)
+            .into(),
+        );
+        let mut controls = row![w::tooltip(
+            crate::icons::section_button(Icon::Tag, Message::TagBrowseToggle, all_tags),
+            if all_tags {
+                "Show categories"
+            } else {
+                "Show all tags"
+            },
+            w::TooltipPosition::Bottom,
+        )]
+        .spacing(2)
+        .align_y(Alignment::Center);
+        if let Some((_, target)) = groups {
+            controls = controls.push(w::tooltip(
+                crate::icons::section_button(Icon::ListAdd, Message::CommitTagGroup(target), false),
+                "Finish this tag group and start a new one",
+                w::TooltipPosition::Bottom,
+            ));
+        }
+        let back: Element<'a> = if matches!(self.tag_browse, TagBrowse::Category(_)) {
+            crate::icons::icon_button(Icon::GoPrevious)
+                .on_press(Message::TagCategories)
+                .into()
+        } else {
+            space::horizontal().width(0).into()
+        };
+        let input = if groups.is_some() {
+            crate::components::tags_input::flow_with_caret(
+                input_items,
+                caret_index,
+                &self.tag_query,
+                previous,
+                next,
+            )
+        } else {
+            crate::components::tags_input::flow(input_items)
+        };
+        let search = w::EntryRow::new(
+            "Tags",
+            w::EntryInput::Custom(
+                row![back, input, controls]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into(),
+            ),
+        )
+        .flat(true);
+        let content = column![search].spacing(8).width(Length::Fill);
+        let choices: Result<Element<'a>, String> = match &self.tag_browse {
+            TagBrowse::Categories => {
+                self.backend
+                    .tag_categories(&self.tag_query)
+                    .map(|categories| {
+                        let options = categories.into_iter().map(|key| {
+                            let label = key.as_deref().unwrap_or("Custom").to_string();
+                            let style = self.category_style(key.as_deref());
+                            ChipOption::new(key, label)
+                                .icon(crate::icons::for_key(&style.icon))
+                                .color(style.color)
+                        });
+                        // The category list is deliberately unbounded. It is navigation, not a filter.
+                        ChipGroup::new(options, &[], Message::TagCategory)
+                            .empty_text("No matching categories")
+                            .into()
+                    })
+            }
+            mode => {
+                let category = match mode {
+                    TagBrowse::Category(key) => Some(key.as_deref().unwrap_or("")),
+                    _ => None,
+                };
+                self.backend
+                    .tag_choices(&self.tag_query, category)
+                    .map(|tags| {
+                        let options = tags.into_iter().map(|tag| {
+                            let style = self.tag_style(&tag.name);
+                            ChipOption::new(tag.name, tag.value)
+                                .icon(crate::icons::for_key(&style.icon))
+                                .color(style.color)
+                        });
+                        ChipGroup::new(options, selected, move |tag| match groups {
+                            Some((_, target)) => Message::FilterTagToggle(target, tag),
+                            None => on_toggle(tag),
+                        })
+                        .max_lines(self.chip_line_limit)
+                        .expandable(self.chip_expanded[picker as usize], move |on| {
+                            Message::ChipExpand(picker, on)
+                        })
+                        .empty_text("No matching tags")
+                        .into()
+                    })
+            }
+        };
+        match choices {
+            Ok(choices) => content.push(choices).into(),
+            Err(error) => content
+                .push(ty::caption(format!("Cannot load tags: {error}")))
+                .into(),
+        }
     }
 
     /// The fields of a filter, as chips: the tags (all of them are listed, with a search), the
-    /// artists and the albums (any of the chosen ones; only the top two lines of chips, found by
+    /// artists and the albums (any of the chosen ones; initially two lines of chips, found by
     /// typing), then the tempo. Shared by the jam's Tag filters and the playlist-filter editor,
     /// each with its own messages.
     pub fn filter_fields<'a>(
@@ -75,11 +315,9 @@ impl App {
         let (artists, no_artist) = self.lib.artist_choices();
         let (albums, no_album) = self.lib.album_choices();
         column![
-            ChipGroup::new(self.tag_options(""), &filter.tags, msgs.tag)
-                .search(&self.tag_query, Message::TagQuery)
-                .placeholder("Find a tag")
-                .on_color(Color::WHITE),
+            self.filter_tag_picker(filter, msgs),
             self.names_picker(
+                ChipPicker::Artists,
                 "Artists",
                 artists,
                 no_artist,
@@ -91,6 +329,7 @@ impl App {
                 "Find an artist",
             ),
             self.names_picker(
+                ChipPicker::Albums,
                 "Albums",
                 albums,
                 no_album,
@@ -107,12 +346,13 @@ impl App {
         .width(Length::Fill)
     }
 
-    /// Artists or albums as chips with a search entry: the chosen ones first, then those with the
-    /// most tracks, then the "unknown" one; clipped to two lines, so typing is how the rest is
+    /// Artists or albums as chips with a search entry: most tracks first, then the "unknown"
+    /// one; selection keeps that order. Clamped with an inline chevron, and typing is how the rest is
     /// found. Several chosen are "any of".
     #[allow(clippy::too_many_arguments)]
     fn names_picker<'a>(
         &'a self,
+        picker: ChipPicker,
         title: &'static str,
         choices: Vec<(String, usize)>,
         unknown_count: usize,
@@ -130,17 +370,20 @@ impl App {
                 key.to_string()
             }
         };
-        let mut options: Vec<ChipOption<String>> = selected
+        // Keep choice positions stable when selection changes; only their color changes.
+        let mut options: Vec<ChipOption<String>> = choices
             .iter()
-            .map(|k| ChipOption::new(k.clone(), label_of(k)))
+            .map(|(name, _)| ChipOption::new(name.clone(), name.clone()))
             .collect();
-        for (name, _) in &choices {
-            if !selected.contains(name) {
-                options.push(ChipOption::new(name.clone(), name.clone()));
-            }
-        }
-        if unknown_count > 0 && !selected.iter().any(|k| k == data::UNKNOWN) {
+        if unknown_count > 0 {
             options.push(ChipOption::new(data::UNKNOWN.to_string(), unknown_label));
+        }
+        for name in selected {
+            if !choices.iter().any(|(choice, _)| choice == name)
+                && (name != data::UNKNOWN || unknown_count == 0)
+            {
+                options.push(ChipOption::new(name.clone(), label_of(name)));
+            }
         }
         column![
             row![
@@ -149,12 +392,17 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
+            iced::widget::text_input(placeholder, query)
+                .on_input(on_query)
+                .padding(10)
+                .style(iad::styles::text_input::default),
             ChipGroup::new(options, selected, on_toggle)
-                .search(query, on_query)
-                .placeholder(placeholder)
-                .max_lines(2)
-                .empty_text("No match")
-                .on_color(Color::WHITE),
+                .query(query)
+                .max_lines(self.name_chip_line_limit)
+                .expandable(self.chip_expanded[picker as usize], move |on| {
+                    Message::ChipExpand(picker, on)
+                })
+                .empty_text("No match"),
         ]
         .spacing(8)
         .into()
@@ -169,11 +417,27 @@ impl App {
     ) -> Element<'a> {
         let (lo, hi) = filter.bpm;
         // Built here: it depends on the filter's tags, so nothing is kept in the app.
-        let histogram =
-            Histogram::from_counts(data::BPM.0, data::BPM.1, self.lib.bpm_histogram(filter, 12));
+        let mut spec = filter.search_spec();
+        spec.bpm_min = None;
+        spec.bpm_max = None;
+        let mut bins = vec![0; 12];
+        for index in self.backend.matching(&spec).unwrap_or_default() {
+            if let Some(track) = self.lib.tracks.get(index)
+                && (data::BPM.0..=data::BPM.1).contains(&track.bpm)
+            {
+                let bin = (((track.bpm - data::BPM.0) / (data::BPM.1 - data::BPM.0) * 12.0)
+                    as usize)
+                    .min(11);
+                bins[bin] += 1;
+            }
+        }
+        let histogram = Histogram::from_counts(data::BPM.0, data::BPM.1, bins);
         let band = |label: &'static str, r: (f32, f32)| -> Element<'a> {
             let b = w::flat_button(ty::label(label)).on_press(on_bpm(r));
-            if filter.bpm == r {
+            if filter.bpm == r
+                && (r != data::BPM
+                    || (filter.to_spec().bpm_min.is_none() && filter.to_spec().bpm_max.is_none()))
+            {
                 w::suggested_button(ty::label(label))
                     .on_press(on_bpm(r))
                     .into()
@@ -185,11 +449,7 @@ impl App {
             row![
                 ty::heading("Tempo"),
                 space::horizontal(),
-                ty::body(if filter.bpm == data::BPM {
-                    "any".to_string()
-                } else {
-                    format!("{lo:.0}–{hi:.0} BPM")
-                }),
+                ty::body(filter.bpm_label()),
             ]
             .align_y(Alignment::Center),
             // One component: the bars and the thumbs edit the same range.
@@ -198,9 +458,9 @@ impl App {
                 .height(48.0),
             row![
                 band("Any", data::BPM),
-                band("Slow · under 90", (60.0, 90.0)),
+                band("Slow · 60–90", (60.0, 90.0)),
                 band("Mid · 90–120", (90.0, 120.0)),
-                band("Fast · 120+", (120.0, 180.0)),
+                band("Fast · 120–180", (120.0, 180.0)),
             ]
             .spacing(6)
             .wrap(),
@@ -211,43 +471,118 @@ impl App {
 
     // ---- jam ----------------------------------------------------------------------------
 
-    /// An icon button with a tooltip, and a count badge when `count` is more than none.
-    fn badged_icon(
+    /// An icon button with a tiny accent dot when its filter is active.
+    pub(super) fn active_filter_icon(
         &self,
         icon: Icon,
         tip: &'static str,
-        count: usize,
+        active: bool,
         on_press: Message,
     ) -> Element<'_> {
-        let mut r = row![w::icon_button(icon).on_press(on_press)]
-            .spacing(2)
-            .align_y(Alignment::Center);
-        if count > 0 {
-            r = r.push(
-                w::Badge::count(count as u32, 99)
-                    .role(iad::Role::Accent)
-                    .solid(true),
-            );
+        let dot = container(space::horizontal().width(6).height(6)).style(|theme: &iad::Theme| {
+            iced::widget::container::Style {
+                background: Some(theme.semantic.accent.bg.into()),
+                border: iced::Border::default().rounded(3),
+                ..Default::default()
+            }
+        });
+        let metrics = iad::Metrics::desktop();
+        let button =
+            iad::layouts::Indicator::new(crate::icons::icon_button(icon).on_press(on_press), dot)
+                .offset((metrics.button_min_height - metrics.icon_size) / 2.0)
+                .show(active);
+        w::tooltip(button, tip, w::TooltipPosition::Bottom)
+    }
+
+    /// Shared tag presentation for picker inputs and page summaries.
+    /// Page summaries can omit removal actions while keeping identical labels and spacing.
+    pub(super) fn tag_selection_chips<'a>(
+        &'a self,
+        selected: &[String],
+        blocks: &[Vec<weave_player_lib::core::TagFilter>],
+        on_toggle: Option<fn(String) -> Message>,
+        target: Option<FilterTarget>,
+    ) -> Vec<Element<'a>> {
+        let mut chips = Vec::new();
+        for (block_index, block) in blocks.iter().enumerate() {
+            for (index, group) in block.iter().enumerate() {
+                chips.push(
+                    self.tag_group_chip(group, target.map(|target| (target, block_index, index))),
+                );
+                if let Some(separator) = tag_group_separator(blocks, block_index, index) {
+                    chips.push(ty::label(separator).into());
+                }
+            }
         }
-        w::tooltip(r, tip, w::TooltipPosition::Bottom)
+        if !chips.is_empty() && !selected.is_empty() {
+            chips.push(ty::label("AND").into());
+        }
+        for tag in selected {
+            chips.push(self.selection_tag_chip(tag, on_toggle.map(|toggle| toggle(tag.clone()))));
+        }
+        chips
+    }
+
+    fn selection_tag_chip<'a>(&'a self, name: &str, remove: Option<Message>) -> Element<'a> {
+        let style = self.tag_style(name);
+        let mut chip = w::Chip::new(crate::components::tag_badge::value_of(name))
+            .size(ChipSize::Medium)
+            .icon(crate::icons::for_key(&style.icon))
+            .color(style.color);
+        if let Some(remove) = remove {
+            chip = chip.on_remove(remove);
+        }
+        chip.into()
+    }
+
+    fn tag_group_chip<'a>(
+        &'a self,
+        group: &weave_player_lib::core::TagFilter,
+        remove: Option<(FilterTarget, usize, usize)>,
+    ) -> Element<'a> {
+        let parts = tag_group_parts(group)
+            .into_iter()
+            .filter(|part| {
+                !matches!(part, TagGroupPart::Operator("(" | ")"))
+                    && !(editable_tag_group(group) && matches!(part, TagGroupPart::Operator("+")))
+            })
+            .map(|part| match part {
+                TagGroupPart::Tag(name) => {
+                    let remove = remove.filter(|_| editable_tag_group(group)).map(
+                        |(target, block, index)| {
+                            Message::RemoveGroupedTag(target, block, index, name.clone())
+                        },
+                    );
+                    self.selection_tag_chip(&name, remove)
+                }
+                TagGroupPart::Operator(",") if editable_tag_group(group) => ty::label("OR").into(),
+                TagGroupPart::Operator(text) => ty::label(text).into(),
+            });
+        row(parts)
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .wrap()
+            .into()
     }
 
     /// The active filters as chips, each clearing itself. `None` when nothing is active. The search
     /// text is not among them: it lives in the search bar.
-    fn active_chips(&self) -> Option<Element<'_>> {
+    pub(super) fn active_chips(&self) -> Option<Element<'_>> {
         let f = &self.filter;
-        let mut chips: Vec<Element<'_>> = f
-            .tags
-            .iter()
-            .map(|t| {
-                tag_chip_removable(
-                    t,
-                    &self.lib.style_of(t),
-                    ChipSize::Medium,
-                    Message::ToggleTag(t.clone()),
-                )
-            })
-            .collect();
+        let mut chips = self.tag_selection_chips(
+            &f.tags,
+            &f.retained.tag_blocks,
+            Some(Message::ToggleTag),
+            Some(FilterTarget::Jam),
+        );
+        if let Some(days) = f.imported_within_days {
+            chips.push(
+                w::Chip::new(format!("Recently imported · {days} days"))
+                    .size(ChipSize::Medium)
+                    .on_remove(Message::JamRecent(false))
+                    .into(),
+            );
+        }
         if f.bpm != data::BPM {
             let (lo, hi) = f.bpm;
             chips.push(
@@ -284,43 +619,7 @@ impl App {
         (!chips.is_empty()).then(|| row(chips).spacing(6).wrap().into())
     }
 
-    /// The search at the top right of the Jam page: an icon that opens a pill-shaped search bar.
-    /// What is typed only narrows the table; it is not kept, nor saved with a playlist.
-    fn jam_search(&self) -> Element<'_> {
-        let narrow = self.is_narrow();
-        let control: Element<'_> = if self.jam_search_open {
-            w::FocusScope::new(
-                w::search_bar(&self.filter.q, Message::JamQuery)
-                    .placeholder("Search tracks, artists, albums")
-                    .on_close(Message::JamSearchOpen(false))
-                    .id(JAM_SEARCH_ID)
-                    .width(if narrow {
-                        Length::Fill
-                    } else {
-                        Length::Fixed(360.0)
-                    }),
-            )
-            .trap(false)
-            .initial_focus(JAM_SEARCH_ID)
-            .into()
-        } else {
-            w::tooltip(
-                w::icon_button(Icon::Search).on_press(Message::JamSearchOpen(true)),
-                "Search",
-                w::TooltipPosition::Left,
-            )
-        };
-        container(control)
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Right)
-            .padding(12) // gutter-ok: a control laid over the header
-            .into()
-    }
-
-    /// The Jam page, with the look of an Album or Playlist page: a header with the active filters,
-    /// icon buttons (Play, Tag filters) and, at the far corner, the match count and Save as
-    /// playlist (below the buttons on narrow); the search at the top right; then the matching
-    /// tracks in a sortable table.
+    /// Jam uses the shared detail header: Play left, filter/sort/save actions right.
     pub fn jam_page(&self) -> Element<'_> {
         let narrow = self.is_narrow();
         let n = self.rows.len();
@@ -330,77 +629,66 @@ impl App {
             .filter(|(_, f)| *f == self.filter)
             .map(|(i, _)| *i);
         let save: Element<'_> = match saved {
-            Some(i) => w::flat_button(
-                row![
-                    Icon::Check.view(16.0),
-                    ty::label(format!("Saved as {}", self.lib.playlists[i].name)),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::Open(crate::Dest::Playlist(i)))
-            .into(),
+            Some(i) => w::tooltip(
+                crate::icons::icon_button(Icon::Check)
+                    .on_press(Message::Open(crate::Dest::Playlist(i))),
+                format!("Saved as {}", self.lib.playlists[i].name),
+                w::TooltipPosition::Bottom,
+            ),
             None => {
                 let can = self.filter.is_saveable() && n > 0;
-                let button = w::flat_button(
-                    row![Icon::ListAdd.view(16.0), ty::label("Save as playlist")]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
+                w::tooltip(
+                    self.icon_action(Icon::ListAdd, can.then_some(Message::SaveJamAsPlaylist)),
+                    if self.filter.is_saveable() {
+                        "Save as playlist"
+                    } else {
+                        "Add a tag, tempo, artist or album to save"
+                    },
+                    w::TooltipPosition::Bottom,
                 )
-                .on_press_maybe(can.then_some(Message::SaveJamAsPlaylist));
-                if self.filter.is_saveable() {
-                    button.into()
-                } else {
-                    // The search is not saved, so a playlist needs a tag, tempo, artist or album.
-                    w::tooltip(
-                        button,
-                        "Add a tag, tempo, artist or album to save",
-                        w::TooltipPosition::Bottom,
-                    )
-                }
             }
         };
         let matches = ty::caption(format!("{n} matches")).style(iad::styles::text::dim);
         let chips = self.active_chips().unwrap_or_else(|| {
-            ty::caption("No filters: every track matches.")
-                .style(iad::styles::text::dim)
-                .into()
+            container(
+                ty::caption("No filters: every track matches.")
+                    .size(iad::Metrics::desktop().space_m + 1.0)
+                    .style(iad::styles::text::dim),
+            )
+            .height(ChipSize::Medium.height(&iad::Metrics::desktop()))
+            .align_y(Alignment::Center)
+            .into()
         });
         let play = w::suggested_circular_button(Icon::Play.view(20.0))
             .size(44.0)
             .on_press_maybe((n > 0).then_some(Message::StartJam));
-        let tag_filters = self.badged_icon(
+        let tag_filters = self.active_filter_icon(
             Icon::Filter,
             "Tag filters",
-            self.filter.tag_count(),
+            self.filter.tag_count() > 0,
             Message::JamFilters(true),
         );
         let cover: Element<'_> = w::avatar(96.0, "Jam")
             .icon(Icon::Sparkle)
             .shape(w::AvatarShape::Rounded)
             .into();
-        let mut header = w::DetailHeader::new("Jam")
+        let header = crate::components::MediaHeader::new("Jam")
             .kind("Tracks by filters")
             .cover(cover)
-            .primary(play)
+            .primary(row![play, matches].spacing(12).align_y(Alignment::Center))
             .action(tag_filters)
+            .action(self.collection_sort_control())
+            .action(save)
             .facts(chips)
-            .tint(iad::color::from_index(7))
             .narrow(narrow);
-        // Wide: at the far corner of the header. Narrow: below the buttons, as its own row.
-        let mut below = None;
-        if narrow {
-            below = Some(row![matches, space::horizontal(), save].align_y(Alignment::Center));
+        let top: Element<'_> = if self.search_open {
+            self.page_search_bar()
         } else {
-            header = header.end(row![matches, save].spacing(12).align_y(Alignment::Center));
-        }
-        let header: Element<'_> = header.into();
-        let top: Element<'_> = iced::widget::stack![header, self.jam_search()]
-            .width(Length::Fill)
-            .into();
+            header.into()
+        };
         let mut page = column![top].spacing(8).height(Length::Fill);
-        if let Some(row) = below {
-            page = page.push(surface::band(row));
+        if let Some(error) = &self.query_error {
+            page = page.push(ty::caption(error.clone()));
         }
         page = page.push(self.virtual_tracks(RowOpts {
             album: true,
@@ -412,56 +700,84 @@ impl App {
 
     // ---- jam filters --------------------------------------------------------------------
 
-    /// The jam's filters, edited live: a header with the matches, Clear filters and Done, then the
-    /// shared filter fields. The same content in the dialog (wide) and the full-screen sheet
-    /// (narrow).
-    fn jam_filters_form(&self) -> Element<'_> {
-        let n = self.lib.filtered(&self.filter).len();
-        column![
-            row![
-                ty::title_3("Tag filters"),
-                ty::caption(format!("{n} matches")),
-                space::horizontal(),
-                w::tooltip(
-                    w::flat_button(ty::label("🎲")).on_press(Message::Surprise),
-                    "Surprise me",
-                    w::TooltipPosition::Bottom,
-                ),
-                w::tooltip(
-                    w::icon_button(Icon::Delete).on_press_maybe(
-                        (self.filter.tag_count() > 0).then_some(Message::ClearTagFilters)
-                    ),
-                    "Clear tag filters",
-                    w::TooltipPosition::Bottom,
-                ),
-                w::suggested_button(ty::label("Done")).on_press(Message::JamFilters(false)),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            scrollable(self.filter_fields(&self.filter, JAM_FILTER)).height(Length::Fill),
-        ]
-        .spacing(12)
-        .into()
+    pub(super) fn prepare_filter_editor(&mut self) {
+        self.active_tag_group = None;
+        self.chip_expanded = [false; 4];
+        self.tag_browse = TagBrowse::Categories;
+        self.tag_query.clear();
+        self.artist_query.clear();
+        self.album_query.clear();
     }
 
-    /// The jam's filters as a dialog (wide).
-    pub fn jam_filters_dialog(&self) -> Element<'_> {
-        container(self.jam_filters_form())
-            .padding(20) // gutter-ok: a component's own padding, not a page gutter
-            .width(Length::Fixed(560.0))
-            .height(Length::Fixed(520.0))
-            .style(iad::styles::container::popover)
-            .into()
+    /// Modal context is derived once; presentation never belongs to an individual page.
+    pub(super) fn active_filter_context(&self) -> Option<FilterTarget> {
+        if self.draft.is_some() {
+            Some(FilterTarget::Draft)
+        } else if self.page_filters_open {
+            Some(FilterTarget::Page)
+        } else if self.jam_open && self.jam_filters_open {
+            Some(FilterTarget::Jam)
+        } else {
+            None
+        }
     }
 
-    /// The jam's filters as a full-screen bottom sheet (narrow).
-    pub fn jam_filters_sheet(&self) -> Element<'_> {
-        container(self.jam_filters_form())
-            .padding(20) // gutter-ok: a component's own padding, not a page gutter
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(iad::styles::container::window)
-            .into()
+    pub(super) fn filter_close(&self, context: FilterTarget) -> Message {
+        match context {
+            FilterTarget::Jam => Message::JamFilters(false),
+            FilterTarget::Page => Message::PageFilters(false),
+            FilterTarget::Draft => Message::CancelFilter,
+        }
+    }
+
+    pub(super) fn filter_editor(&self, context: FilterTarget) -> Element<'_> {
+        use crate::components::filter_editor::FilterEditor;
+        let close = self.filter_close(context);
+        match context {
+            FilterTarget::Jam => FilterEditor::new(
+                "Tag filters",
+                self.filter_fields(&self.filter, FilterMsgs::for_target(context))
+                    .into(),
+                close.clone(),
+                "Done",
+                close,
+            )
+            .subtitle(format!("{} matches", self.matching(&self.filter).len()))
+            .action(w::tooltip(
+                crate::icons::icon_button(Icon::Dice).on_press(Message::Surprise),
+                "Surprise me",
+                w::TooltipPosition::Bottom,
+            ))
+            .action(w::tooltip(
+                self.icon_action(
+                    Icon::Reset,
+                    (self.filter.tag_count() > 0).then_some(Message::ClearTagFilters),
+                ),
+                "Clear tag filters",
+                w::TooltipPosition::Bottom,
+            ))
+            .into(),
+            FilterTarget::Page => FilterEditor::new(
+                if self.dest == Dest::AboutMe {
+                    "Listening filters"
+                } else {
+                    "Rediscover filters"
+                },
+                self.page_filter_fields(),
+                close.clone(),
+                "Done",
+                close,
+            )
+            .into(),
+            FilterTarget::Draft => {
+                let draft = self.draft.as_ref().expect("active playlist filter draft");
+                FilterEditor::new("Playlist filter", self.playlist_filter_editor(draft), close.clone(), "Save rules", Message::SaveFilter)
+                    .subtitle(if self.manual_playlist().is_some() {
+                        "Rules limit the tracks offered when adding. Saving changes asks before removing disqualified tracks."
+                    } else { "The playlist holds every track that matches these rules, now and as the library changes." })
+                    .cancel(close).into()
+            }
+        }
     }
 
     // ---- save as playlist --------------------------------------------------------------
@@ -472,7 +788,11 @@ impl App {
         let taken = self.name_is_taken(&name);
         let can = !name.trim().is_empty() && !taken;
         let mut col = column![
-            ty::title_3("Save as playlist"),
+            ty::title_3(if self.save_manual {
+                "New playlist"
+            } else {
+                "Save as playlist"
+            }),
             iced::widget::text_input("Playlist name", &name)
                 .id(SAVE_NAME_ID)
                 .on_input(Message::SaveNameInput)
@@ -485,11 +805,19 @@ impl App {
                     .style(iad::styles::text::error),
             );
         }
-        col = col.push(
-            ty::caption(format!("Saves: {}.", self.filter_sentence(&self.filter)))
-                .style(iad::styles::text::dim),
-        );
-        if !self.filter.q.trim().is_empty() {
+        if self.save_manual {
+            col = col
+                .push(ty::caption(
+                    "Rules limit the tracks offered when adding. Your playlist starts empty.",
+                ))
+                .push(self.playlist_filter_editor(&self.creation_filter));
+        } else {
+            col = col.push(
+                ty::caption(format!("Saves: {}.", self.filter_sentence(&self.filter)))
+                    .style(iad::styles::text::dim),
+            );
+        }
+        if !self.save_manual && !self.filter.q.trim().is_empty() {
             col = col.push(
                 ty::caption(format!(
                     "The search text “{}” is not saved.",
@@ -501,9 +829,16 @@ impl App {
         col = col.push(
             row![
                 space::horizontal(),
-                w::flat_button(ty::label("Cancel")).on_press(Message::CancelSaveJam),
-                w::suggested_button(ty::label("Save"))
-                    .on_press_maybe(can.then_some(Message::ConfirmSaveJam)),
+                w::tooltip(
+                    crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelSaveJam),
+                    "Cancel",
+                    w::TooltipPosition::Bottom
+                ),
+                w::tooltip(
+                    self.icon_action(Icon::Check, can.then_some(Message::ConfirmSaveJam)),
+                    "Save playlist",
+                    w::TooltipPosition::Bottom
+                ),
             ]
             .spacing(8),
         );
@@ -511,6 +846,20 @@ impl App {
             .trap(false)
             .initial_focus(SAVE_NAME_ID)
             .into()
+    }
+
+    pub fn create_playlist_page(&self) -> Element<'_> {
+        iad::prelude::surface::scrolling(self.save_playlist_form())
+    }
+
+    /// Shared rules editor for creation and editing a playlist.
+    fn playlist_filter_editor<'a>(&'a self, filter: &'a Filter) -> Element<'a> {
+        column![
+            ty::caption(self.filter_sentence(filter)),
+            self.filter_fields(filter, FilterMsgs::for_target(FilterTarget::Draft)),
+        ]
+        .spacing(8)
+        .into()
     }
 
     /// Save as playlist as a dialog (wide).
@@ -528,6 +877,69 @@ impl App {
             .padding(20) // gutter-ok: a component's own padding, not a page gutter
             .width(Length::Fill)
             .into()
+    }
+
+    /// Uses the same engine search and row controls as the library, without changing page search.
+    pub fn playlist_tracks_form(&self) -> Element<'_> {
+        let Dest::Playlist(index) = self.dest else {
+            return space().into();
+        };
+        let playlist = &self.lib.playlists[index];
+        let results: Element<'_> = match self
+            .backend
+            .playlist_add_candidates(&playlist.name, &self.playlist_tracks_query)
+        {
+            Ok(ids) => {
+                let mut rows = column![].spacing(4);
+                if ids.is_empty() {
+                    rows = rows.push(ty::caption("No tracks match these rules and search."));
+                }
+                for id in ids {
+                    let track = self.track(id);
+                    let present = playlist.tracks.contains(&id);
+                    rows = rows.push(
+                        w::action_row(track.title.clone())
+                            .subtitle(track.by_line())
+                            .prefix(cover(track.id, 40.0))
+                            .suffix(w::tooltip(
+                                crate::icons::icon_button(if present {
+                                    Icon::Delete
+                                } else {
+                                    Icon::ListAdd
+                                })
+                                .on_press(Message::PlaylistTrackToggle(id)),
+                                if present {
+                                    "Remove from playlist"
+                                } else {
+                                    "Add to playlist"
+                                },
+                                w::TooltipPosition::Bottom,
+                            )),
+                    );
+                }
+                scrollable(rows).height(Length::Fill).into()
+            }
+            Err(error) => ty::body(format!("Cannot search: {error}")).into(),
+        };
+        column![
+            row![
+                ty::title_3("Playlist tracks"),
+                space::horizontal(),
+                w::tooltip(
+                    crate::icons::icon_button(Icon::WindowClose)
+                        .on_press(Message::PlaylistTracksOpen(false)),
+                    "Done",
+                    w::TooltipPosition::Bottom
+                ),
+            ]
+            .align_y(Alignment::Center),
+            w::search_bar(&self.playlist_tracks_query, Message::PlaylistTracksQuery)
+                .placeholder("Search library tracks"),
+            results,
+        ]
+        .spacing(12)
+        .height(Length::Fill)
+        .into()
     }
 
     // ---- delete playlist ----------------------------------------------------------------
@@ -607,24 +1019,30 @@ impl App {
         let mut rows: Vec<Element<'_>> = Vec::new();
         if let Some(name) = &draft.name {
             rows.push(
-                w::EntryRow::new("Name", name.as_str())
-                    .on_input(Message::NameInput)
-                    .on_submit(Message::SaveDetails)
-                    .into(),
+                w::TextEntry::from_input(
+                    "Name",
+                    w::entry("", name.as_str())
+                        .on_input(Message::NameInput)
+                        .on_submit(Message::SaveDetails),
+                )
+                .into(),
             );
         }
         rows.push(
-            w::EntryRow::new("Description", draft.description.as_str())
-                .on_input(Message::DescInput)
-                .on_submit(Message::SaveDetails)
-                .into(),
+            w::TextEntry::from_input(
+                "Description",
+                w::entry("", draft.description.as_str())
+                    .on_input(Message::DescInput)
+                    .on_submit(Message::SaveDetails),
+            )
+            .into(),
         );
         let fields = container(w::boxed_list(rows)).width(Length::Fill);
         column![
             row![
                 ty::title_3("Edit details"),
                 space::horizontal(),
-                w::icon_button(Icon::WindowClose).on_press(Message::CancelDetails),
+                crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelDetails),
             ]
             .align_y(Alignment::Center),
             row![cover, fields].spacing(16).align_y(Alignment::Center),
@@ -655,26 +1073,26 @@ impl App {
             .into()
     }
 
-    /// The rules of a dynamic playlist. Modal and not dismissable: Cancel or Save.
-    pub fn filter_dialog<'a>(&'a self, draft: &'a Filter) -> Element<'a> {
-        container(
-            column![
-                ty::title_3("Playlist filter"),
-                ty::caption(
-                    "The playlist holds every track that matches these rules, now and as the library changes."
-                ),
-                scrollable(self.filter_fields(draft, DRAFT_FILTER)).height(Length::Fixed(380.0)),
-                row![
-                    space::horizontal(),
-                    w::flat_button(ty::label("Cancel")).on_press(Message::CancelFilter),
-                    w::suggested_button(ty::label("Save")).on_press(Message::SaveFilter),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12),
-        )
-        .padding(20) // gutter-ok: a component's own padding, not a page gutter
-        .width(Length::Fixed(520.0))
+    pub fn manual_filter_confirmation<'a>(
+        &'a self,
+        review: &'a crate::ManualFilterReview,
+    ) -> Element<'a> {
+        let n = review.removed.len();
+        container(column![
+            ty::title_3(if n == 0 { "Save rule changes?".to_string() } else { format!("Remove {n} track{}?", if n == 1 { "" } else { "s" }) }),
+            ty::body(if n == 0 {
+                "These changes disqualify 0 tracks. All curated tracks will stay in the playlist.".to_string()
+            } else {
+                format!("{n} track{} in “{}” will no longer qualify under these rules and will be removed from the playlist.", if n == 1 { "" } else { "s" }, review.name)
+            }),
+            row![
+                space::horizontal(),
+                w::tooltip(crate::icons::icon_button(Icon::WindowClose).on_press(Message::CancelManualFilterReview), "Keep editing", w::TooltipPosition::Bottom),
+                w::tooltip(crate::icons::icon_button(Icon::Check).on_press(Message::ConfirmManualFilter), if n == 0 { "Save rules" } else { "Save rules and remove tracks" }, w::TooltipPosition::Bottom),
+            ].spacing(8),
+        ].spacing(12))
+        .padding(20)
+        .width(Length::Fixed((self.win_w - 40.0).clamp(200.0, 440.0)))
         .style(iad::styles::container::popover)
         .into()
     }
@@ -686,10 +1104,15 @@ impl App {
             column![
                 ty::title_3(format!("Tags · {}", t.title)),
                 ty::caption(t.by_line()),
-                ChipGroup::new(self.tag_options(""), &e.tags, Message::EditToggleTag)
-                    .search(&self.tag_query, Message::TagQuery)
-                    .placeholder("Find a tag")
-                    .on_color(Color::WHITE),
+                container(
+                    scrollable(self.tag_picker(
+                        &e.tags,
+                        Message::EditToggleTag,
+                        ChipPicker::TrackTags
+                    ))
+                    .height(Length::Shrink)
+                )
+                .max_height((self.win_h - 170.0).clamp(40.0, 360.0)),
                 row![
                     space::horizontal(),
                     w::flat_button(ty::label("Cancel")).on_press(Message::CancelTrack),
@@ -746,7 +1169,7 @@ impl App {
         let tags = row(t
             .tags
             .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Small)))
+            .map(|g| tag_pill(g, &self.tag_style(g), ChipSize::Small)))
         .spacing(6)
         .wrap();
         container(
@@ -785,5 +1208,290 @@ impl App {
         .width(Length::Fixed(460.0))
         .style(iad::styles::container::popover)
         .into()
+    }
+}
+
+pub(super) fn filter_scroll_direction() -> iced::widget::scrollable::Direction {
+    iced::widget::scrollable::Direction::Vertical(
+        iced::widget::scrollable::Scrollbar::new()
+            .width(4)
+            .scroller_width(4),
+    )
+}
+
+#[derive(Debug, PartialEq)]
+enum TagGroupPart {
+    Tag(String),
+    Operator(&'static str),
+}
+
+fn tag_group_parts(group: &weave_player_lib::core::TagFilter) -> Vec<TagGroupPart> {
+    use TagGroupPart::{Operator, Tag};
+    use weave_player_lib::core::TagOp;
+
+    fn append(
+        parts: &mut Vec<TagGroupPart>,
+        names: impl IntoIterator<Item = String>,
+        separator: &'static str,
+        exact: bool,
+    ) {
+        for (index, name) in names.into_iter().enumerate() {
+            if index > 0 {
+                parts.push(Operator(separator));
+            }
+            if exact {
+                parts.push(Operator("="));
+            }
+            parts.push(Tag(name));
+        }
+    }
+
+    let mut parts = Vec::new();
+    append(&mut parts, group.all.clone(), "+", false);
+    for (names, prefix, suffix) in [(&group.any, "(", ")"), (&group.exclude, "without", "")] {
+        if !names.is_empty() {
+            if !parts.is_empty() {
+                parts.push(Operator("+"));
+            }
+            parts.push(Operator(prefix));
+            append(&mut parts, names.clone(), ",", false);
+            if !suffix.is_empty() {
+                parts.push(Operator(suffix));
+            }
+        }
+    }
+    for clause in &group.clauses {
+        if !parts.is_empty() {
+            parts.push(Operator("+"));
+        }
+        match clause.op {
+            TagOp::Any => parts.push(Operator("(")),
+            TagOp::Exclude => parts.push(Operator("without")),
+            TagOp::All => {}
+        }
+        for (index, alternatives) in clause.names().into_iter().enumerate() {
+            if index > 0 {
+                parts.push(Operator(if clause.op == TagOp::All { "+" } else { "," }));
+            }
+            append(&mut parts, alternatives, ",", clause.exact);
+        }
+        if clause.op == TagOp::Any {
+            parts.push(Operator(")"));
+        }
+    }
+    parts
+}
+
+pub(super) fn tag_group_label(group: &weave_player_lib::core::TagFilter) -> String {
+    let mut parts = group.all.clone();
+    if !group.any.is_empty() {
+        parts.push(format!("({})", group.any.join(", ")));
+    }
+    if !group.exclude.is_empty() {
+        parts.push(format!("without {}", group.exclude.join(", ")));
+    }
+    for clause in &group.clauses {
+        use weave_player_lib::core::TagOp;
+        let values = clause
+            .names()
+            .into_iter()
+            .map(|alternatives| {
+                alternatives
+                    .into_iter()
+                    .map(|name| {
+                        if clause.exact {
+                            format!("={name}")
+                        } else {
+                            name
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .collect::<Vec<_>>();
+        parts.push(match clause.op {
+            TagOp::All => values.join(" + "),
+            TagOp::Any => format!("({})", values.join(", ")),
+            TagOp::Exclude => format!("without {}", values.join(", ")),
+        });
+    }
+    parts.join(" + ")
+}
+
+impl App {
+    /// One row for system, light, and dark appearance, using application-owned icons.
+    pub(super) fn theme_mode_row(&self) -> Element<'_> {
+        let metrics = iad::Metrics::desktop();
+        let choice = |mode, icon: Icon, hint| {
+            w::ToggleItem::custom(
+                mode,
+                w::tooltip(
+                    icon.view(metrics.icon_size),
+                    hint,
+                    w::TooltipPosition::Bottom,
+                ),
+            )
+        };
+        let modes = w::toggle_group(
+            vec![
+                choice(None, Icon::Window, "Follow desktop appearance"),
+                choice(Some(iad::Scheme::Light), Icon::Sun, "Light appearance"),
+                choice(Some(iad::Scheme::Dark), Icon::Moon, "Dark appearance"),
+            ],
+            Some(self.theme_mode),
+            Message::ThemeMode,
+        );
+        w::action_row("Theme mode")
+            .suffix(modes)
+            .wrap_suffix(false)
+            .into()
+    }
+
+    /// One theme chooser shared by the desktop dialog and mobile bottom sheet.
+    pub(super) fn themes_form(&self) -> Element<'_> {
+        let mut choices = column![].spacing(6).width(Length::Fill);
+        let mut desktop = w::action_row("Desktop theme")
+            .subtitle("Follow the desktop appearance")
+            .on_activate(Message::SelectTheme(None));
+        if self.themes.selected.is_none() {
+            desktop = desktop.suffix(Icon::Check.view(16.0));
+        }
+        choices = choices.push(desktop);
+        for theme in &self.themes.themes {
+            let accent = theme
+                .config
+                .light_dark(self.effective_scheme(), "accent", None)
+                .unwrap_or_else(|| self.theme().semantic.accent.bg);
+            let swatch = container(space::horizontal().width(22).height(22)).style(move |_| {
+                iced::widget::container::Style {
+                    background: Some(accent.into()),
+                    border: iced::Border::default().rounded(11),
+                    ..Default::default()
+                }
+            });
+            let mut choice = w::action_row(theme.name.clone())
+                .subtitle(theme.key.clone())
+                .prefix(swatch)
+                .on_activate(Message::SelectTheme(Some(theme.key.clone())));
+            if self.themes.selected.as_deref() == Some(theme.key.as_str()) {
+                choice = choice.suffix(Icon::Check.view(16.0));
+            }
+            choices = choices.push(choice);
+        }
+        if self.themes.themes.is_empty() {
+            choices = choices.push(ty::caption("Import a theme file to add it here."));
+        }
+        let mut import = w::suggested_button(Icon::Document.view(16.0));
+        if !self.theme_import_pending {
+            import = import.on_press(Message::ImportTheme);
+        }
+        column![
+            row![
+                ty::title_3("Themes"),
+                space::horizontal(),
+                crate::icons::icon_button(Icon::WindowClose).on_press(Message::Themes(false))
+            ]
+            .align_y(Alignment::Center),
+            ty::caption("Choose a theme to apply it immediately."),
+            self.theme_mode_row(),
+            scrollable(choices)
+                .direction(filter_scroll_direction())
+                .height(Length::Fill),
+            row![
+                w::tooltip(
+                    import,
+                    if self.theme_import_pending {
+                        "Choosing theme…"
+                    } else {
+                        "Import theme…"
+                    },
+                    w::TooltipPosition::Top
+                ),
+                space::horizontal(),
+                w::tooltip(
+                    crate::icons::icon_button(Icon::Check).on_press(Message::Themes(false)),
+                    "Done",
+                    w::TooltipPosition::Top
+                )
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into()
+    }
+}
+
+#[cfg(test)]
+mod tag_group_tests {
+    use super::*;
+    use TagGroupPart::{Operator, Tag};
+    use weave_player_lib::core::{TagClause, TagFilter, TagOp};
+
+    #[test]
+    fn separators_only_appear_between_groups() {
+        let group = TagFilter {
+            any: vec!["genre:bachata".into()],
+            ..Default::default()
+        };
+        let single = vec![vec![group.clone()]];
+        assert_eq!(tag_group_separator(&single, 0, 0), None);
+        let alternatives = vec![vec![group.clone(), group.clone()]];
+        assert_eq!(tag_group_separator(&alternatives, 0, 0), Some(","));
+        assert_eq!(tag_group_separator(&alternatives, 0, 1), None);
+        let blocks = vec![vec![group.clone()], vec![group]];
+        assert_eq!(tag_group_separator(&blocks, 0, 0), Some("AND"));
+        assert_eq!(tag_group_separator(&blocks, 1, 0), None);
+    }
+
+    #[test]
+    fn or_groups_keep_individual_tag_identities_for_styled_pills() {
+        let group = TagFilter {
+            any: vec!["genre:bachata".into(), "mood:romantic".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            tag_group_parts(&group),
+            vec![
+                Operator("("),
+                Tag("genre:bachata".into()),
+                Operator(","),
+                Tag("mood:romantic".into()),
+                Operator(")"),
+            ]
+        );
+    }
+
+    #[test]
+    fn grouped_clauses_preserve_operators_and_exact_matching() {
+        let group = TagFilter {
+            all: vec!["mood:romantic".into()],
+            exclude: vec!["genre:rock".into()],
+            clauses: vec![TagClause {
+                op: TagOp::Any,
+                keys: vec!["genre".into(), "style".into()],
+                values: vec!["bachata".into()],
+                exact: true,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            tag_group_parts(&group),
+            vec![
+                Tag("mood:romantic".into()),
+                Operator("+"),
+                Operator("without"),
+                Tag("genre:rock".into()),
+                Operator("+"),
+                Operator("("),
+                Operator("="),
+                Tag("genre:bachata".into()),
+                Operator(","),
+                Operator("="),
+                Tag("style:bachata".into()),
+                Operator(")"),
+            ]
+        );
     }
 }

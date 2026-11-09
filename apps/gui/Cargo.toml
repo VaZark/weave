@@ -18,9 +18,8 @@ audio = ["weave-player-lib/audio"]
 weave-player-lib.workspace = true
 # The system file chooser (the desktop portal on Linux), to import files and folders.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-# Follows the tip of `main`; Cargo.lock records the commit actually built (`cargo update -p
-# iced-adaptive-design` moves it). To develop both together, add a
-# `[patch."https://github.com/VaZark/iced-libadwaita"]` pointing at a local checkout.
-iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", branch = "main" }
+# Pinned centrally; the ignored local Cargo patch can use the sibling checkout.
+iced-adaptive-design.workspace = true
+weave-icons = { workspace = true, features = ["iced"] }
 # Wayland only: no `x11` feature (the toolkit does not support X11 either).
 iced = { version = "0.14", default-features = false, features = ["wgpu", "tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "wayland", "advanced", "svg", "image", "tokio", "canvas"] }

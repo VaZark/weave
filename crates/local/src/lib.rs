@@ -40,6 +40,81 @@ impl LocalFiles {
             .and_then(|tag| tag.get_string(&ItemKey::Lyrics).and_then(Lyrics::parse)))
     }
 
+    /// Mixed files/folders, with deterministic traversal and canonical-path deduplication.
+    /// Bad inputs do not discard good inputs; non-audio files are counted as ignored.
+    pub fn scan_paths(
+        &self,
+        roots: &[PathBuf],
+    ) -> (Vec<ScannedTrack>, weave_player_core::ImportReport) {
+        use weave_player_core::{ImportIssue, ImportReport};
+        let mut report = ImportReport::default();
+        let mut found = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for root in roots {
+            let resolved = match root.canonicalize() {
+                Ok(path) => path,
+                Err(e) => {
+                    report.issues.push(ImportIssue {
+                        path: root.to_string_lossy().into_owned(),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            for entry in WalkDir::new(&resolved)
+                .follow_links(false)
+                .sort_by_file_name()
+            {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        report.issues.push(ImportIssue {
+                            path: e.path().unwrap_or(root).to_string_lossy().into_owned(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.path();
+                let canonical = match path.canonicalize() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        report.issues.push(ImportIssue {
+                            path: path.to_string_lossy().into_owned(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                if !seen.insert(canonical.clone()) {
+                    continue;
+                }
+                let file = match std::fs::File::open(&canonical) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        report.issues.push(ImportIssue {
+                            path: canonical.to_string_lossy().into_owned(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                match Probe::new(std::io::BufReader::new(file)).guess_file_type() {
+                    Ok(p) if p.file_type().is_some() => found.push(read_track(&canonical)),
+                    Ok(_) => report.ignored += 1,
+                    Err(e) => report.issues.push(ImportIssue {
+                        path: canonical.to_string_lossy().into_owned(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+        }
+        (found, report)
+    }
+
     /// Recursively scan `root` (or a single file) for audio files, detected by
     /// content. Untagged or partly unreadable audio is still indexed, with the
     /// file stem as title.
@@ -316,5 +391,40 @@ mod tests {
             LocalFiles.scan(Path::new("/nonexistent/weave")),
             Err(Error::NotFound(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod mixed_import_tests {
+    use super::*;
+    #[test]
+    fn mixed_inputs_recurse_deduplicate_and_keep_valid_files_after_a_missing_path() {
+        let dir =
+            std::env::temp_dir().join(format!("weave-mixed-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        // WAV content detection, with a deliberately misleading extension.
+        let mut wav = Vec::from(&b"RIFF"[..]);
+        wav.extend(36u32.to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(0u32.to_le_bytes());
+        let song = dir.join("sub/song.dat");
+        std::fs::write(&song, &wav).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not audio").unwrap();
+        let (tracks, report) =
+            LocalFiles.scan_paths(&[dir.join("missing"), song.clone(), dir.clone(), song.clone()]);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(report.ignored, 1);
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.issues[0].path.ends_with("missing"));
+        assert_eq!(std::fs::read(song).unwrap(), wav);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

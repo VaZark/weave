@@ -5,16 +5,19 @@
 //! here; the layouts in `ui.rs` only render it, so a
 //! window that crosses the breakpoint loses nothing.
 
+mod appearance;
 mod backend;
 mod components;
 mod data;
 mod icons;
+mod import_picker;
 mod platforms;
 mod ui;
 mod ui_dialogs;
+mod ui_library;
 mod ui_lists;
-mod ui_minimal;
 mod ui_player;
+mod ui_search;
 
 use std::time::{Duration, Instant};
 
@@ -37,12 +40,6 @@ pub const ROW: f32 = 56.0;
 pub const ROW_COMPACT: f32 = 32.0;
 
 const WINDOW: (f32, f32) = (1120.0, 720.0);
-
-/// The window in minimal mode: one line, as high as the player bar.
-const MINIMAL: (f32, f32) = (560.0, 72.0);
-/// The narrowest minimal mode goes.
-const MINIMAL_MIN_WIDTH: f32 = 360.0;
-const MINIMAL_MAX_WIDTH: f32 = 900.0;
 
 /// `WEAVE_GUI_SIZE=WxH` starts the window at that size (to judge the narrow layout).
 fn window_size() -> (f32, f32) {
@@ -79,6 +76,8 @@ pub enum Dest {
     /// links to every list.
     Explore,
     Recent,
+    Rediscover,
+    AboutMe,
     Tracks,
     Artists,
     Albums,
@@ -114,10 +113,17 @@ pub enum Col {
     Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterTarget {
+    Jam,
+    Draft,
+    Page,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The desktop switched between light and dark; the theme is read again on redraw.
-    SystemScheme(iad::Scheme),
+    SystemTheme(iad::utils::ThemeSettings),
     // Resizing and the transitions between layouts.
     Resized(f32, f32),
     /// An animation frame (while a sheet or the queue slides).
@@ -134,6 +140,8 @@ pub enum Message {
     Open(Dest),
     /// The search icon of the Jam page: shows or hides its artist, album and anything entries.
     JamSearchOpen(bool),
+    SearchOpen(bool),
+    SearchText(String),
     /// A chip of the Artists or Albums section of the Tag filters (any of the chosen ones).
     JamArtistToggle(String),
     JamAlbumToggle(String),
@@ -149,15 +157,44 @@ pub enum Message {
     CancelSaveJam,
     /// The generic search over title, artist and album (not saved with a playlist).
     JamQuery(String),
+    JamRecent(bool),
+    DraftRecent(bool),
     /// The jam is a page: this shows it, or goes back to the page you were on.
     ToggleJam,
     ToggleExplore,
-    /// The menu's Import items: choose files (`true`) or a folder in the system file chooser.
-    Import(bool),
-    /// What the file chooser returned (nothing when it was cancelled).
+    AnalyticsLoaded(
+        u64,
+        Box<Result<weave_player_lib::core::ListeningAnalytics, String>>,
+    ),
+    CollectionQuery(String),
+    CollectionOrder(weave_player_lib::core::CollectionOrder),
+    ExploreSection(usize),
+    ArtistSection(usize),
+    PageFilters(bool),
+    PageTag(String),
+    PageArtist(String),
+    PageAlbum(String),
+    PageBpm((f32, f32)),
+    PageRecent(bool),
+    Exclusions(String),
+    DraftExclusions(String),
+    PageExclusions(String),
+    PageRating(u8),
+    RediscoverDays(String),
+    RediscoverSort(weave_player_lib::core::SortField),
+    AnalyticsPeriod(Option<weave_player_lib::core::AnalyticsPeriod>),
+    AnalyticsDateText(String),
+    AnalyticsDatePick(iad::primitives::range::DateRange),
+    AnalyticsDateView(iad::primitives::date::Date),
+
+    /// Open the desktop file or folder chooser directly.
+    Import(import_picker::Mode),
+    ImportChosen(u64, Vec<std::path::PathBuf>),
+    DismissImportReport,
+    /// A confirmed mixed selection. Empty input does not start an import.
     Picked(Vec<std::path::PathBuf>),
     /// The import finished: what to tell the user.
-    Imported(Result<String, String>),
+    Imported(Result<weave_player_lib::core::ImportReport, String>),
     /// The bottom sheet of a menu (narrow): a track's actions or a page's options.
     OpenSheet(Option<Sheet>),
     /// How Recent tracks is ordered: by play or by when added.
@@ -167,6 +204,11 @@ pub enum Message {
     /// A choice made in the sheet: it closes, then does it.
     SheetAction(Box<Message>),
     SetDensity(DensityPref),
+    ThemeMode(Option<iad::Scheme>),
+    Themes(bool),
+    ImportTheme,
+    ThemeChosen(Option<std::path::PathBuf>),
+    SelectTheme(Option<String>),
     WhileDays(u32),
     ToggleFavorite(String),
     /// The heart of a track: in or out of the Favourites playlist.
@@ -192,12 +234,20 @@ pub enum Message {
     Fullscreen(bool),
     /// F11.
     ToggleFullscreen,
-    /// Escape: leaves fullscreen, and does nothing otherwise.
+    /// Escape: leaves fullscreen or closes inline search.
     EscapeKey,
     ToggleLyrics,
     // The filter page, shared by search and jam.
     ToggleTag(String),
+    CommitTagGroup(FilterTarget),
+    SelectTagGroup(FilterTarget, Option<(usize, usize)>),
+    FilterTagToggle(FilterTarget, String),
+    RemoveGroupedTag(FilterTarget, usize, usize, String),
     TagQuery(String),
+    TagBrowseToggle,
+    TagCategories,
+    TagCategory(Option<String>),
+    ChipExpand(ChipPicker, bool),
     Bpm((f32, f32)),
     /// The clear icon of the Tag filters: drops the tags and the tempo, and leaves the search.
     ClearTagFilters,
@@ -246,6 +296,8 @@ pub enum Message {
     DraftToggle(String),
     DraftBpm((f32, f32)),
     SaveFilter,
+    ConfirmManualFilter,
+    CancelManualFilterReview,
     CancelFilter,
     Days(u8),
     // The player.
@@ -257,15 +309,16 @@ pub enum Message {
     Repeat,
     /// The volume slider: 0.0 to 1.0.
     SetVolume(f32),
-    /// Enter (true) or leave minimal mode: the window shrinks to the one-line player and back.
-    Minimal(bool),
-    /// A new reading of the spectrum, while minimal mode draws it.
+    /// A new reading of the spectrum while the Now Playing ring is visible.
     SpectrumTick,
-    /// The cover in minimal mode: switch between the spectrum and the song with its controls.
-    MinimalDetails,
     /// The volume button: mute, or back to the volume before.
     ToggleMute,
     Queue(ReorderEvent),
+    PlaylistOrder(ReorderEvent),
+    NewManualPlaylist,
+    PlaylistTracksOpen(bool),
+    PlaylistTracksQuery(String),
+    PlaylistTrackToggle(usize),
     Progress,
     // Development: `ICED_ADAPTIVE_DESIGN_SCREENSHOT=file.png` saves a screenshot and quits;
     // `WEAVE_GUI_START=jam|search|library|artists|popover|playlist|dialog|artist|album|playing|queue|lyrics` opens that state first.
@@ -279,15 +332,52 @@ pub struct TrackEdit {
     pub tags: Vec<String>,
 }
 
+/// Presentation state for each independent wrapping chip collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipPicker {
+    Tags,
+    Artists,
+    Albums,
+    TrackTags,
+}
+
+/// Which portion of the canonical tag vocabulary the picker presents. Selection is separate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum TagBrowse {
+    #[default]
+    All,
+    Categories,
+    /// A tag key; None means unkeyed (Custom) tags.
+    Category(Option<String>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualFilterReview {
+    name: String,
+    filter: Filter,
+    expected: Vec<String>,
+    removed: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistOrderEdit {
+    pub name: String,
+    pub order: ReorderState<String>,
+}
+
 /// What the bottom sheet (narrow) shows: a menu that is a dropdown on desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sheet {
+    /// The top-bar settings and import menu.
+    Main,
     /// A track's actions: the track, and whether "View album" shows.
     Track(usize, bool),
     /// A detail page's options: whether the page is a dynamic playlist.
     Options(bool),
     /// The order of Recent tracks.
     Recent,
+    Sort,
+    Sleep,
 }
 
 /// The Edit form of a detail page: the name (a playlist's) and the description, typed until Save.
@@ -399,14 +489,59 @@ pub struct App {
     pub dest: Dest,
     /// The Jam page's search row (artist, album, anything) is open.
     pub jam_search_open: bool,
+    pub search_open: bool,
     /// What is typed to find an artist / an album among the chips of the Tag filters.
     pub artist_query: String,
     pub album_query: String,
     /// The name being asked for by the Save as playlist dialog; `None` when it is closed.
     pub save_name: Option<String>,
+    pub save_manual: bool,
+    pub creation_filter: Filter,
+    pub manual_filter_review: Option<ManualFilterReview>,
+    pub playlist_tracks_open: bool,
+    pub playlist_tracks_query: String,
     pub filter: Filter,
+    pub collection_query: String,
+    pub playlist_edit: Option<PlaylistOrderEdit>,
+    pub detail_order: Option<weave_player_lib::core::CollectionOrder>,
+    pub detail_descending: bool,
+    /// Sort-icon choices are session-only playback rules, separate from saved filters.
+    pub jam_order: Option<weave_player_lib::core::CollectionOrder>,
+    pub jam_descending: bool,
+    pub collection_rule_order: [bool; 4],
+    pub collection_descending: [bool; 4],
+    pub collection_orders: [Option<weave_player_lib::core::CollectionOrder>; 4],
+    pub explore_open: [bool; 5],
+    pub artist_open: std::collections::HashMap<String, [bool; 3]>,
+    pub page_filters_open: bool,
+    pub rediscover_filter: Filter,
+    pub rediscover_days: String,
+    pub rediscover_sort: weave_player_lib::core::SortField,
+    pub analytics_filter: Filter,
+    pub analytics_period: Option<weave_player_lib::core::AnalyticsPeriod>,
+    pub analytics_date_text: String,
+    pub analytics_range: iad::primitives::range::DateRange,
+    pub analytics_date_view: iad::primitives::date::Date,
+    pub analytics_result: Option<Result<weave_player_lib::core::ListeningAnalytics, String>>,
+    pub analytics_request: u64,
+    pub analytics_last_query: Option<weave_player_lib::core::AnalyticsQuery>,
+    pub analytics_loading: bool,
+    pub last_analytics: Instant,
+    pub query_error: Option<String>,
+    pub explicit_sort: bool,
     /// Narrows the tag chips of the filter page as you type.
     pub tag_query: String,
+    pub active_tag_group: Option<(FilterTarget, usize, usize)>,
+    pub tag_browse: TagBrowse,
+    pub import_report: Option<weave_player_lib::core::ImportReport>,
+    pub import_chooser_open: bool,
+    pub import_request: u64,
+    pub import_in_progress: bool,
+    pub chip_expanded: [bool; 4],
+    /// Default tag-chip lines before the expand chevron.
+    pub chip_line_limit: usize,
+    /// Default artist/album-chip lines before the expand chevron.
+    pub name_chip_line_limit: usize,
     pub jam_open: bool,
     pub now_playing: bool,
     /// The playlist the Delete playlist question is about; `None` when it is not asked.
@@ -426,13 +561,7 @@ pub struct App {
     /// The window's height, for how far a sheet travels.
     pub win_h: f32,
     pub win_w: f32,
-    /// Minimal mode: the window is the one-line player.
-    pub minimal: bool,
-    /// The window size to come back to when minimal mode ends.
-    pub restore_size: Option<(f32, f32)>,
-    /// Minimal mode shows the song, artist and controls instead of the spectrum.
-    pub minimal_details: bool,
-    /// The spectrum of what plays, as last read (drawn in minimal mode).
+    /// The spectrum of what plays, as last read (drawn by the Now Playing visualizer).
     pub spectrum: [f32; weave_player_lib::core::spectrum::BANDS],
     pub show_lyrics: bool,
     pub history: History<Place>,
@@ -460,6 +589,14 @@ pub struct App {
     history_seq: u64,
     /// The user's density choice (the desktop's by default).
     pub density: DensityPref,
+    /// Application override; None follows the desktop, Some forces light or dark.
+    pub theme_mode: Option<iad::Scheme>,
+    /// Latest desktop event; kept in app state so mode changes invalidate the view.
+    pub desktop_scheme: iad::Scheme,
+    pub themes: appearance::ThemeLibrary,
+    pub theme_import_pending: bool,
+    pub themes_open: bool,
+    pub theme_config: appearance::ThemeConfig,
     /// "It's been a while" on Home: rated highly, not played for this many days.
     pub while_days: u32,
     pub favorites: std::collections::HashSet<String>,
@@ -503,7 +640,16 @@ impl App {
         let dev = iad::dev::Switches::from_env();
         dev.apply();
         let session = backend.snapshot();
+        let themes = appearance::ThemeLibrary::load(appearance::config_directory());
+        let theme_config = themes
+            .current()
+            .map(|theme| theme.config.clone())
+            .unwrap_or_else(|| appearance::config(""));
         let mut app = Self {
+            themes,
+            theme_config,
+            theme_import_pending: false,
+            themes_open: false,
             backend,
             adaptive: Adaptive::new(
                 Layouts::new()
@@ -513,11 +659,53 @@ impl App {
             .overlap(true),
             dest: Dest::Home,
             jam_search_open: false,
+            search_open: false,
             artist_query: String::new(),
             album_query: String::new(),
             save_name: None,
+            save_manual: false,
+            creation_filter: Filter::default(),
+            manual_filter_review: None,
+            playlist_tracks_open: false,
+            playlist_tracks_query: String::new(),
             filter: Filter::default(),
+            collection_query: String::new(),
+            playlist_edit: None,
+            detail_order: None,
+            detail_descending: true,
+            jam_order: None,
+            jam_descending: true,
+            collection_rule_order: [false; 4],
+            collection_descending: [true; 4],
+            collection_orders: [Some(weave_player_lib::core::CollectionOrder::Recent); 4],
+            explore_open: [true; 5],
+            artist_open: std::collections::HashMap::new(),
+            page_filters_open: false,
+            rediscover_filter: Filter::default(),
+            rediscover_days: "180".into(),
+            rediscover_sort: weave_player_lib::core::SortField::Preference,
+            analytics_filter: Filter::default(),
+            analytics_period: Some(weave_player_lib::core::AnalyticsPeriod::Week),
+            analytics_date_text: String::new(),
+            analytics_range: Default::default(),
+            analytics_date_view: iad::primitives::date::Date::today(),
+            query_error: None,
+            explicit_sort: false,
+            analytics_result: None,
+            analytics_request: 0,
+            analytics_last_query: None,
+            analytics_loading: false,
+            last_analytics: Instant::now(),
             tag_query: String::new(),
+            active_tag_group: None,
+            tag_browse: TagBrowse::Categories,
+            import_report: None,
+            import_chooser_open: false,
+            import_request: 0,
+            import_in_progress: false,
+            chip_expanded: [false; 4],
+            chip_line_limit: 3,
+            name_chip_line_limit: 2,
             jam_open: false,
             now_playing: false,
             delete_playlist: None,
@@ -530,9 +718,6 @@ impl App {
             queue_slide: Slide::default(),
             win_h: window_size().1,
             win_w: window_size().0,
-            minimal: false,
-            restore_size: None,
-            minimal_details: false,
             spectrum: [0.0; weave_player_lib::core::spectrum::BANDS],
             show_lyrics: false,
             history: History::new(Place::home()),
@@ -561,6 +746,8 @@ impl App {
             recent_order: RecentOrder::Played,
             history_seq: 0,
             density: DensityPref::Desktop,
+            theme_mode: None,
+            desktop_scheme: iad::utils::theme_settings().scheme,
             while_days: 180,
             favorites: std::collections::HashSet::new(),
             sleep_left: None,
@@ -594,32 +781,33 @@ impl App {
                 Message::Fullscreen(true)
             }));
         }
-        let start_minimal = matches!(
-            std::env::var("WEAVE_GUI_START").as_deref(),
-            Ok("minimal" | "minimal-details")
-        );
-        if start_minimal {
-            // After the window is on screen, as when the compact button is pressed.
-            let delayed = |ms: u64, m: Message| {
-                Task::future(async move {
-                    let (tx, rx) = iced::futures::channel::oneshot::channel();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(ms));
-                        let _ = tx.send(());
-                    });
-                    let _ = rx.await;
-                    m
-                })
-            };
-            tasks.push(delayed(1500, Message::Minimal(true)));
-            if std::env::var("WEAVE_GUI_START").as_deref() == Ok("minimal-details") {
-                tasks.push(delayed(2200, Message::MinimalDetails));
-            }
-        }
         if let Ok(start) = std::env::var("WEAVE_GUI_START") {
             for m in match start.as_str() {
+                "themes" => vec![Message::Themes(true)],
                 "jam" => vec![Message::ToggleJam],
                 "jam-filters" => vec![Message::ToggleJam, Message::JamFilters(true)],
+                "tag-categories" => vec![
+                    Message::ToggleJam,
+                    Message::JamFilters(true),
+                    Message::TagCategories,
+                ],
+                "tag-genre" => vec![
+                    Message::ToggleJam,
+                    Message::JamFilters(true),
+                    Message::TagCategory(Some("genre".into())),
+                ],
+                "tag-custom" => vec![
+                    Message::ToggleJam,
+                    Message::JamFilters(true),
+                    Message::TagCategory(None),
+                ],
+                "jam-filters-expanded" => vec![
+                    Message::ToggleJam,
+                    Message::JamFilters(true),
+                    Message::ChipExpand(ChipPicker::Tags, true),
+                    Message::ChipExpand(ChipPicker::Artists, true),
+                    Message::ChipExpand(ChipPicker::Albums, true),
+                ],
                 "jam-search" => vec![
                     Message::ToggleJam,
                     Message::JamSearchOpen(true),
@@ -703,28 +891,14 @@ impl App {
         }
         // Development switches (screenshot, holding animations) are iad's, from the environment.
         if dev.screenshot.is_some() {
-            // Minimal mode opens a window of its own, so the shot is of the newest one, taken
-            // after that has happened.
-            let window = if start_minimal {
-                Task::future(async {
-                    let (tx, rx) = iced::futures::channel::oneshot::channel();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(3000));
-                        let _ = tx.send(());
-                    });
-                    let _ = rx.await;
-                })
-                .then(|_| iced::window::latest())
-            } else {
-                iced::window::oldest()
-            };
+            let window = iced::window::oldest();
             tasks.push(
                 window
                     .and_then(move |id| dev.capture(id).unwrap_or_else(Task::none))
                     .map(Message::Captured),
             );
         }
-        tasks.push(iad::system::detect_color_scheme().map(Message::SystemScheme));
+        tasks.push(iad::utils::detect_theme().map(Message::SystemTheme));
         (app, Task::batch(tasks))
     }
 
@@ -739,12 +913,22 @@ impl App {
     /// Leaves the jam: the search text is only for finding something, so it does not stay.
     fn leave_jam(&mut self) {
         self.jam_open = false;
+        self.jam_filters_open = false;
         self.jam_search_open = false;
+        self.search_open = false;
+        self.collection_query.clear();
         self.filter.q.clear();
         self.save_name = None;
     }
 
     fn close_overlays(&mut self) {
+        self.manual_filter_review = None;
+        self.playlist_tracks_open = false;
+        self.playlist_tracks_query.clear();
+        self.playlist_edit = None;
+        self.search_open = false;
+        self.page_filters_open = false;
+        self.import_report = None;
         self.draft = None;
         self.edit_track = None;
         self.edit = None;
@@ -757,6 +941,10 @@ impl App {
     /// Shows a page: anything open over the page (the jam, a dialog, Now Playing) closes.
     fn show(&mut self, d: Dest) -> Vec<iad::transition::Command<Layout>> {
         self.dest = d;
+        self.explicit_sort = false;
+        self.collection_query.clear();
+        self.detail_order = None;
+        self.detail_descending = true;
         self.close_overlays();
         self.refresh();
         Vec::new()
@@ -790,7 +978,17 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         self.lib.apply_history(&stats, now);
-        if self.dest == Dest::Recent {
+        if self.dest == Dest::Recent
+            || (self.dest == Dest::Tracks
+                && self.collection_order() == weave_player_lib::core::CollectionOrder::Recent)
+            || self.detail_order == Some(weave_player_lib::core::CollectionOrder::Recent)
+            || (self.jam_open
+                && self
+                    .filter
+                    .retained
+                    .sort
+                    .is_some_and(|s| s.field == weave_player_lib::core::SortField::LastPlayed))
+        {
             self.refresh();
         }
     }
@@ -927,12 +1125,22 @@ impl App {
             if self.lib.playlists.get(i).is_some_and(|p| p.name != backend::FAVOURITES))
     }
 
+    pub fn manual_playlist(&self) -> Option<&data::Playlist> {
+        if self.jam_open || self.queue_open || self.now_playing {
+            return None;
+        }
+        match self.dest {
+            Dest::Playlist(i) => self.lib.playlists.get(i).filter(|p| p.manual),
+            _ => None,
+        }
+    }
+
     /// Whether the track is in the Favourites playlist.
     pub fn is_favourite(&self, id: usize) -> bool {
         self.lib
             .playlists
             .iter()
-            .any(|p| p.name == backend::FAVOURITES && p.filter.is_none() && p.tracks.contains(&id))
+            .any(|p| p.name == backend::FAVOURITES && p.manual && p.tracks.contains(&id))
     }
 
     pub fn track(&self, id: usize) -> &Track {
@@ -963,15 +1171,59 @@ impl App {
     /// Rebuilds the rows of the current page: its scope (the jam's filters, or the page's own), then
     /// the sort.
     pub fn refresh(&mut self) {
+        self.query_error = None;
         let mut rows: Vec<Track> = if self.jam_open {
             // The jam page: the tracks the filters match.
-            self.lib
-                .filtered(&self.filter)
-                .into_iter()
-                .cloned()
-                .collect()
+            match self.backend.matching(&self.filter.search_spec()) {
+                Ok(indices) => {
+                    self.query_error = None;
+                    indices
+                        .iter()
+                        .filter_map(|i| self.lib.tracks.get(*i).cloned())
+                        .collect()
+                }
+                Err(error) => {
+                    self.query_error = Some(error);
+                    Vec::new()
+                }
+            }
         } else {
             match self.dest {
+                Dest::Tracks => match self.backend.collection_tracks(
+                    &self.collection_query,
+                    self.selected_collection_order(),
+                    self.collection_descending(),
+                ) {
+                    Ok(indices) => indices
+                        .into_iter()
+                        .filter_map(|i| self.lib.tracks.get(i).cloned())
+                        .collect(),
+                    Err(error) => {
+                        self.query_error = Some(error);
+                        Vec::new()
+                    }
+                },
+                Dest::Rediscover => {
+                    let mut spec = self.rediscover_filter.search_spec();
+                    spec.not_played_for_days = Some(self.while_days);
+                    spec.sort = Some(weave_player_lib::core::Sort {
+                        field: self.rediscover_sort,
+                        descending: true,
+                    });
+                    match self.backend.rediscover(&spec) {
+                        Ok(indices) => {
+                            self.query_error = None;
+                            indices
+                                .iter()
+                                .filter_map(|i| self.lib.tracks.get(*i).cloned())
+                                .collect()
+                        }
+                        Err(error) => {
+                            self.query_error = Some(error);
+                            Vec::new()
+                        }
+                    }
+                }
                 // Recent tracks: what was played, or until anything was, what was added; or by when
                 // they were added.
                 Dest::Recent => self
@@ -1017,12 +1269,76 @@ impl App {
                 _ => self.lib.tracks.clone(),
             }
         };
-        self.sort.apply(&mut rows, |col, a, b| match col {
-            Col::Title => cmp_str(&a.title.to_lowercase(), &b.title.to_lowercase()),
-            Col::Artist => cmp_str(&a.artist.to_lowercase(), &b.artist.to_lowercase()),
-            Col::Album => cmp_str(&a.album.to_lowercase(), &b.album.to_lowercase()),
-            Col::Duration => a.secs.cmp(&b.secs),
-        });
+        if !self.collection_query.trim().is_empty()
+            && (self.jam_open
+                || matches!(
+                    self.dest,
+                    Dest::Recent
+                        | Dest::Rediscover
+                        | Dest::Artist(_)
+                        | Dest::Album(_)
+                        | Dest::Playlist(_)
+                ))
+        {
+            let candidates: Vec<_> = rows.iter().map(|t| t.id).collect();
+            match self
+                .backend
+                .filter_indices(&candidates, &self.context_search_spec())
+            {
+                Ok(indices) => {
+                    rows = indices
+                        .into_iter()
+                        .filter_map(|i| self.lib.tracks.get(i).cloned())
+                        .collect()
+                }
+                Err(error) => {
+                    self.query_error = Some(error);
+                    rows.clear();
+                }
+            }
+        }
+        if !self.explicit_sort
+            && let Some(order) = if self.jam_open {
+                self.jam_order
+            } else {
+                self.detail_order
+            }
+            && (self.jam_open
+                || matches!(
+                    self.dest,
+                    Dest::Artist(_) | Dest::Album(_) | Dest::Playlist(_)
+                ))
+        {
+            match self.backend.order_indices(
+                &rows.iter().map(|t| t.id).collect::<Vec<_>>(),
+                order,
+                self.collection_descending(),
+            ) {
+                Ok(indices) => {
+                    rows = indices
+                        .into_iter()
+                        .filter_map(|i| self.lib.tracks.get(i).cloned())
+                        .collect()
+                }
+                Err(error) => self.query_error = Some(error),
+            }
+        }
+        if self.explicit_sort
+            || (self.detail_order.is_none()
+                && !(self.jam_open
+                    && (self.jam_order.is_some() || self.filter.retained.sort.is_some()))
+                && !matches!(
+                    self.dest,
+                    Dest::Tracks | Dest::Rediscover | Dest::Playlist(_)
+                ))
+        {
+            self.sort.apply(&mut rows, |col, a, b| match col {
+                Col::Title => cmp_str(&a.title.to_lowercase(), &b.title.to_lowercase()),
+                Col::Artist => cmp_str(&a.artist.to_lowercase(), &b.artist.to_lowercase()),
+                Col::Album => cmp_str(&a.album.to_lowercase(), &b.album.to_lowercase()),
+                Col::Duration => a.secs.cmp(&b.secs),
+            });
+        }
         self.rows = rows;
     }
 
@@ -1070,6 +1386,11 @@ impl App {
     /// Before the open page's list is played: the player's shuffle is set as the page's toggle
     /// says (a page without one leaves it). Returns whether the page plays shuffled.
     fn apply_page_shuffle(&mut self) -> bool {
+        if self.has_playback_sort() {
+            let snapshot = self.backend.shuffle(false);
+            self.apply(snapshot);
+            return false;
+        }
         match self.page_shuffle() {
             Some(on) => {
                 let s = self.backend.shuffle(on);
@@ -1080,9 +1401,71 @@ impl App {
         }
     }
 
+    pub fn has_playback_sort(&self) -> bool {
+        if self.jam_open {
+            self.jam_order.is_some()
+        } else if let Some(index) = self.collection_order_index() {
+            self.collection_rule_order[index] && self.collection_orders[index].is_some()
+        } else {
+            self.detail_order.is_some()
+        }
+    }
+
+    fn clear_playback_sort(&mut self) {
+        if self.jam_open {
+            self.jam_order = None;
+        } else if let Some(index) = self.collection_order_index() {
+            self.collection_rule_order[index] = false;
+            self.collection_orders[index] = None;
+        } else {
+            self.detail_order = None;
+        }
+        self.refresh();
+    }
+
     fn play(&mut self, ids: Vec<usize>, start: usize) {
         let session = self.backend.play(&ids, start);
         self.apply(session);
+    }
+
+    fn commit_manual_filter(&mut self, review: ManualFilterReview) {
+        match self.backend.update_manual_playlist_filter(
+            &review.name,
+            &review.filter,
+            &review.expected,
+            &review.removed,
+        ) {
+            Ok(()) => {
+                self.draft = None;
+                self.reload_library();
+                self.refresh();
+            }
+            Err(error) => self.say(format!("Cannot save the filter: {error}")),
+        }
+    }
+
+    fn playlist_filter_draft_mut(&mut self) -> Option<&mut Filter> {
+        if self.save_manual && self.save_name.is_some() {
+            Some(&mut self.creation_filter)
+        } else {
+            self.draft.as_mut()
+        }
+    }
+
+    fn page_filter_mut(&mut self) -> &mut Filter {
+        if self.dest == Dest::AboutMe {
+            &mut self.analytics_filter
+        } else {
+            &mut self.rediscover_filter
+        }
+    }
+    pub fn matching<'a>(&'a self, filter: &Filter) -> Vec<&'a Track> {
+        self.backend
+            .matching(&filter.search_spec())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|i| self.lib.tracks.get(*i))
+            .collect()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1099,43 +1482,6 @@ impl App {
             }
             Message::Tick(t) => self.adaptive.tick(t),
             Message::Transition(e) => self.adaptive.report(e, now),
-            Message::Minimal(on) => {
-                if on == self.minimal {
-                    return Task::none();
-                }
-                self.minimal = on;
-                self.minimal_details = false;
-                let settings = if on {
-                    // Overlays go; the player stays.
-                    self.now_playing = false;
-                    self.queue_open = false;
-                    self.restore_size = Some((self.win_w, self.win_h));
-                    iced::window::Settings {
-                        size: iced::Size::new(MINIMAL.0, MINIMAL.1),
-                        min_size: Some(iced::Size::new(MINIMAL_MIN_WIDTH, MINIMAL.1)),
-                        // As high as the strip, and as wide as the user pulls it.
-                        max_size: Some(iced::Size::new(MINIMAL_MAX_WIDTH, MINIMAL.1)),
-                        ..iad::windows::settings_for(platforms::APP_ID)
-                    }
-                } else {
-                    let (w, h) = self.restore_size.take().unwrap_or_else(window_size);
-                    iced::window::Settings {
-                        size: iced::Size::new(w, h),
-                        ..iad::windows::settings_for(platforms::APP_ID)
-                    }
-                };
-                // A new window of the size wanted, then the old one closes: on Wayland a window
-                // cannot be told its new size (winit sends no resize event for a request, so the
-                // app would keep drawing at the old size).
-                return iced::window::oldest().and_then(move |old| {
-                    let (_, open) = iced::window::open(settings.clone());
-                    open.then(move |_| iced::window::close(old))
-                });
-            }
-            Message::MinimalDetails => {
-                self.minimal_details = !self.minimal_details;
-                Vec::new()
-            }
             Message::SpectrumTick => {
                 self.spectrum = weave_player_lib::core::spectrum::bands();
                 Vec::new()
@@ -1145,16 +1491,209 @@ impl App {
             }
             Message::Go(d) => {
                 self.history.go(Place::at(d));
-                self.show(d)
+                let cmds = self.show(d);
+                if d == Dest::AboutMe {
+                    let task = self.refresh_analytics();
+                    return Task::batch([self.dispatch(cmds), task]);
+                }
+                cmds
             }
             Message::Open(d) => {
                 let here = Place { dest: self.dest };
                 self.history.replace(here);
                 self.history.open(Place::at(d));
-                self.show(d)
+                let cmds = self.show(d);
+                if d == Dest::AboutMe {
+                    let task = self.refresh_analytics();
+                    return Task::batch([self.dispatch(cmds), task]);
+                }
+                cmds
+            }
+            Message::AnalyticsLoaded(request, result) => {
+                if request == self.analytics_request {
+                    self.analytics_loading = false;
+                    self.analytics_result = Some(*result);
+                }
+                Vec::new()
+            }
+            Message::CollectionQuery(query) => {
+                self.collection_query = query;
+                self.refresh();
+                Vec::new()
+            }
+            Message::CollectionOrder(order) => {
+                if self.playlist_edit.is_some() {
+                    return Task::none();
+                }
+                let deselect = self.selected_collection_order() == Some(order)
+                    && !self.collection_descending();
+                let descending = if self.selected_collection_order() == Some(order) {
+                    !self.collection_descending()
+                } else {
+                    true
+                };
+                if self.jam_open {
+                    self.jam_order = (!deselect).then_some(order);
+                    self.jam_descending = descending;
+                } else if let Some(index) = self.collection_order_index() {
+                    self.collection_orders[index] = (!deselect).then_some(order);
+                    self.collection_descending[index] = descending;
+                    self.collection_rule_order[index] = !deselect;
+                } else if matches!(
+                    self.dest,
+                    Dest::Artist(_) | Dest::Album(_) | Dest::Playlist(_)
+                ) {
+                    self.detail_order = (!deselect).then_some(order);
+                    self.detail_descending = descending;
+                } else {
+                    return Task::none();
+                }
+                self.explicit_sort = false;
+                self.refresh();
+                Vec::new()
+            }
+            Message::ExploreSection(i) => {
+                if let Some(open) = self.explore_open.get_mut(i) {
+                    *open = !*open;
+                }
+                Vec::new()
+            }
+            Message::ArtistSection(index) => {
+                if let Dest::Artist(artist) = self.dest
+                    && let Some((name, _)) = self.lib.artists().get(artist)
+                    && let Some(open) = self
+                        .artist_open
+                        .entry(name.clone())
+                        .or_insert([true; 3])
+                        .get_mut(index)
+                {
+                    *open = !*open;
+                }
+                Vec::new()
+            }
+            Message::PageFilters(open) => {
+                if open && !self.page_filters_open {
+                    self.prepare_filter_editor();
+                }
+                self.page_filters_open = open;
+                Vec::new()
+            }
+            Message::PageTag(tag) => {
+                toggle(&mut self.page_filter_mut().tags, tag);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::PageArtist(artist) => {
+                toggle(&mut self.page_filter_mut().artists, artist);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::PageAlbum(album) => {
+                toggle(&mut self.page_filter_mut().albums, album);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::PageBpm(bpm) => {
+                self.page_filter_mut().set_bpm(bpm);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::PageRecent(on) => {
+                self.page_filter_mut().imported_within_days = on.then_some(7);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::Exclusions(text) => {
+                self.filter.exclusion_input = text;
+                self.refresh();
+                Vec::new()
+            }
+            Message::DraftExclusions(text) => {
+                if let Some(f) = self.playlist_filter_draft_mut() {
+                    f.exclusion_input = text;
+                }
+                Vec::new()
+            }
+            Message::PageExclusions(text) => {
+                self.page_filter_mut().exclusion_input = text;
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::PageRating(rating) => {
+                self.page_filter_mut().retained.rating_min = (rating > 0).then_some(rating);
+                self.refresh();
+                if self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::RediscoverDays(text) => {
+                if let Ok(days) = text.parse() {
+                    self.while_days = days;
+                }
+                self.rediscover_days = text;
+                self.refresh();
+                Vec::new()
+            }
+            Message::RediscoverSort(sort) => {
+                self.rediscover_sort = sort;
+                self.explicit_sort = false;
+                self.refresh();
+                Vec::new()
+            }
+            Message::AnalyticsPeriod(period) => {
+                self.analytics_period = period;
+                return self.refresh_analytics();
+            }
+            Message::AnalyticsDateText(text) => {
+                self.analytics_range = iad::primitives::range::DateRange::parse(&text);
+                self.analytics_date_text = text;
+                return self.refresh_analytics();
+            }
+            Message::AnalyticsDatePick(range) => {
+                self.analytics_range = range;
+                self.analytics_date_text = range.text();
+                return self.refresh_analytics();
+            }
+            Message::AnalyticsDateView(date) => {
+                self.analytics_date_view = date;
+                Vec::new()
+            }
+            Message::SearchOpen(open) => {
+                self.search_open = open && self.can_search_page();
+                if !self.search_open {
+                    self.collection_query.clear();
+                }
+                self.refresh();
+                Vec::new()
+            }
+            Message::SearchText(text) => {
+                self.collection_query = text;
+                self.refresh();
+                Vec::new()
             }
             Message::JamSearchOpen(on) => {
+                // Compatibility with the existing development scenarios: use inline search.
                 self.jam_search_open = on;
+                self.search_open = on;
                 if !on {
                     // Closing the bar drops the text: it was only there to find something.
                     self.filter.q.clear();
@@ -1181,14 +1720,25 @@ impl App {
                 Vec::new()
             }
             Message::DraftArtistToggle(a) => {
-                if let Some(d) = &mut self.draft {
+                if let Some(d) = self.playlist_filter_draft_mut() {
                     toggle(&mut d.artists, a);
                 }
                 Vec::new()
             }
             Message::DraftAlbumToggle(a) => {
-                if let Some(d) = &mut self.draft {
+                if let Some(d) = self.playlist_filter_draft_mut() {
                     toggle(&mut d.albums, a);
+                }
+                Vec::new()
+            }
+            Message::JamRecent(on) => {
+                self.filter.imported_within_days = on.then_some(7);
+                self.refresh();
+                Vec::new()
+            }
+            Message::DraftRecent(on) => {
+                if let Some(d) = self.playlist_filter_draft_mut() {
+                    d.imported_within_days = on.then_some(7);
                 }
                 Vec::new()
             }
@@ -1198,6 +1748,9 @@ impl App {
                 Vec::new()
             }
             Message::ToggleJam => {
+                self.playlist_edit = None;
+                self.search_open = false;
+                self.collection_query.clear();
                 if self.jam_open {
                     // On desktop, unselecting a header button returns to Home.
                     if !self.is_narrow() {
@@ -1217,11 +1770,47 @@ impl App {
                 }
                 return self.update(Message::Go(Dest::Explore));
             }
+            Message::Themes(open) => {
+                self.themes_open = open;
+                self.sheet = None;
+                Vec::new()
+            }
+            Message::ImportTheme => {
+                if self.theme_import_pending {
+                    return Task::none();
+                }
+                self.theme_import_pending = true;
+                return Task::perform(appearance::choose(), Message::ThemeChosen);
+            }
+            Message::ThemeChosen(path) => {
+                self.theme_import_pending = false;
+                if let Some(path) = path {
+                    match self.themes.import(&path) {
+                        Ok(key) => return self.update(Message::SelectTheme(Some(key))),
+                        Err(error) => self.say(format!("Cannot import theme: {error}")),
+                    }
+                }
+                Vec::new()
+            }
+            Message::SelectTheme(key) => {
+                match self.themes.select(key) {
+                    Ok(()) => self.apply_theme(),
+                    Err(error) => self.say(format!("Cannot select theme: {error}")),
+                }
+                Vec::new()
+            }
             Message::SetDensity(d) => {
                 self.density = d;
                 Vec::new()
             }
+            Message::ThemeMode(mode) => {
+                self.theme_mode = mode;
+                Vec::new()
+            }
             Message::SetShufflePref(pref) => {
+                if pref == Some(true) {
+                    self.clear_playback_sort();
+                }
                 match self.dest {
                     Dest::Playlist(i) => {
                         if let Some(name) = self.lib.playlists.get(i).map(|p| p.name.clone()) {
@@ -1275,26 +1864,58 @@ impl App {
                 self.sheet = None;
                 return self.update(*m);
             }
-            Message::Import(files) => {
-                return Task::perform(pick(files), Message::Picked);
-            }
-            Message::Picked(paths) => {
-                let Some(db) = self.backend.db().map(|d| d.to_path_buf()) else {
-                    return Task::none();
-                };
-                if paths.is_empty() {
+            Message::Import(mode) => {
+                if self.import_in_progress || self.import_chooser_open {
                     return Task::none();
                 }
+                self.import_report = None;
+                self.import_chooser_open = true;
+                self.import_request += 1;
+                let request = self.import_request;
+                return Task::perform(import_picker::choose(mode), move |paths| {
+                    Message::ImportChosen(request, paths)
+                });
+            }
+            Message::ImportChosen(request, paths) => {
+                if request != self.import_request || !self.import_chooser_open {
+                    return Task::none();
+                }
+                self.import_chooser_open = false;
+                return self.update(Message::Picked(paths));
+            }
+            Message::DismissImportReport => {
+                self.import_report = None;
+                Vec::new()
+            }
+            Message::Picked(paths) => {
+                if self.import_in_progress || paths.is_empty() {
+                    return Task::none();
+                }
+                let Some(db) = self.backend.db().map(|d| d.to_path_buf()) else {
+                    self.say("Import needs a library database");
+                    return Task::none();
+                };
+                self.import_in_progress = true;
                 self.say("Importing…");
                 return Task::perform(import(db, paths), Message::Imported);
             }
             Message::Imported(result) => {
+                self.import_in_progress = false;
                 match result {
-                    Ok(text) => {
+                    Ok(report) => {
+                        self.playlist_edit = None;
                         self.reload();
-                        self.say(text);
+                        self.filter.imported_within_days = Some(7);
+                        self.queue_open = false;
+                        self.jam_open = true;
+                        self.now_playing = false;
+                        self.refresh();
+                        self.say(import_picker::summary(&report));
+                        self.import_report = (!report.issues.is_empty()).then_some(report);
                     }
-                    Err(e) => self.say(format!("Import failed: {e}")),
+                    Err(e) => {
+                        self.say(format!("Import failed: {e}"));
+                    }
                 }
                 Vec::new()
             }
@@ -1427,8 +2048,26 @@ impl App {
                 return self.update(Message::Fullscreen(!self.fullscreen));
             }
             Message::EscapeKey => {
+                if self.themes_open {
+                    return self.update(Message::Themes(false));
+                }
+                if self.manual_filter_review.is_some() {
+                    return self.update(Message::CancelManualFilterReview);
+                }
+                if let Some(context) = self.active_filter_context() {
+                    return self.update(self.filter_close(context));
+                }
+                if self.save_manual && self.save_name.is_some() {
+                    return self.update(Message::CancelSaveJam);
+                }
+                if self.playlist_tracks_open {
+                    return self.update(Message::PlaylistTracksOpen(false));
+                }
                 if self.fullscreen {
                     return self.update(Message::Fullscreen(false));
+                }
+                if self.search_open {
+                    return self.update(Message::SearchOpen(false));
                 }
                 return Task::none();
             }
@@ -1452,9 +2091,206 @@ impl App {
                 self.show_lyrics = !self.show_lyrics;
                 Vec::new()
             }
+            Message::SelectTagGroup(target, group) => {
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                let group = group.filter(|&(block, index)| {
+                    filter
+                        .as_ref()
+                        .and_then(|f| f.retained.tag_blocks.get(block))
+                        .and_then(|b| b.get(index))
+                        .is_some_and(crate::ui_dialogs::editable_tag_group)
+                });
+                self.active_tag_group = group.map(|(block, index)| (target, block, index));
+                return iced::widget::operation::focus(iced::widget::Id::new(
+                    crate::ui_dialogs::TAG_QUERY_ID,
+                ));
+            }
+            Message::FilterTagToggle(target, tag) => {
+                let active = self
+                    .active_tag_group
+                    .filter(|(context, _, _)| *context == target);
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                let mut next_active = active;
+                if let Some(filter) = filter {
+                    if let Some((_, block, index)) = active
+                        && let Some(group) = filter
+                            .retained
+                            .tag_blocks
+                            .get_mut(block)
+                            .and_then(|b| b.get_mut(index))
+                        && crate::ui_dialogs::editable_tag_group(group)
+                    {
+                        let tags = if group.any.is_empty() {
+                            &mut group.all
+                        } else {
+                            &mut group.any
+                        };
+                        toggle(tags, tag);
+                        if tags.is_empty() {
+                            filter.retained.tag_blocks[block].remove(index);
+                            filter.retained.tag_blocks.retain(|b| !b.is_empty());
+                            next_active = None;
+                        }
+                    } else if !filter.retained.tag_blocks.is_empty()
+                        && filter.retained.tag_all.is_empty()
+                        && filter.tags.is_empty()
+                    {
+                        // New selections belong beside the committed alternatives, not in
+                        // tag_all, which would AND them with the entire OR block.
+                        let index = filter.retained.tag_blocks[0].len();
+                        filter.retained.tag_blocks[0].push(weave_player_lib::core::TagFilter {
+                            all: vec![tag],
+                            ..Default::default()
+                        });
+                        next_active = Some((target, 0, index));
+                    } else {
+                        toggle(&mut filter.tags, tag);
+                        next_active = None;
+                    }
+                }
+                if active.is_some() || next_active.is_some() {
+                    self.active_tag_group = next_active;
+                }
+                if target != FilterTarget::Draft {
+                    self.refresh();
+                }
+                if target == FilterTarget::Page && self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
+            Message::CommitTagGroup(target) => {
+                let editing = self
+                    .active_tag_group
+                    .is_some_and(|(context, _, _)| context == target);
+                self.active_tag_group = None;
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                if let Some(filter) = filter
+                    && !editing
+                    && !filter.tags.is_empty()
+                {
+                    if filter.retained.tag_blocks.is_empty() {
+                        filter.retained.tag_blocks.push(Vec::new());
+                    }
+                    filter.retained.tag_all.clear();
+                    filter.retained.tag_blocks[0].push(weave_player_lib::core::TagFilter {
+                        all: std::mem::take(&mut filter.tags),
+                        ..Default::default()
+                    });
+                }
+                if target != FilterTarget::Draft {
+                    self.refresh();
+                }
+                if target == FilterTarget::Page && self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                return iced::widget::operation::focus(iced::widget::Id::new(
+                    crate::ui_dialogs::TAG_QUERY_ID,
+                ));
+            }
+            Message::RemoveGroupedTag(target, block, index, tag) => {
+                let mut active = self.active_tag_group;
+                let filter = match target {
+                    FilterTarget::Draft => self.playlist_filter_draft_mut(),
+                    FilterTarget::Page => Some(self.page_filter_mut()),
+                    FilterTarget::Jam => Some(&mut self.filter),
+                };
+                if let Some(filter) = filter
+                    && let Some(group) = filter
+                        .retained
+                        .tag_blocks
+                        .get_mut(block)
+                        .and_then(|groups| groups.get_mut(index))
+                    && crate::ui_dialogs::editable_tag_group(group)
+                {
+                    let tags = if group.any.is_empty() {
+                        &mut group.all
+                    } else {
+                        &mut group.any
+                    };
+                    tags.retain(|name| *name != tag);
+                    if tags.is_empty() {
+                        filter.retained.tag_blocks[block].remove(index);
+                        let removed_block = filter.retained.tag_blocks[block].is_empty();
+                        if removed_block {
+                            filter.retained.tag_blocks.remove(block);
+                        }
+                        active = active.and_then(|(context, active_block, active_index)| {
+                            if context != target {
+                                Some((context, active_block, active_index))
+                            } else if (active_block, active_index) == (block, index) {
+                                None
+                            } else {
+                                Some((
+                                    context,
+                                    active_block
+                                        - usize::from(removed_block && active_block > block),
+                                    active_index
+                                        - usize::from(
+                                            active_block == block && active_index > index,
+                                        ),
+                                ))
+                            }
+                        });
+                    }
+                }
+                self.active_tag_group = active;
+                if target != FilterTarget::Draft {
+                    self.refresh();
+                }
+                if target == FilterTarget::Page && self.dest == Dest::AboutMe {
+                    return self.refresh_analytics();
+                }
+                Vec::new()
+            }
             Message::ToggleTag(t) => {
                 toggle(&mut self.filter.tags, t);
                 self.refresh();
+                Vec::new()
+            }
+            Message::ChipExpand(picker, expanded) => {
+                self.chip_expanded[picker as usize] = expanded;
+                Vec::new()
+            }
+            Message::TagBrowseToggle => {
+                self.tag_browse = if self.tag_browse == TagBrowse::All {
+                    TagBrowse::Categories
+                } else {
+                    TagBrowse::All
+                };
+                self.chip_expanded[ChipPicker::Tags as usize] = false;
+                self.chip_expanded[ChipPicker::TrackTags as usize] = false;
+                Vec::new()
+            }
+            Message::TagCategories => {
+                self.tag_browse = TagBrowse::Categories;
+                self.chip_expanded[ChipPicker::Tags as usize] = false;
+                self.chip_expanded[ChipPicker::TrackTags as usize] = false;
+                Vec::new()
+            }
+            Message::TagCategory(category) => {
+                // A category-name search (notably "Custom") must not open an empty child list.
+                // Keep a tag search such as "sensual" when it still matches inside the category.
+                if !self.tag_query.trim().is_empty()
+                    && matches!(self.backend.tag_choices(&self.tag_query, Some(category.as_deref().unwrap_or(""))), Ok(tags) if tags.is_empty())
+                {
+                    self.tag_query.clear();
+                }
+                self.tag_browse = TagBrowse::Category(category);
+                self.chip_expanded[ChipPicker::Tags as usize] = false;
+                self.chip_expanded[ChipPicker::TrackTags as usize] = false;
                 Vec::new()
             }
             Message::TagQuery(q) => {
@@ -1462,13 +2298,14 @@ impl App {
                 Vec::new()
             }
             Message::Bpm(r) => {
-                self.filter.bpm = r;
+                self.filter.set_bpm(r);
                 self.refresh();
                 Vec::new()
             }
             Message::ClearTagFilters => {
+                self.filter.imported_within_days = None;
                 self.filter.tags.clear();
-                self.filter.bpm = data::BPM;
+                self.filter.set_bpm(data::BPM);
                 self.refresh();
                 Vec::new()
             }
@@ -1482,6 +2319,7 @@ impl App {
                         bpm: data::BPM,
                         ..self.filter.clone()
                     };
+                    f.set_bpm(data::BPM);
                     let picks = 1 + (self.roll() % 2) as usize;
                     for _ in 0..picks {
                         let t = names[(self.roll() % names.len() as u64) as usize].clone();
@@ -1489,7 +2327,7 @@ impl App {
                             f.tags.push(t);
                         }
                     }
-                    if self.lib.filtered(&f).len() >= 3 {
+                    if self.matching(&f).len() >= 3 {
                         self.filter = f;
                         break;
                     }
@@ -1498,24 +2336,23 @@ impl App {
                 Vec::new()
             }
             Message::StartJam => {
-                let mut ids: Vec<usize> = self
-                    .lib
-                    .filtered(&self.filter)
-                    .iter()
-                    .map(|t| t.id)
-                    .collect();
-                for i in (1..ids.len()).rev() {
-                    let j = (self.roll() % (i as u64 + 1)) as usize;
-                    ids.swap(i, j);
-                }
+                let ids: Vec<usize> = self.rows.iter().map(|t| t.id).collect();
+                let ordered = self.has_playback_sort();
                 if !ids.is_empty() {
-                    self.play(ids, 0);
-                    self.player.shuffle = true;
+                    let start = if ordered {
+                        0
+                    } else {
+                        (self.roll() % ids.len() as u64) as usize
+                    };
+                    let snapshot = self.backend.shuffle(!ordered);
+                    self.apply(snapshot);
+                    self.play(ids, start);
                 }
                 self.jam_open = false;
                 Vec::new()
             }
             Message::Sort(c) => {
+                self.explicit_sort = true;
                 self.sort.activate(c, false);
                 self.refresh();
                 Vec::new()
@@ -1542,7 +2379,68 @@ impl App {
                 }
                 Vec::new()
             }
+            Message::NewManualPlaylist => {
+                self.creation_filter = Filter::default();
+                self.chip_expanded = [false; 4];
+                self.tag_browse = TagBrowse::Categories;
+                self.tag_query.clear();
+                self.artist_query.clear();
+                self.album_query.clear();
+                self.save_manual = true;
+                self.save_name = Some(self.new_playlist_name());
+                Vec::new()
+            }
+            Message::PlaylistTracksOpen(open) => {
+                self.playlist_tracks_open =
+                    open && self.playlist_edit.is_none() && self.manual_playlist().is_some();
+                self.playlist_tracks_query.clear();
+                Vec::new()
+            }
+            Message::PlaylistTracksQuery(query) => {
+                self.playlist_tracks_query = query;
+                Vec::new()
+            }
+            Message::PlaylistTrackToggle(id) => {
+                if self.playlist_edit.is_none()
+                    && let Some(playlist) = self.manual_playlist()
+                    && let Some(track) = self.lib.tracks.get(id)
+                {
+                    let name = playlist.name.clone();
+                    let present = playlist.tracks.contains(&id);
+                    if !present {
+                        match self.backend.playlist_add_candidates(&name, "") {
+                            Ok(ids) if ids.contains(&id) => {}
+                            Ok(_) => {
+                                self.say("This track does not match the playlist rules");
+                                return Task::none();
+                            }
+                            Err(error) => {
+                                self.say(format!("Cannot check playlist rules: {error}"));
+                                return Task::none();
+                            }
+                        }
+                    }
+                    match self
+                        .backend
+                        .set_playlist_track(&name, &track.slug, !present)
+                    {
+                        Ok(()) => {
+                            if self.reload_library() {
+                                if let Some(index) =
+                                    self.lib.playlists.iter().position(|p| p.name == name)
+                                {
+                                    self.dest = Dest::Playlist(index);
+                                }
+                                self.refresh();
+                            }
+                        }
+                        Err(error) => self.say(format!("Cannot edit playlist tracks: {error}")),
+                    }
+                }
+                Vec::new()
+            }
             Message::SaveJamAsPlaylist => {
+                self.save_manual = false;
                 if !self.filter.is_saveable() {
                     self.say("Add a tag, tempo, artist or album to save a playlist");
                 } else if self.rows.is_empty() {
@@ -1570,21 +2468,35 @@ impl App {
                     self.say("Give the playlist a name");
                 } else if self.name_is_taken(&name) {
                     self.say(format!("There is already a playlist called {name}"));
-                } else if !self.filter.is_saveable() {
+                } else if !self.save_manual && !self.filter.is_saveable() {
                     self.save_name = None;
                     self.say("Add a tag, tempo, artist or album to save a playlist");
                 } else {
                     let saved_with = self.filter.clone();
-                    match self.backend.create_dynamic_playlist(&name, &saved_with) {
+                    let result = if self.save_manual {
+                        self.backend
+                            .create_manual_playlist(&name, &self.creation_filter)
+                    } else {
+                        self.backend.create_dynamic_playlist(&name, &saved_with)
+                    };
+                    match result {
                         Ok(()) => {
                             self.save_name = None;
                             if self.reload_library()
                                 && let Some(i) =
                                     self.lib.playlists.iter().position(|p| p.name == name)
                             {
-                                self.jam_saved = Some((i, saved_with.clone()));
+                                if self.save_manual {
+                                    self.history.replace(Place { dest: self.dest });
+                                    self.history.open(Place::at(Dest::Playlist(i)));
+                                    self.show(Dest::Playlist(i));
+                                } else {
+                                    self.jam_saved = Some((i, saved_with.clone()));
+                                }
                             }
-                            self.say(if saved_with.q.trim().is_empty() {
+                            self.say(if self.save_manual {
+                                format!("Created {name}")
+                            } else if saved_with.q.trim().is_empty() {
                                 format!("Saved as {name}")
                             } else {
                                 format!(
@@ -1631,6 +2543,9 @@ impl App {
                 Vec::new()
             }
             Message::JamFilters(on) => {
+                if on && !self.jam_filters_open {
+                    self.prepare_filter_editor();
+                }
                 self.jam_filters_open = on;
                 Vec::new()
             }
@@ -1663,6 +2578,8 @@ impl App {
                 Vec::new()
             }
             Message::EditTrack(id) => {
+                self.chip_expanded[ChipPicker::TrackTags as usize] = false;
+                self.tag_browse = TagBrowse::All;
                 let t = self.track(id);
                 self.edit_track = Some(TrackEdit {
                     id,
@@ -1694,6 +2611,9 @@ impl App {
                     self.dest = p.dest;
                     self.close_overlays();
                     self.refresh();
+                    if self.dest == Dest::AboutMe {
+                        return self.refresh_analytics();
+                    }
                 }
                 Vec::new()
             }
@@ -1732,41 +2652,84 @@ impl App {
                 Vec::new()
             }
             Message::EditFilter => {
+                self.prepare_filter_editor();
                 if let Dest::Playlist(i) = self.dest {
-                    self.draft = self.lib.playlists.get(i).and_then(|p| p.filter.clone());
+                    self.draft = self
+                        .lib
+                        .playlists
+                        .get(i)
+                        .map(|p| p.filter.clone().unwrap_or_default());
                 }
                 Vec::new()
             }
             Message::DraftToggle(t) => {
-                if let Some(d) = &mut self.draft {
+                if let Some(d) = self.playlist_filter_draft_mut() {
                     toggle(&mut d.tags, t);
                 }
                 Vec::new()
             }
             Message::DraftBpm(r) => {
-                if let Some(d) = &mut self.draft {
-                    d.bpm = r;
+                if let Some(d) = self.playlist_filter_draft_mut() {
+                    d.set_bpm(r);
                 }
                 Vec::new()
             }
             Message::SaveFilter => {
-                if let (Dest::Playlist(i), Some(f)) = (self.dest, self.draft.take())
-                    && let Some(name) = self.lib.playlists.get(i).map(|p| p.name.clone())
+                if let (Dest::Playlist(i), Some(filter)) = (self.dest, self.draft.clone())
+                    && let Some(playlist) = self.lib.playlists.get(i)
                 {
-                    match self.backend.set_playlist_filter(&name, &f) {
-                        Ok(()) => {
-                            if let Some(p) = self.lib.playlists.get_mut(i) {
-                                p.filter = Some(Filter::from_spec(&f.to_spec()));
+                    let name = playlist.name.clone();
+                    let tags_removed = playlist.filter.as_ref().is_some_and(|old| {
+                        old.tags.iter().any(|tag| !filter.tags.contains(tag))
+                            || old
+                                .to_spec()
+                                .tag_exclude
+                                .iter()
+                                .any(|tag| !filter.to_spec().tag_exclude.contains(tag))
+                    });
+                    if playlist.manual {
+                        match self.backend.preview_manual_playlist_filter(&name, &filter) {
+                            Ok((expected, removed)) => {
+                                let review = ManualFilterReview {
+                                    name,
+                                    filter,
+                                    expected,
+                                    removed,
+                                };
+                                if review.removed.is_empty() && !tags_removed {
+                                    self.commit_manual_filter(review);
+                                } else {
+                                    self.manual_filter_review = Some(review);
+                                }
                             }
+                            Err(error) => self.say(format!("Cannot review the filter: {error}")),
                         }
-                        Err(e) => self.say(format!("Cannot save the filter: {e}")),
+                    } else {
+                        match self.backend.set_playlist_filter(&name, &filter) {
+                            Ok(()) => {
+                                self.draft = None;
+                                self.reload_library();
+                            }
+                            Err(error) => self.say(format!("Cannot save the filter: {error}")),
+                        }
                     }
                 }
                 self.refresh();
                 Vec::new()
             }
+            Message::ConfirmManualFilter => {
+                if let Some(review) = self.manual_filter_review.take() {
+                    self.commit_manual_filter(review);
+                }
+                Vec::new()
+            }
+            Message::CancelManualFilterReview => {
+                self.manual_filter_review = None;
+                Vec::new()
+            }
             Message::CancelFilter => {
                 self.draft = None;
+                self.manual_filter_review = None;
                 Vec::new()
             }
             Message::Days(d) => {
@@ -1799,6 +2762,9 @@ impl App {
                 Vec::new()
             }
             Message::Shuffle => {
+                if !self.player.shuffle {
+                    self.clear_playback_sort();
+                }
                 let s = self.backend.shuffle(!self.player.shuffle);
                 self.apply(s);
                 Vec::new()
@@ -1826,6 +2792,75 @@ impl App {
                 self.apply(s);
                 Vec::new()
             }
+            Message::PlaylistOrder(event) => {
+                match event {
+                    ReorderEvent::Edit => {
+                        if self.jam_open {
+                            return Task::none();
+                        }
+                        let Dest::Playlist(index) = self.dest else {
+                            return Task::none();
+                        };
+                        let Some(playlist) = self.lib.playlists.get(index).filter(|p| p.manual)
+                        else {
+                            return Task::none();
+                        };
+                        let name = playlist.name.clone();
+                        match self.backend.playlist_order(&name) {
+                            Ok(tracks) => {
+                                if tracks.len() < 2 {
+                                    return Task::none();
+                                }
+                                let mut order = ReorderState::new(tracks);
+                                order.edit();
+                                self.playlist_edit = Some(PlaylistOrderEdit { name, order });
+                                self.search_open = false;
+                                self.collection_query.clear();
+                                self.detail_order = None;
+                                self.explicit_sort = false;
+                                self.refresh();
+                            }
+                            Err(error) => self.say(format!("Cannot edit playlist order: {error}")),
+                        }
+                    }
+                    ReorderEvent::Reorder { from, to } => {
+                        if let Some(edit) = &mut self.playlist_edit {
+                            edit.order.reorder(from, to);
+                        }
+                    }
+                    ReorderEvent::Cancel => {
+                        self.playlist_edit = None;
+                        self.refresh();
+                    }
+                    ReorderEvent::Submit => {
+                        if let Some(edit) = &self.playlist_edit {
+                            let name = edit.name.clone();
+                            match self.backend.reorder_playlist(
+                                &name,
+                                edit.order.committed(),
+                                edit.order.items(),
+                            ) {
+                                Ok(()) => {
+                                    self.playlist_edit = None;
+                                    if self.reload_library() {
+                                        if let Some(index) =
+                                            self.lib.playlists.iter().position(|p| p.name == name)
+                                        {
+                                            self.dest = Dest::Playlist(index);
+                                        }
+                                        self.refresh();
+                                        self.say("Playlist order saved");
+                                    }
+                                }
+                                Err(error) => {
+                                    self.say(format!("Cannot save playlist order: {error}"))
+                                }
+                            }
+                        }
+                    }
+                }
+                Vec::new()
+            }
             Message::Queue(e) => {
                 // A live list: a drop is committed at once, in the queue after the playing
                 // track. `from` and `to` count in "Up next".
@@ -1851,8 +2886,17 @@ impl App {
                 }
                 Vec::new()
             }
-            Message::SystemScheme(_) => Vec::new(),
+            Message::SystemTheme(settings) => {
+                self.desktop_scheme = settings.scheme;
+                Vec::new()
+            }
             Message::Poll => {
+                if self.dest == Dest::AboutMe
+                    && !self.analytics_loading
+                    && self.last_analytics.elapsed() > Duration::from_secs(5)
+                {
+                    return self.refresh_analytics();
+                }
                 // The session as it is now: the position, and what another handle changed.
                 let s = self.backend.snapshot();
                 self.apply(s);
@@ -1968,7 +3012,7 @@ impl App {
         let mut subs = vec![
             iced::window::resize_events().map(|(_, s)| Message::Resized(s.width, s.height)),
             self.adaptive.subscription(Message::Tick),
-            iad::system::follow_color_scheme().map(Message::SystemScheme),
+            iad::utils::follow_theme().map(Message::SystemTheme),
         ];
         subs.push(iced::keyboard::listen().filter_map(|event| {
             use iced::keyboard::{Event, Key, key::Named};
@@ -1994,7 +3038,9 @@ impl App {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Progress));
         }
         // The bars are read as often as they are drawn, and until they have fallen quiet.
-        if self.minimal && (self.player.playing || self.spectrum.iter().any(|l| *l > 0.0)) {
+        if self.radial_visualizer_visible()
+            && (self.player.playing || self.spectrum.iter().any(|l| *l > 0.0))
+        {
             subs.push(iced::time::every(Duration::from_millis(33)).map(|_| Message::SpectrumTick));
         }
         Subscription::batch(subs)
@@ -2007,8 +3053,19 @@ impl App {
         }
     }
 
+    fn effective_scheme(&self) -> iad::Scheme {
+        self.theme_mode.unwrap_or(self.desktop_scheme)
+    }
+
     fn theme(&self) -> iad::Theme {
-        iad::Theme::from_config(&iad::config::current())
+        let theme = appearance::theme(self.effective_scheme(), &self.theme_config);
+        if self.theme_config.bool("player", "ambient") == Some(true) {
+            if let Some(track) = self.now() {
+                let color = iad::color::from_index(track.id);
+                return theme.with_tint(Some(iced::Color { a: 0.16, ..color }));
+            }
+        }
+        theme
     }
 }
 
@@ -2030,33 +3087,11 @@ fn toggle(tags: &mut Vec<String>, tag: String) {
 /// A long description to judge the clamp with (`WEAVE_GUI_START=long-desc`).
 const LONG: &str = "A long description that goes on about the music in this list: where it came from, why it is here, and what it is good for on a long drive. ";
 
-/// The system file chooser: files, or a folder. Empty when cancelled.
-async fn pick(files: bool) -> Vec<std::path::PathBuf> {
-    let dialog = rfd::AsyncFileDialog::new().set_title(if files {
-        "Import files"
-    } else {
-        "Import a folder"
-    });
-    let picked = if files {
-        dialog
-            .add_filter(
-                "Audio",
-                &["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav"],
-            )
-            .pick_files()
-            .await
-    } else {
-        dialog.pick_folders().await
-    };
-    picked
-        .unwrap_or_default()
-        .into_iter()
-        .map(|f| f.path().to_path_buf())
-        .collect()
-}
-
 /// Indexes `paths` on a thread of its own, so the window keeps drawing.
-async fn import(db: std::path::PathBuf, paths: Vec<std::path::PathBuf>) -> Result<String, String> {
+async fn import(
+    db: std::path::PathBuf,
+    paths: Vec<std::path::PathBuf>,
+) -> Result<weave_player_lib::core::ImportReport, String> {
     let (tx, rx) = iced::futures::channel::oneshot::channel();
     std::thread::spawn(move || {
         let _ = tx.send(backend::import(&db, &paths));
@@ -2124,6 +3159,1919 @@ mod tests {
     fn app() -> App {
         let (backend, lib) = backend::sample::backend();
         App::with(backend, lib).0
+    }
+
+    #[test]
+    fn desktop_events_rebuild_adaptive_palette_and_tag_colors_without_resetting_state() {
+        let mut a = app();
+        let document = appearance::ThemeDocument::parse(appearance::EXAMPLES[0]).unwrap();
+        a.theme_config = document.config;
+        let queue = a.player.queue.clone();
+        let selected = a.themes.selected.clone();
+        let event = |scheme| {
+            Message::SystemTheme(iad::utils::ThemeSettings {
+                scheme,
+                icon_theme: "hicolor".into(),
+            })
+        };
+        let _ = a.update(event(iad::Scheme::Light));
+        let light = a.theme();
+        let light_tag = a.category_style(Some("genre")).color;
+        assert_eq!(light.scheme, iad::Scheme::Light);
+        let _ = a.update(event(iad::Scheme::Dark));
+        let dark = a.theme();
+        assert_eq!(dark.scheme, iad::Scheme::Dark);
+        assert_ne!(dark.semantic.window.bg, light.semantic.window.bg);
+        assert_ne!(a.category_style(Some("genre")).color, light_tag);
+        let _ = a.update(event(iad::Scheme::Light));
+        assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
+        let _ = a.update(Message::ThemeMode(Some(iad::Scheme::Dark)));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(event(iad::Scheme::Light));
+        assert_eq!(a.theme().semantic.window.bg, dark.semantic.window.bg);
+        let _ = a.update(Message::ThemeMode(None));
+        assert_eq!(a.theme().semantic.window.bg, light.semantic.window.bg);
+        assert_eq!(a.themes.selected, selected);
+        assert_eq!(a.player.queue, queue);
+    }
+
+    #[test]
+    fn clicking_theme_mode_icons_emits_real_widget_messages_and_switches_the_palette() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Font, Pixels, Point, Size, mouse};
+        fn leaves(layout: layout::Layout<'_>, size: f32, points: &mut Vec<Point>) {
+            let children = layout.children().collect::<Vec<_>>();
+            let bounds = layout.bounds();
+            if children.is_empty()
+                && (bounds.width - size).abs() < 0.01
+                && (bounds.height - size).abs() < 0.01
+            {
+                points.push(bounds.center());
+            }
+            for child in children {
+                leaves(child, size, points);
+            }
+        }
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        a.theme_config = appearance::config(appearance::EXAMPLES[0]);
+        a.desktop_scheme = iad::Scheme::Dark;
+        assert_eq!(a.theme_mode, None);
+        let original_dark = a.theme().semantic.window.bg;
+        for (index, expected) in [
+            (1, Some(iad::Scheme::Light)),
+            (2, Some(iad::Scheme::Dark)),
+            (0, None),
+        ] {
+            let messages = {
+                let mut element = a.theme_mode_row();
+                let mut tree = Tree::new(&element);
+                let size = Size::new(480.0, 100.0);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut points = Vec::new();
+                leaves(
+                    layout::Layout::new(&node),
+                    iad::Metrics::desktop().icon_size,
+                    &mut points,
+                );
+                assert_eq!(
+                    points.len(),
+                    3,
+                    "system, sun and moon icons must all be clickable"
+                );
+                let cursor = mouse::Cursor::Available(points[index]);
+                let mut messages = Vec::new();
+                for event in [
+                    iced::Event::Mouse(mouse::Event::CursorMoved {
+                        position: points[index],
+                    }),
+                    iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                ] {
+                    let mut shell = iced::advanced::Shell::new(&mut messages);
+                    element.as_widget_mut().update(
+                        &mut tree,
+                        &event,
+                        layout::Layout::new(&node),
+                        cursor,
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut shell,
+                        &iced::Rectangle::with_size(size),
+                    );
+                }
+                messages
+            };
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| matches!(message,Message::ThemeMode(mode) if *mode == expected))
+            );
+            for message in messages {
+                let _ = a.update(message);
+            }
+            assert_eq!(a.theme_mode, expected);
+            assert_eq!(a.theme().scheme, expected.unwrap_or(iad::Scheme::Dark));
+            if expected == Some(iad::Scheme::Light) {
+                assert_ne!(a.theme().semantic.window.bg, original_dark);
+            }
+        }
+        let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+            scheme: iad::Scheme::Light,
+            icon_theme: "hicolor".into(),
+        }));
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+    }
+
+    #[test]
+    fn explicit_theme_mode_overrides_appearance_and_keeps_theme_density_and_queue() {
+        let mut a = app();
+        a.desktop_scheme = iad::Scheme::Light;
+        let queue = a.player.queue.clone();
+        let selected = a.themes.selected.clone();
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
+        assert_eq!(a.theme_mode, None);
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+        let _ = a.update(Message::ThemeMode(Some(iad::Scheme::Dark)));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+            scheme: iad::Scheme::Light,
+            icon_theme: "hicolor".into(),
+        }));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(Message::ThemeMode(None));
+        assert_eq!(a.theme().scheme, iad::Scheme::Light);
+        assert_eq!(a.desktop_scheme, iad::Scheme::Light);
+        assert_eq!(a.themes.selected, selected);
+        assert_eq!(a.player.queue, queue);
+        assert!(a.compact());
+    }
+
+    #[test]
+    fn theme_presets_render_pages_and_filters_without_changing_library_state() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless, Style},
+            widget::Tree,
+        };
+        use iced::{Font, Pixels, Point, Rectangle, Size, mouse};
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        for name in ["After hours", "Velvet grooves", "Summer crush"] {
+            a.backend.create_dynamic_playlist(name, &a.filter).unwrap();
+        }
+        assert!(a.reload_library());
+        a.player.queue = vec![0];
+        a.player.current = Some(0);
+        // Synthetic levels only in this rendering fixture; production reads the audio tap.
+        a.spectrum =
+            std::array::from_fn(|index| ((index as f32 * 0.7).sin() * 0.35 + 0.45).clamp(0.0, 1.0));
+        a.themes.themes = appearance::EXAMPLES
+            .into_iter()
+            .map(|text| appearance::ThemeDocument::parse(text).unwrap())
+            .collect();
+        let original_filter = a.filter.clone();
+        let original_rows = a.rows.clone();
+        for text in appearance::EXAMPLES {
+            let document = appearance::ThemeDocument::parse(text).unwrap();
+            for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
+                a.desktop_scheme = scheme;
+                a.theme_config = document.config.clone();
+                a.themes.selected = Some(document.key.clone());
+                assert_eq!(a.filter, original_filter);
+                assert_eq!(a.rows, original_rows);
+                assert_eq!(
+                    a.tag_style("genre:bachata").color,
+                    a.category_style(Some("genre")).color
+                );
+                for (scene, width, height) in [
+                    ("app", 1000, 720),
+                    ("home", 1000, 720),
+                    ("home-narrow", 390, 720),
+                    ("filters", 560, 520),
+                    ("themes", 480, 560),
+                    ("themes-sheet", 390, 844),
+                    ("playlist-narrow", 390, 844),
+                    ("now-playing", 700, 780),
+                    ("now-playing-narrow", 390, 844),
+                    ("filter-jam-wide", 1000, 720),
+                    ("filter-jam-narrow", 390, 844),
+                    ("filter-page-wide", 1000, 720),
+                    ("filter-page-narrow", 390, 844),
+                    ("filter-playlist-wide", 1000, 720),
+                    ("filter-playlist-narrow", 390, 844),
+                ] {
+                    a.jam_open = scene.starts_with("filter-jam-");
+                    a.jam_filters_open = a.jam_open;
+                    a.page_filters_open = scene.starts_with("filter-page-");
+                    a.draft = scene
+                        .starts_with("filter-playlist-")
+                        .then(|| a.filter.clone());
+                    a.dest = if scene.starts_with("filter-page-") {
+                        Dest::Rediscover
+                    } else if scene == "playlist-narrow" || scene.starts_with("filter-playlist-") {
+                        Dest::Playlist(0)
+                    } else {
+                        Dest::Home
+                    };
+                    let _ = a.update(Message::Resized(width as f32, height as f32));
+                    let _ = a.update(Message::Tick(
+                        Instant::now() + std::time::Duration::from_secs(2),
+                    ));
+                    a.now_playing = scene.starts_with("now-playing");
+                    a.themes_open = scene == "themes-sheet";
+                    let theme = a.theme();
+                    let mut element = if scene == "filters" {
+                        crate::components::responsive_dialog::panel(
+                            a.filter_editor(FilterTarget::Jam),
+                            false,
+                            Size::new(width as f32, height as f32),
+                            0.0,
+                        )
+                    } else if scene == "themes" {
+                        a.themes_form()
+                    } else if scene == "themes-sheet" || scene.starts_with("filter-") {
+                        a.view()
+                    } else if scene.starts_with("now-playing") {
+                        a.now_playing_view()
+                    } else if scene == "app" {
+                        a.view()
+                    } else {
+                        a.page()
+                    };
+                    let mut tree = Tree::new(&element);
+                    let size = Size::new(width as f32, height as f32);
+                    let node = element.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, size),
+                    );
+                    assert!(node.size().width <= size.width && node.size().height <= size.height);
+                    iced::advanced::Renderer::reset(
+                        &mut renderer,
+                        Rectangle::new(Point::ORIGIN, size),
+                    );
+                    let mut messages = Vec::new();
+                    let mut shell = iced::advanced::Shell::new(&mut messages);
+                    element.as_widget_mut().update(
+                        &mut tree,
+                        &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
+                        layout::Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut shell,
+                        &Rectangle::new(Point::ORIGIN, size),
+                    );
+                    element.as_widget().draw(
+                        &tree,
+                        &mut renderer,
+                        &theme,
+                        &Style {
+                            text_color: theme.semantic.window.fg,
+                        },
+                        layout::Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &Rectangle::new(Point::ORIGIN, size),
+                    );
+                    if let Some(dir) = std::env::var_os("WEAVE_THEME_REVIEW_DIR") {
+                        let physical = Size::new(width, height);
+                        let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
+                        let path = std::path::PathBuf::from(dir).join(format!(
+                            "{}-{}-{scene}.png",
+                            document.key,
+                            if scheme.is_dark() { "dark" } else { "light" }
+                        ));
+                        iad::dev::save_png(
+                            &iced::window::Screenshot::new(pixels, physical, 1.0),
+                            &path,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filter_contexts_share_responsive_presentation_and_keep_edit_semantics() {
+        let mut a = app();
+        let check = |a: &mut App, target| {
+            assert_eq!(a.active_filter_context(), Some(target));
+            for (width, narrow) in [(1000.0, false), (390.0, true)] {
+                let _ = a.update(Message::Resized(width, 844.0));
+                let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+                assert_eq!(a.dialog_open_for_test(), !narrow);
+                assert_eq!(
+                    a.active_filter_context(),
+                    Some(target),
+                    "resizing preserves context"
+                );
+                let _ = a.view();
+            }
+        };
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        check(&mut a, FilterTarget::Jam);
+        let live = a.filter.clone();
+        let _ = a.update(Message::EscapeKey);
+        assert!(a.active_filter_context().is_none());
+        assert_eq!(a.filter, live, "closing a live editor keeps its changes");
+
+        let _ = a.update(Message::Go(Dest::Rediscover));
+        let _ = a.update(Message::PageFilters(true));
+        let _ = a.update(Message::PageTag("practice".into()));
+        check(&mut a, FilterTarget::Page);
+        let live_page = a.rediscover_filter.clone();
+        let _ = a.update(Message::EscapeKey);
+        assert_eq!(a.rediscover_filter, live_page);
+        let _ = a.update(Message::Go(Dest::AboutMe));
+        let _ = a.update(Message::PageFilters(true));
+        check(&mut a, FilterTarget::Page);
+        let _ = a.update(Message::PageFilters(false));
+
+        a.backend
+            .create_dynamic_playlist("Filter context", &live)
+            .unwrap();
+        assert!(a.reload_library());
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Filter context")
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let original = a.lib.playlists[index].filter.clone();
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("practice".into()));
+        check(&mut a, FilterTarget::Draft);
+        let _ = a.update(Message::EscapeKey);
+        assert!(a.draft.is_none());
+        assert_eq!(
+            a.lib.playlists[index].filter, original,
+            "cancel never persists draft changes"
+        );
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("practice".into()));
+        let _ = a.update(Message::SaveFilter);
+        assert!(a.draft.is_none());
+        assert!(
+            a.lib
+                .playlists
+                .iter()
+                .find(|p| p.name == "Filter context")
+                .unwrap()
+                .filter
+                .as_ref()
+                .unwrap()
+                .tags
+                .iter()
+                .any(|tag| tag == "practice")
+        );
+    }
+
+    #[test]
+    fn themes_uses_a_dialog_or_sheet_and_keeps_density_separate() {
+        let mut a = app();
+        let root = import_picker::tests::temp();
+        a.themes = appearance::ThemeLibrary::load(root.join("settings"));
+        let _ = a.update(Message::SetDensity(DensityPref::Compact));
+        let _ = a.update(Message::Resized(1000.0, 720.0));
+        let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+        let _ = a.update(Message::Themes(true));
+        assert!(a.themes_open && a.dialog_open_for_test());
+        let _ = a.view();
+        let source = root.join("theme.conf");
+        std::fs::write(&source, appearance::EXAMPLES[0]).unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(source)));
+        assert!(a.themes_open, "import must return to the chooser");
+        assert!(a.compact(), "theme selection must keep compact density");
+        assert!(a.themes.current().is_some());
+        let _ = a.update(Message::SelectTheme(None));
+        assert!(a.themes_open && a.themes.current().is_none());
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.update(Message::Tick(Instant::now() + Duration::from_secs(2)));
+        assert!(
+            a.themes_open && !a.dialog_open_for_test(),
+            "narrow uses a bottom sheet"
+        );
+        let _ = a.view();
+        let _ = a.update(Message::EscapeKey);
+        assert!(!a.themes_open);
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::SheetAction(Box::new(Message::Themes(true))));
+        assert!(a.themes_open && a.sheet.is_none());
+        let _ = a.update(Message::Themes(false));
+        assert!(!a.themes_open && a.compact());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn theme_import_cancellation_failure_and_selection_preserve_the_music_state() {
+        let mut a = app();
+        let root = import_picker::tests::temp();
+        a.themes = appearance::ThemeLibrary::load(root.join("themes-test"));
+        let original = a.filter.clone();
+        a.theme_import_pending = true;
+        let _ = a.update(Message::ThemeChosen(None));
+        assert!(!a.theme_import_pending);
+        assert!(a.themes.themes.is_empty());
+        let path = root.join("skin.conf");
+        std::fs::write(&path, appearance::EXAMPLES[0]).unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(path.clone())));
+        assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
+        assert_eq!(a.theme_config.text("player", "artwork"), Some("disc"));
+        assert_eq!(a.filter, original);
+        std::fs::write(&path, "[theme]\nkey=../invalid\n").unwrap();
+        let _ = a.update(Message::ThemeChosen(Some(path)));
+        assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
+        assert!(a.notice.as_ref().unwrap().0.contains("Cannot import theme"));
+        let _ = a.update(Message::SelectTheme(None));
+        assert_eq!(a.theme_config.text("player", "artwork"), Some("square"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn caret_selection_edits_only_the_active_tag_group() {
+        let mut a = app();
+        for tag in ["genre:bachata", "mood:romantic"] {
+            let _ = a.update(Message::ToggleTag(tag.into()));
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        for (index, tag) in [(0, "genre:zouk"), (1, "practice")] {
+            let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, index))));
+            let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, index)));
+            assert!(a.filter.tags.is_empty());
+        }
+        assert_eq!(
+            a.filter.retained.tag_blocks[0][0].all,
+            ["genre:bachata", "genre:zouk"]
+        );
+        assert_eq!(
+            a.filter.retained.tag_blocks[0][1].all,
+            ["mood:romantic", "practice"]
+        );
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, None));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:salsa".into(),
+        ));
+        assert!(a.filter.tags.is_empty());
+        assert_eq!(a.filter.retained.tag_blocks[0].len(), 3);
+        assert_eq!(a.filter.retained.tag_blocks[0][2].all, ["genre:salsa"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 2)));
+
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 0))));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(
+            a.active_tag_group, None,
+            "plus leaves the edited group for the new-group slot"
+        );
+        assert_eq!(
+            a.filter.retained.tag_blocks[0].len(),
+            3,
+            "switching slots must not create another group"
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(a.filter.retained.tag_blocks[0].len(), 3);
+        assert!(a.filter.tags.is_empty());
+    }
+
+    #[test]
+    fn active_group_edits_stay_in_their_filter_context_and_parent_block() {
+        let mut a = app();
+        let mut filter = Filter::default();
+        filter.retained.tag_blocks = vec![
+            vec![weave_player_lib::core::TagFilter {
+                any: vec!["genre:bachata".into()],
+                ..Default::default()
+            }],
+            vec![weave_player_lib::core::TagFilter {
+                any: vec!["mood:romantic".into()],
+                ..Default::default()
+            }],
+        ];
+        a.draft = Some(filter.clone());
+        a.rediscover_filter = filter.clone();
+        a.dest = Dest::Rediscover;
+        let live = a.filter.clone();
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Draft, Some((1, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Draft,
+            "practice".into(),
+        ));
+        assert_eq!(
+            a.draft.as_ref().unwrap().retained.tag_blocks[1][0].any,
+            ["mood:romantic", "practice"]
+        );
+        assert_eq!(
+            a.draft.as_ref().unwrap().retained.tag_blocks[0],
+            filter.retained.tag_blocks[0]
+        );
+        assert_eq!(a.rediscover_filter, filter);
+        assert_eq!(a.filter, live);
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Page, Some((0, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Page,
+            "genre:zouk".into(),
+        ));
+        assert_eq!(
+            a.rediscover_filter.retained.tag_blocks[0][0].any,
+            ["genre:bachata", "genre:zouk"]
+        );
+        assert_eq!(
+            a.rediscover_filter.retained.tag_blocks[1],
+            filter.retained.tag_blocks[1]
+        );
+        assert_eq!(a.filter, live);
+        a.prepare_filter_editor();
+        assert_eq!(a.active_tag_group, None);
+    }
+
+    #[test]
+    fn removing_the_last_active_tag_does_not_leave_an_unrestricted_or_group() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("genre:bachata".into()));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 0))));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:bachata".into(),
+        ));
+        assert!(a.filter.retained.tag_blocks.is_empty());
+        assert_eq!(a.active_tag_group, None);
+    }
+
+    #[test]
+    fn caret_arrows_can_leave_the_first_group_and_return_to_new_group() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Font, Pixels, Size, keyboard, mouse};
+        let renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        for tag in ["genre:bachata", "mood:romantic"] {
+            let _ = a.update(Message::ToggleTag(tag.into()));
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        a.filter
+            .retained
+            .tag_blocks
+            .push(vec![weave_player_lib::core::TagFilter {
+                any: vec!["practice".into()],
+                ..Default::default()
+            }]);
+        let mut tree = Tree::empty();
+        for (key, expected) in [
+            (keyboard::key::Named::ArrowLeft, Some((1, 0))),
+            (keyboard::key::Named::ArrowLeft, Some((0, 1))),
+            (keyboard::key::Named::ArrowLeft, Some((0, 0))),
+            (keyboard::key::Named::ArrowRight, Some((0, 1))),
+            (keyboard::key::Named::ArrowRight, Some((1, 0))),
+            (keyboard::key::Named::ArrowRight, None),
+            (keyboard::key::Named::ArrowLeft, Some((1, 0))),
+            (keyboard::key::Named::ArrowRight, None),
+        ] {
+            let messages = {
+                let mut element = a.filter_editor(FilterTarget::Jam);
+                tree.diff(element.as_widget());
+                let size = Size::new(480.0, 800.0);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let mut focus = iced::advanced::widget::operation::focusable::focus::<()>(
+                    iced::widget::Id::new(crate::ui_dialogs::TAG_QUERY_ID),
+                );
+                element.as_widget_mut().operate(
+                    &mut tree,
+                    layout::Layout::new(&node),
+                    &renderer,
+                    &mut focus,
+                );
+                let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(key),
+                    modified_key: keyboard::Key::Named(key),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                });
+                let mut messages = Vec::new();
+                let mut shell = iced::advanced::Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    layout::Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &iced::Rectangle::with_size(size),
+                );
+                assert!(shell.is_event_captured());
+                messages
+            };
+            assert!(
+                messages.iter().any(|message| matches!(
+                    message, Message::SelectTagGroup(FilterTarget::Jam, group) if *group == expected
+                )),
+                "caret must navigate to {expected:?}, got {messages:?}"
+            );
+            for message in messages {
+                let _ = a.update(message);
+            }
+            assert_eq!(
+                a.active_tag_group,
+                expected.map(|(block, index)| (FilterTarget::Jam, block, index))
+            );
+        }
+    }
+
+    #[test]
+    fn selected_and_grouped_tags_share_input_and_page_rendering() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        assert_eq!(
+            a.tag_selection_chips(
+                &a.filter.tags,
+                &[],
+                Some(Message::ToggleTag),
+                Some(FilterTarget::Jam)
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            a.tag_selection_chips(&a.filter.tags, &[], None, None).len(),
+            1
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let grouped = &a.filter.retained.tag_blocks;
+        assert_eq!(
+            a.tag_selection_chips(
+                &[],
+                grouped,
+                Some(Message::ToggleTag),
+                Some(FilterTarget::Jam)
+            )
+            .len(),
+            1,
+            "one group without a trailing comma"
+        );
+        assert_eq!(a.tag_selection_chips(&[], grouped, None, None).len(), 1);
+        assert!(a.filter_sentence(&a.filter).contains("romantic"));
+        let _ = a.update(Message::ToggleTag("genre:bachata".into()));
+        assert_eq!(
+            a.tag_selection_chips(&a.filter.tags, &a.filter.retained.tag_blocks, None, None)
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn new_tag_groups_are_ored_immediately_and_after_commit_or_reload() {
+        let mut a = app();
+        let mut expected = Vec::new();
+        for tag in ["mood:romantic", "genre:bachata"] {
+            a.filter = Filter::default();
+            let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            expected.extend(a.rows.iter().map(|track| track.id));
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        a.filter = Filter::default();
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "mood:romantic".into(),
+        ));
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "genre:bachata".into(),
+        ));
+        let ids = |a: &App| {
+            let mut ids: Vec<_> = a.rows.iter().map(|track| track.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(
+            ids(&a),
+            expected,
+            "new group must join the union before pressing plus again"
+        );
+        assert!(a.filter.to_spec().tag_all.is_empty());
+        assert_eq!(a.filter.to_spec().tag_blocks[0].len(), 2);
+        assert_eq!(
+            a.tag_selection_chips(&a.filter.tags, &a.filter.retained.tag_blocks, None, None)
+                .len(),
+            3
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert_eq!(
+            ids(&a),
+            expected,
+            "finishing a group must not change the union"
+        );
+        let spec = a.filter.to_spec();
+        a.filter = Filter::from_spec(&spec);
+        a.refresh();
+        assert_eq!(
+            ids(&a),
+            expected,
+            "saved/reloaded group nesting must keep OR semantics"
+        );
+        assert_eq!(a.filter.to_spec(), spec);
+    }
+
+    #[test]
+    fn shared_tag_constraints_in_imported_filters_stay_anded_with_or_groups() {
+        let mut a = app();
+        let spec = weave_player_lib::core::FilterSpec {
+            tag_all: vec!["mood:romantic".into()],
+            tag_blocks: vec![vec![weave_player_lib::core::TagFilter {
+                any: vec!["genre:bachata".into()],
+                ..Default::default()
+            }]],
+            ..Default::default()
+        };
+        a.filter = Filter::from_spec(&spec);
+        let _ = a.update(Message::FilterTagToggle(
+            FilterTarget::Jam,
+            "practice".into(),
+        ));
+        assert_eq!(a.filter.to_spec().tag_all, ["mood:romantic", "practice"]);
+        assert_eq!(a.filter.to_spec().tag_blocks, spec.tag_blocks);
+    }
+
+    #[test]
+    fn plus_groups_selected_tags_with_or_logic() {
+        let mut a = app();
+        let mut expected = Vec::new();
+        for tag in ["mood:romantic", "genre:bachata"] {
+            a.filter = Filter::default();
+            let _ = a.update(Message::ToggleTag(tag.into()));
+            expected.extend(a.rows.iter().map(|track| track.id));
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        assert!(!expected.is_empty());
+        a.filter = Filter::default();
+        for tag in ["mood:romantic", "genre:bachata"] {
+            let _ = a.update(Message::ToggleTag(tag.into()));
+        }
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        let mut actual: Vec<_> = a.rows.iter().map(|track| track.id).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "plus must match either selected tag");
+        let group = &a.filter.retained.tag_blocks[0][0];
+        assert!(group.all.is_empty());
+        assert_eq!(group.any, ["mood:romantic", "genre:bachata"]);
+    }
+
+    #[test]
+    fn grouped_tags_are_removed_individually_and_keep_other_group_caret_positions() {
+        let mut a = app();
+        for tags in [vec!["genre:bachata", "genre:zouk"], vec!["mood:romantic"]] {
+            for tag in tags {
+                let _ = a.update(Message::FilterTagToggle(FilterTarget::Jam, tag.into()));
+            }
+            let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        }
+        let _ = a.update(Message::SelectTagGroup(FilterTarget::Jam, Some((0, 1))));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "genre:bachata".into(),
+        ));
+        assert_eq!(a.filter.retained.tag_blocks[0][0].all, ["genre:zouk"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 1)));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "genre:zouk".into(),
+        ));
+        assert_eq!(a.filter.retained.tag_blocks[0][0].all, ["mood:romantic"]);
+        assert_eq!(a.active_tag_group, Some((FilterTarget::Jam, 0, 0)));
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
+        assert!(a.filter.retained.tag_blocks.is_empty());
+        assert_eq!(a.active_tag_group, None);
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
+        assert!(
+            a.filter.retained.tag_blocks.is_empty(),
+            "stale remove must not re-add a tag"
+        );
+    }
+
+    #[test]
+    fn selection_groups_are_removable_and_preserved_in_saved_definitions() {
+        let mut a = app();
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let before = a.rows.clone();
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert!(a.filter.tags.is_empty());
+        assert_eq!(a.filter.to_spec().tag_blocks[0][0].all, ["mood:romantic"]);
+        assert_eq!(a.rows, before);
+        assert!(a.filter.is_saveable());
+        assert!(
+            a.active_chips().is_some(),
+            "Jam must display committed groups even without loose tags"
+        );
+        let _ = a.jam_page();
+        let spec = a.filter.to_spec();
+        assert_eq!(Filter::from_spec(&spec).to_spec(), spec);
+        let _ = a.view();
+        let _ = a.update(Message::RemoveGroupedTag(
+            FilterTarget::Jam,
+            0,
+            0,
+            "mood:romantic".into(),
+        ));
+        assert!(a.filter.to_spec().tag_blocks.is_empty());
+        assert!(a.active_chips().is_none());
+        assert!(
+            a.rows.len() >= before.len(),
+            "removing a group refreshes the matches"
+        );
+        let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+        assert!(a.filter.to_spec().tag_blocks.is_empty());
+    }
+
+    #[test]
+    fn exclusions_with_commas_and_backslashes_survive_unrelated_gui_edits() {
+        let spec = weave_player_lib::core::FilterSpec {
+            tag_exclude: vec!["guest, live".into(), r"path\tag".into(), "mood:calm".into()],
+            ..Default::default()
+        };
+        let mut f = Filter::from_spec(&spec);
+        assert_eq!(f.to_spec(), spec);
+        f.artists.push("Artist".into());
+        assert_eq!(f.to_spec().tag_exclude, spec.tag_exclude);
+    }
+    #[test]
+    fn native_folder_selection_starts_import_and_blocks_duplicate_submissions() {
+        let dir = import_picker::tests::temp();
+        let music = dir.join("music");
+        std::fs::create_dir(&music).unwrap();
+        let song = music.join("song.wav");
+        import_picker::tests::wav(&song);
+        let db = dir.join("library.db");
+        let (backend, library) = backend::sample::disk(&db);
+        let mut a = App::with(backend, library).0;
+        let _ = a.update(Message::Import(import_picker::Mode::Folder));
+        assert!(!a.import_in_progress);
+        let _ = a.update(Message::ImportChosen(a.import_request, vec![music.clone()]));
+        assert!(!a.import_chooser_open);
+        assert!(a.import_in_progress);
+        let request = a.import_request;
+        let _ = a.update(Message::Import(import_picker::Mode::Folder));
+        assert_eq!(a.import_request, request);
+        assert!(!a.import_chooser_open);
+        let _ = a.update(Message::Picked(vec![song.clone()]));
+        assert!(a.import_in_progress);
+        let report = backend::import(&db, &[music, song]).unwrap();
+        assert_eq!(report.added, 1);
+        let _ = a.update(Message::Imported(Ok(report)));
+        assert!(!a.import_in_progress);
+        assert!(a.import_report.is_none());
+        assert_eq!(a.lib.tracks.len(), 1);
+        drop(a);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn stale_analytics_responses_do_not_replace_current_statistics() {
+        let mut a = app();
+        let _ = a.update(Message::Open(Dest::AboutMe));
+        let current = a.analytics_request;
+        assert!(a.analytics_result.as_ref().unwrap().is_ok());
+        let _ = a.update(Message::AnalyticsLoaded(
+            current.saturating_sub(1),
+            Box::new(Err("stale response".into())),
+        ));
+        assert!(a.analytics_result.as_ref().unwrap().is_ok());
+    }
+
+    #[test]
+    fn explicitly_resetting_bpm_removes_saved_open_bounds_without_losing_other_rules() {
+        let spec = weave_player_lib::core::FilterSpec {
+            bpm_max: Some(180.0),
+            rating_min: Some(4),
+            ..Default::default()
+        };
+        let mut filter = Filter::from_spec(&spec);
+        assert_eq!(filter.to_spec(), spec);
+        assert_eq!(filter.bpm_label(), "up to 180 BPM");
+        filter.set_bpm(data::BPM);
+        let updated = filter.to_spec();
+        assert_eq!(updated.bpm_max, None);
+        assert_eq!(updated.rating_min, Some(4));
+    }
+
+    #[test]
+    fn full_saved_filter_survives_gui_edits_and_membership_uses_engine_results() {
+        use weave_player_lib::core::{FilterSpec, Sort, SortField};
+        let mut a = app();
+        let spec = FilterSpec {
+            query: Some("certainly no match".into()),
+            rating_min: Some(4),
+            tag_exclude: vec!["live".into()],
+            limit: Some(2),
+            bpm_min: Some(90.0),
+            sort: Some(Sort {
+                field: SortField::Added,
+                descending: true,
+            }),
+            ..Default::default()
+        };
+        backend::sample::dynamic(&mut a.backend, "Precise", spec.clone());
+        assert!(a.reload_library());
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Precise")
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        assert!(a.rows.is_empty());
+        let _ = a.update(Message::EditFilter);
+        let draft = a.draft.as_mut().unwrap();
+        assert_eq!(draft.to_spec(), spec);
+        draft.tags.push("mood:romantic".into());
+        let _ = a.update(Message::SaveFilter);
+        let saved = a
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.name == "Precise")
+            .unwrap()
+            .filter
+            .as_ref()
+            .unwrap()
+            .to_spec();
+        assert_eq!(saved.query, spec.query);
+        assert_eq!(saved.rating_min, spec.rating_min);
+        assert_eq!(saved.limit, spec.limit);
+        assert_eq!(saved.sort, spec.sort);
+        assert_eq!(saved.bpm_max, None);
+        assert_eq!(saved.tag_exclude, spec.tag_exclude);
+        assert!(a.rows.is_empty());
+    }
+    #[test]
+    fn inline_search_filters_the_current_playlist_source_and_closing_restores_it() {
+        let mut a = app();
+        let included = a.lib.tracks[0].clone();
+        let outside = a
+            .lib
+            .tracks
+            .iter()
+            .find(|t| t.title != included.title)
+            .unwrap()
+            .clone();
+        let _ = a.update(Message::ToggleFavoriteTrack(included.id));
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let baseline = a.rows.clone();
+        let _ = a.update(Message::SearchOpen(true));
+        assert!(a.search_open);
+        assert!(!a.dialog_open_for_test());
+        let _ = a.update(Message::SearchText(outside.title));
+        assert!(
+            a.rows.is_empty(),
+            "a matching library track outside the source must stay out"
+        );
+        assert_eq!(a.context_search_spec().sources, [backend::FAVOURITES]);
+        let _ = a.view();
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        assert!(a.search_open);
+        assert!(!a.dialog_open_for_test());
+        assert!(a.sheet.is_none(), "inline search creates no bottom sheet");
+        let _ = a.view();
+        let _ = a.update(Message::SearchOpen(false));
+        assert!(!a.search_open);
+        assert_eq!(a.rows, baseline);
+        let _ = a.update(Message::SearchOpen(true));
+        let _ = a.update(Message::SearchText(included.title));
+        assert_eq!(a.rows.len(), 1);
+        let _ = a.update(Message::Open(Dest::Tracks));
+        assert!(!a.search_open);
+        assert!(a.collection_query.is_empty());
+    }
+    #[test]
+    fn inline_jam_search_is_additive_to_saved_filters_and_limits() {
+        use weave_player_lib::core::{FilterSpec, Sort, SortField};
+        let mut a = app();
+        a.filter = Filter::from_spec(&FilterSpec {
+            limit: Some(1),
+            sort: Some(Sort {
+                field: SortField::Rating,
+                descending: true,
+            }),
+            ..Default::default()
+        });
+        let _ = a.update(Message::ToggleJam);
+        let baseline: Vec<_> = a.rows.iter().map(|t| t.id).collect();
+        assert_eq!(baseline.len(), 1);
+        let outside = a
+            .lib
+            .tracks
+            .iter()
+            .find(|t| !baseline.contains(&t.id) && t.title != a.rows[0].title)
+            .unwrap()
+            .title
+            .clone();
+        let original = a.filter.to_spec();
+        let _ = a.update(Message::SearchOpen(true));
+        let _ = a.update(Message::SearchText(outside));
+        assert!(
+            a.rows.is_empty(),
+            "search must not select a new track before the saved limit"
+        );
+        assert_eq!(a.filter.to_spec(), original);
+        let _ = a.update(Message::SearchOpen(false));
+        assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), baseline);
+    }
+    #[test]
+    fn artist_and_album_search_do_not_escape_their_existing_track_sets() {
+        let mut a = app();
+        for dest in [Dest::Artist(0), Dest::Album(0)] {
+            let _ = a.update(Message::Open(dest));
+            let baseline: Vec<_> = a.rows.iter().map(|t| t.id).collect();
+            assert!(!baseline.is_empty());
+            let outside = a
+                .lib
+                .tracks
+                .iter()
+                .find(|t| !baseline.contains(&t.id))
+                .unwrap()
+                .clone();
+            let _ = a.update(Message::SearchOpen(true));
+            let _ = a.update(Message::SearchText(outside.title));
+            assert!(a.rows.iter().all(|t| baseline.contains(&t.id)));
+            assert!(!a.rows.iter().any(|t| t.id == outside.id));
+            let _ = a.update(Message::EscapeKey);
+            assert!(!a.search_open);
+            assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), baseline);
+        }
+    }
+    #[test]
+    fn manual_playlist_creation_and_membership_reuse_the_playlist_page_without_changing_playback() {
+        let mut a = app();
+        backend::sample::playlist(&mut a.backend, "Existing", "");
+        assert!(a.reload_library());
+        a.play(vec![8, 9], 0);
+        let queue = a.player.queue.clone();
+        let _ = a.update(Message::Open(Dest::Playlists));
+        let before = a.lib.playlists.len();
+        let track_count = a.lib.tracks.len();
+        let _ = a.update(Message::NewManualPlaylist);
+        assert!(a.save_manual && a.save_name.is_some());
+        let _ = a.update(Message::SaveNameInput(" ".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        assert_eq!(a.lib.playlists.len(), before);
+        assert!(a.save_name.is_some());
+        let _ = a.update(Message::SaveNameInput("Existing".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        assert_eq!(a.lib.playlists.len(), before);
+        let _ = a.update(Message::CancelSaveJam);
+        assert!(a.save_name.is_none());
+        let _ = a.update(Message::NewManualPlaylist);
+        let _ = a.update(Message::SaveNameInput(" My manual set ".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        let playlist = a
+            .manual_playlist()
+            .expect("opens the created manual playlist");
+        assert_eq!(playlist.name, "My manual set");
+        assert!(playlist.tracks.is_empty());
+        assert!(
+            a.backend
+                .playlist_order("My manual set")
+                .unwrap()
+                .is_empty()
+        );
+        let _ = a.update(Message::PlaylistTracksOpen(true));
+        assert!(a.playlist_tracks_open);
+        let _ = a.view();
+        let _ = a.update(Message::PlaylistTracksQuery(a.track(1).title.clone()));
+        for id in [2, 0, 1] {
+            let _ = a.update(Message::PlaylistTrackToggle(id));
+        }
+        let saved = a.backend.playlist_order("My manual set").unwrap();
+        assert_eq!(saved, [2, 0, 1].map(|id| a.track(id).slug.clone()));
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.view();
+        let _ = a.update(Message::PlaylistTrackToggle(0));
+        assert!(a.reload_library());
+        assert_eq!(
+            a.backend.playlist_order("My manual set").unwrap(),
+            [2, 1].map(|id| a.track(id).slug.clone())
+        );
+        assert_eq!(
+            a.lib.tracks.len(),
+            track_count,
+            "removing membership keeps the library track"
+        );
+        let _ = a.update(Message::EscapeKey);
+        assert!(!a.playlist_tracks_open);
+        assert_eq!(a.player.queue, queue);
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Edit));
+        let _ = a.update(Message::PlaylistTracksOpen(true));
+        assert!(
+            !a.playlist_tracks_open,
+            "membership cannot invalidate an open reorder draft"
+        );
+        let _ = a.update(Message::PlaylistTrackToggle(2));
+        assert_eq!(a.backend.playlist_order("My manual set").unwrap().len(), 2);
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Cancel));
+        backend::sample::dynamic(&mut a.backend, "Generated membership", Default::default());
+        assert!(a.reload_library());
+        let dynamic = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Generated membership")
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(dynamic)));
+        let original = a.lib.playlists[dynamic].tracks.clone();
+        let _ = a.update(Message::PlaylistTracksOpen(true));
+        let _ = a.update(Message::PlaylistTrackToggle(2));
+        assert!(!a.playlist_tracks_open);
+        assert_eq!(a.lib.playlists[dynamic].tracks, original);
+        assert!(
+            a.backend
+                .set_playlist_track("Generated membership", &a.track(2).slug.clone(), false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn curated_rules_limit_additions_and_pruning_requires_a_dialog_at_every_width() {
+        let mut a = app();
+        let _ = a.update(Message::Open(Dest::Playlists));
+        let _ = a.update(Message::NewManualPlaylist);
+        assert!(!a.dialog_open_for_test(), "creation is a full-screen page");
+        let _ = a.update(Message::DraftToggle("mood:romantic".into()));
+        let eligible = a.backend.matching(&a.creation_filter.to_spec()).unwrap();
+        assert!(eligible.len() >= 2);
+        let outside = a
+            .lib
+            .tracks
+            .iter()
+            .find(|t| !eligible.contains(&t.id))
+            .unwrap()
+            .id;
+        let _ = a.view();
+        let _ = a.update(Message::SaveNameInput("Curated rules".into()));
+        let _ = a.update(Message::ConfirmSaveJam);
+        assert!(a.manual_playlist().unwrap().tracks.is_empty());
+        assert_eq!(
+            a.manual_playlist().unwrap().filter.as_ref().unwrap().tags,
+            ["mood:romantic"]
+        );
+        assert_eq!(
+            a.backend
+                .playlist_add_candidates("Curated rules", "")
+                .unwrap(),
+            eligible
+        );
+        assert!(
+            a.backend
+                .playlist_add_candidates("Curated rules", &a.track(outside).title)
+                .unwrap()
+                .is_empty()
+        );
+        let _ = a.update(Message::PlaylistTrackToggle(outside));
+        assert!(
+            a.manual_playlist().unwrap().tracks.is_empty(),
+            "an ineligible addition is blocked"
+        );
+        for &id in &eligible[..2] {
+            let _ = a.update(Message::PlaylistTrackToggle(id));
+        }
+        let saved = a.backend.playlist_order("Curated rules").unwrap();
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("mood:romantic".into()));
+        let _ = a.update(Message::SaveFilter);
+        assert!(
+            a.manual_filter_review.as_ref().unwrap().removed.is_empty(),
+            "removing an AND tag still confirms, with zero disqualified tracks"
+        );
+        assert!(a.dialog_open_for_test());
+        let _ = a.update(Message::ConfirmManualFilter);
+        assert_eq!(a.backend.playlist_order("Curated rules").unwrap(), saved);
+        let _ = a.update(Message::PlaylistTrackToggle(outside));
+        let before = a.backend.playlist_order("Curated rules").unwrap();
+        let track_count = a.lib.tracks.len();
+        a.play(vec![8, 9], 0);
+        let queue = a.player.queue.clone();
+        let _ = a.update(Message::EditFilter);
+        let _ = a.update(Message::DraftToggle("mood:romantic".into()));
+        let _ = a.update(Message::SaveFilter);
+        assert_eq!(a.manual_filter_review.as_ref().unwrap().removed.len(), 1);
+        assert!(a.dialog_open_for_test());
+        assert_eq!(a.backend.playlist_order("Curated rules").unwrap(), before);
+        assert!(a.manual_playlist().unwrap().filter.is_none());
+        let _ = a.update(Message::CancelManualFilterReview);
+        assert!(a.draft.is_some());
+        assert_eq!(a.backend.playlist_order("Curated rules").unwrap(), before);
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.update(Message::SaveFilter);
+        assert!(
+            a.dialog_open_for_test(),
+            "confirmation stays a dialog on narrow"
+        );
+        let _ = a.view();
+        let _ = a.update(Message::ConfirmManualFilter);
+        assert!(a.manual_filter_review.is_none() && a.draft.is_none());
+        assert_eq!(a.backend.playlist_order("Curated rules").unwrap(), saved);
+        assert_eq!(a.lib.tracks.len(), track_count);
+        assert_eq!(a.player.queue, queue);
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Edit));
+        assert!(
+            a.playlist_edit.is_some(),
+            "filtered manual playlists retain curation controls"
+        );
+        let _ = a.view();
+    }
+
+    #[test]
+    fn manual_playlist_order_is_a_cancellable_draft_and_saving_preserves_playback() {
+        let mut a = app();
+        for id in [0, 1, 2] {
+            let _ = a.update(Message::ToggleFavoriteTrack(id));
+        }
+        a.play(vec![8, 9], 0);
+        let queue = a.player.queue.clone();
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let original = a.backend.playlist_order(backend::FAVOURITES).unwrap();
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Edit));
+        assert!(a.playlist_edit.is_some());
+        assert!(!a.can_search_page());
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Reorder {
+            from: 0,
+            to: 2,
+        }));
+        assert!(a.playlist_edit.as_ref().unwrap().order.is_dirty());
+        assert_eq!(
+            a.backend.playlist_order(backend::FAVOURITES).unwrap(),
+            original
+        );
+        let _ = a.view();
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.view();
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Cancel));
+        assert!(a.playlist_edit.is_none());
+        assert_eq!(
+            a.backend.playlist_order(backend::FAVOURITES).unwrap(),
+            original
+        );
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Edit));
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Reorder {
+            from: 0,
+            to: 2,
+        }));
+        let draft = a.playlist_edit.as_ref().unwrap().order.items().to_vec();
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Submit));
+        assert!(a.playlist_edit.is_none());
+        assert_eq!(
+            a.backend.playlist_order(backend::FAVOURITES).unwrap(),
+            draft
+        );
+        assert_eq!(
+            a.rows.iter().map(|t| t.slug.clone()).collect::<Vec<_>>(),
+            draft
+        );
+        assert_eq!(a.player.queue, queue);
+        backend::sample::dynamic(&mut a.backend, "Generated", Default::default());
+        assert!(a.reload_library());
+        let dynamic = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == "Generated")
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(dynamic)));
+        let _ = a.update(Message::PlaylistOrder(ReorderEvent::Edit));
+        assert!(
+            a.playlist_edit.is_none(),
+            "saved-filter playlists cannot be manually reordered"
+        );
+    }
+    #[test]
+    fn sort_selection_cycles_descending_ascending_and_deselected() {
+        use weave_player_lib::core::CollectionOrder;
+        let mut a = app();
+        let _ = a.update(Message::Open(Dest::Tracks));
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert!(a.collection_descending());
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert!(!a.collection_descending());
+        let rated: Vec<_> = a.rows.iter().filter(|t| t.rating > 0).collect();
+        assert!(
+            rated
+                .windows(2)
+                .all(|pair| pair[0].rating <= pair[1].rating)
+        );
+        let _ = a.update(Message::CollectionQuery(a.rows[0].artist.clone()));
+        assert!(!a.collection_descending(), "search retains direction");
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert_eq!(a.selected_collection_order(), None);
+        assert_eq!(
+            a.rows.iter().map(|t| t.id).collect::<Vec<_>>(),
+            a.backend
+                .collection_tracks(&a.collection_query, None, true)
+                .unwrap()
+        );
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert!(a.collection_descending());
+        let _ = a.update(Message::ToggleJam);
+        for _ in 0..3 {
+            let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        }
+        assert_eq!(a.filter.to_spec().sort, None);
+        let _ = a.update(Message::Open(Dest::Album(0)));
+        let baseline: Vec<_> = a.rows.iter().map(|t| t.id).collect();
+        for _ in 0..3 {
+            let _ = a.update(Message::CollectionOrder(CollectionOrder::AddedDate));
+        }
+        assert_eq!(a.detail_order, None);
+        assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), baseline);
+    }
+    #[test]
+    fn collection_sort_survives_search_and_is_kept_separately_per_library_page() {
+        use weave_player_lib::core::CollectionOrder;
+        let mut a = app();
+        let _ = a.update(Message::Open(Dest::Tracks));
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert!(
+            a.rows
+                .windows(2)
+                .all(|pair| pair[0].rating >= pair[1].rating)
+        );
+        let title = a.rows[0].title.clone();
+        let _ = a.update(Message::CollectionQuery(title));
+        assert!(!a.rows.is_empty());
+        assert_eq!(a.collection_order(), CollectionOrder::Rating);
+        let _ = a.update(Message::Open(Dest::Albums));
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::ReleaseDate));
+        let _ = a.view();
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.view();
+        let _ = a.update(Message::Open(Dest::Tracks));
+        assert_eq!(a.collection_order(), CollectionOrder::Rating);
+        assert!(a.collection_query.is_empty());
+        assert!(
+            a.rows
+                .windows(2)
+                .all(|pair| pair[0].rating >= pair[1].rating)
+        );
+    }
+    #[test]
+    fn jam_sort_is_ephemeral_and_detail_sort_preserves_playlist_membership_and_saved_order() {
+        use weave_player_lib::core::CollectionOrder;
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamRecent(true));
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert_eq!(a.filter.to_spec().sort, None);
+        assert_eq!(a.jam_order, Some(CollectionOrder::Rating));
+        save_jam(&mut a);
+        let saved_name = a
+            .lib
+            .playlists
+            .iter()
+            .find(|p| p.filter.is_some())
+            .unwrap()
+            .name
+            .clone();
+        assert!(a.reload_library());
+        assert_eq!(
+            a.lib
+                .playlists
+                .iter()
+                .find(|p| p.name == saved_name)
+                .unwrap()
+                .filter
+                .as_ref()
+                .unwrap()
+                .to_spec()
+                .sort,
+            None
+        );
+        assert!(
+            a.rows
+                .windows(2)
+                .all(|pair| pair[0].rating >= pair[1].rating)
+        );
+        let _ = a.view();
+        for id in [4, 1, 3] {
+            let _ = a.update(Message::ToggleFavoriteTrack(id));
+        }
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let saved_ids: Vec<_> = a
+            .lib
+            .playlist_tracks(&a.lib.playlists[index])
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(saved_ids.len(), 3);
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        let mut ids: Vec<_> = a.rows.iter().map(|t| t.id).collect();
+        let mut expected = saved_ids.clone();
+        ids.sort();
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert!(
+            a.rows
+                .windows(2)
+                .all(|pair| pair[0].rating >= pair[1].rating)
+        );
+        assert_eq!(
+            a.lib
+                .playlist_tracks(&a.lib.playlists[index])
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            saved_ids
+        );
+        let _ = a.update(Message::Open(Dest::Home));
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        assert_eq!(a.rows.iter().map(|t| t.id).collect::<Vec<_>>(), saved_ids);
+    }
+    #[test]
+    fn temporary_sort_controls_playback_without_changing_saved_rules_or_shuffle_preference() {
+        use weave_player_lib::core::{CollectionOrder, FilterSpec, Sort, SortField};
+        let mut a = app();
+        let _ = a.update(Message::ToggleJam);
+        // Existing saved/CLI rules, including a sorted limit, still decide membership.
+        let base = FilterSpec {
+            sort: Some(Sort {
+                field: SortField::Added,
+                descending: true,
+            }),
+            limit: Some(5),
+            ..Default::default()
+        };
+        a.filter = Filter::from_spec(&base);
+        a.refresh();
+        let mut members = a.rows.iter().map(|t| t.id).collect::<Vec<_>>();
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        assert_eq!(a.filter.to_spec(), base);
+        let ordered = a.rows.iter().map(|t| t.id).collect::<Vec<_>>();
+        let mut sorted = ordered.clone();
+        sorted.sort();
+        members.sort();
+        assert_eq!(
+            members, sorted,
+            "temporary ordering cannot change limit membership"
+        );
+        let _ = a.update(Message::StartJam);
+        assert_eq!(a.player.queue, ordered);
+        assert!(!a.player.shuffle);
+        assert!(!a.backend.snapshot().shuffle);
+        for id in [4, 1, 3] {
+            let _ = a.update(Message::ToggleFavoriteTrack(id));
+        }
+        let index = a
+            .lib
+            .playlists
+            .iter()
+            .position(|p| p.name == backend::FAVOURITES)
+            .unwrap();
+        let _ = a.update(Message::Open(Dest::Playlist(index)));
+        let _ = a.update(Message::SetShufflePref(Some(true)));
+        let original = a.backend.playlist_order(backend::FAVOURITES).unwrap();
+        let _ = a.update(Message::CollectionOrder(CollectionOrder::Rating));
+        let ordered = a.rows.iter().map(|t| t.id).collect::<Vec<_>>();
+        let _ = a.update(Message::PlayAll(ordered.clone()));
+        assert_eq!(a.player.queue, ordered);
+        assert!(!a.player.shuffle);
+        assert_eq!(
+            a.lib.playlists[index].shuffle,
+            Some(true),
+            "sort leaves the saved preference alone"
+        );
+        assert_eq!(
+            a.backend.playlist_order(backend::FAVOURITES).unwrap(),
+            original
+        );
+        let _ = a.update(Message::SetShufflePref(Some(true)));
+        assert!(!a.has_playback_sort());
+        let ids = a.rows.iter().map(|t| t.id).collect::<Vec<_>>();
+        let _ = a.update(Message::PlayAll(ids));
+        assert!(a.player.shuffle);
+    }
+
+    #[test]
+    fn library_search_sections_rediscover_and_about_me_use_real_engine_state() {
+        let mut a = app();
+        let _ = a.update(Message::Go(Dest::Tracks));
+        let _ = a.update(Message::CollectionQuery("certainly no match".into()));
+        assert!(a.rows.is_empty());
+        for dest in [
+            Dest::Artists,
+            Dest::Albums,
+            Dest::Playlists,
+            Dest::Rediscover,
+            Dest::Explore,
+            Dest::AboutMe,
+        ] {
+            let _ = a.update(Message::Open(dest));
+            let _ = a.view();
+        }
+        assert!(
+            a.analytics_result
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .listened_ms
+                == 0,
+            "legacy starts are not measured time"
+        );
+        let _ = a.update(Message::PageFilters(true));
+        let _ = a.update(Message::PageExclusions("live, mood:sad".into()));
+        assert_eq!(
+            a.analytics_filter.to_spec().tag_exclude,
+            ["live", "mood:sad"]
+        );
+        let _ = a.update(Message::PageFilters(false));
+        let _ = a.update(Message::AnalyticsPeriod(None));
+        let range = iad::primitives::range::DateRange {
+            start: iad::primitives::date::Date::new(2026, 11, 1),
+            end: iad::primitives::date::Date::new(2026, 11, 2),
+        };
+        let _ = a.update(Message::AnalyticsDatePick(range));
+        let q = a.analytics_query().unwrap();
+        assert_eq!(q.until_ms.unwrap() - q.since_ms.unwrap(), 2 * 86_400_000);
+        let _ = a.update(Message::Go(Dest::Explore));
+        let _ = a.update(Message::ExploreSection(0));
+        assert!(!a.explore_open[0]);
+        let _ = a.view();
+        let _ = a.update(Message::Go(Dest::Rediscover));
+        let _ = a.update(Message::RediscoverDays("90".into()));
+        assert_eq!(a.while_days, 90);
+        let _ = a.update(Message::RediscoverSort(
+            weave_player_lib::core::SortField::Rating,
+        ));
+        let _ = a.view();
+    }
+    #[test]
+    fn native_import_chooser_cancels_without_a_page_and_rejects_stale_replies() {
+        let mut a = app();
+        let before = a.lib.tracks.len();
+        let _ = a.update(Message::Import(import_picker::Mode::Files));
+        let request = a.import_request;
+        assert!(a.import_chooser_open);
+        assert!(a.import_report.is_none());
+        assert!(!a.dialog_open_for_test());
+        let _ = a.update(Message::Import(import_picker::Mode::Folder));
+        assert_eq!(a.import_request, request, "do not open a second chooser");
+        let _ = a.update(Message::ImportChosen(request, Vec::new()));
+        assert!(!a.import_chooser_open);
+        assert!(!a.import_in_progress);
+        assert_eq!(a.lib.tracks.len(), before);
+        let _ = a.update(Message::Import(import_picker::Mode::Folder));
+        assert!(a.import_request > request);
+        let _ = a.update(Message::ImportChosen(request, vec!["stale.wav".into()]));
+        assert!(a.import_chooser_open);
+        assert!(!a.import_in_progress);
+        let _ = a.update(Message::ImportChosen(a.import_request, Vec::new()));
+        assert!(!a.import_chooser_open);
+    }
+    #[test]
+    fn partial_import_reloads_successes_and_keeps_the_issue_report() {
+        let dir = import_picker::tests::temp();
+        let music = dir.join("music");
+        std::fs::create_dir(&music).unwrap();
+        import_picker::tests::wav(&music.join("song.wav"));
+        let db = dir.join("library.db");
+        let (backend, library) = backend::sample::disk(&db);
+        let mut a = App::with(backend, library).0;
+        let paths = vec![music, dir.join("missing")];
+        let _ = a.update(Message::Import(import_picker::Mode::Files));
+        let _ = a.update(Message::ImportChosen(a.import_request, paths.clone()));
+        let report = backend::import(&db, &paths).unwrap();
+        let _ = a.update(Message::Imported(Ok(report)));
+        assert_eq!(a.lib.tracks.len(), 1);
+        assert_eq!(a.import_report.as_ref().unwrap().issues.len(), 1);
+        assert!(!a.import_in_progress);
+        let _ = a.view();
+        let _ = a.update(Message::DismissImportReport);
+        drop(a);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn individual_tags_inherit_their_category_color() {
+        let mut a = app();
+        a.lib.styles.push((
+            "occasion:wedding".into(),
+            data::TagStyle {
+                icon: "star".into(),
+                color: iced::Color::BLACK,
+            },
+        ));
+        for (tag, category) in [
+            ("genre:bachata", Some("genre")),
+            ("genre:zouk", Some("genre")),
+            ("lang:tamil", Some("lang")),
+            ("occasion:wedding", Some("occasion")),
+            ("occasion:party", Some("occasion")),
+            ("practice", None),
+            ("90s", None),
+        ] {
+            assert_eq!(
+                a.lib.style_of(tag).color,
+                data::category_style(category).color,
+                "{tag}"
+            );
+        }
+        assert_eq!(a.lib.style_of("occasion:wedding").icon, "star");
+    }
+
+    #[test]
+    fn filter_picker_defaults_to_categories_and_tag_icon_opens_all_tags() {
+        let mut a = app();
+        let _ = a.update(Message::JamFilters(true));
+        assert_eq!(a.tag_browse, TagBrowse::Categories);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let filter = a.filter.clone();
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::All);
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::Categories);
+        assert_eq!(a.filter, filter);
+        assert_ne!(
+            data::category_style(Some("genre")).color,
+            data::category_style(Some("lang")).color
+        );
+        assert_ne!(
+            data::category_style(None).color,
+            data::category_style(Some("lang")).color
+        );
+        assert_eq!(
+            data::category_style(Some("occasion")).color,
+            data::category_style(Some("occasion")).color
+        );
+    }
+
+    #[test]
+    fn tag_category_navigation_keeps_live_filters_drafts_and_track_selections() {
+        let mut a = app();
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let selected = a.filter.clone();
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::All);
+        let _ = a.update(Message::TagQuery("sensual".into()));
+        assert_eq!(
+            a.backend.tag_categories(&a.tag_query).unwrap(),
+            [Some("genre".into())]
+        );
+        let _ = a.update(Message::TagCategory(Some("genre".into())));
+        assert_eq!(a.tag_browse, TagBrowse::Category(Some("genre".into())));
+        let choices = a.backend.tag_choices(&a.tag_query, Some("genre")).unwrap();
+        assert!(choices.iter().any(|t| t.name == "genre:bachata-sensual"));
+        assert!(choices.iter().all(|t| t.key.as_deref() == Some("genre")));
+        let _ = a.update(Message::TagCategories);
+        assert_eq!(a.tag_query, "sensual");
+        assert_eq!(a.filter, selected);
+        let _ = a.update(Message::TagBrowseToggle);
+        assert_eq!(a.tag_browse, TagBrowse::All);
+        assert_eq!(a.filter, selected);
+        let _ = a.update(Message::TagQuery(String::new()));
+        let _ = a.update(Message::TagCategory(None));
+        let custom = a.backend.tag_choices("", Some("")).unwrap();
+        assert!(!custom.is_empty());
+        assert!(custom.iter().all(|t| t.key.is_none()));
+        assert!(custom.iter().any(|t| t.name == "practice"));
+        let _ = a.update(Message::TagCategories);
+        let _ = a.update(Message::TagQuery("Custom".into()));
+        let _ = a.update(Message::TagCategory(None));
+        assert!(
+            a.tag_query.is_empty(),
+            "a category-only query does not hide its children"
+        );
+        assert_eq!(a.filter, selected);
+        let _ = a.view();
+
+        a.draft = Some(Filter::default());
+        let _ = a.update(Message::DraftToggle("practice".into()));
+        let draft = a.draft.clone();
+        let _ = a.update(Message::TagCategories);
+        let _ = a.update(Message::TagCategory(Some("mood".into())));
+        let _ = a.view();
+        assert_eq!(a.draft, draft);
+        assert_eq!(a.filter, selected);
+
+        a.draft = None;
+        let _ = a.update(Message::JamFilters(false));
+        let original = a.lib.tracks[0].tags.clone();
+        let _ = a.update(Message::EditTrack(0));
+        assert_eq!(a.tag_browse, TagBrowse::All);
+        let _ = a.update(Message::EditToggleTag("practice".into()));
+        let track_selection = a.edit_track.clone();
+        let _ = a.update(Message::TagCategory(None));
+        let _ = a.update(Message::TagCategories);
+        let _ = a.view();
+        assert_eq!(
+            a.edit_track.as_ref().unwrap().tags,
+            track_selection.unwrap().tags
+        );
+        assert_eq!(
+            a.lib.tracks[0].tags, original,
+            "navigation never writes annotations"
+        );
+        let _ = a.update(Message::TagQuery("no such tag".into()));
+        assert!(a.backend.tag_categories(&a.tag_query).unwrap().is_empty());
+        let _ = a.view();
+    }
+
+    #[test]
+    fn chip_expansion_is_independent_and_does_not_change_filter_selection() {
+        let mut a = app();
+        assert_eq!(a.chip_line_limit, 3);
+        assert_eq!(a.name_chip_line_limit, 2);
+        let _ = a.update(Message::ToggleTag("mood:romantic".into()));
+        let selected = a.filter.clone();
+        let _ = a.update(Message::JamFilters(true));
+        for picker in [ChipPicker::Tags, ChipPicker::Artists, ChipPicker::Albums] {
+            let _ = a.update(Message::ChipExpand(picker, true));
+            assert!(a.chip_expanded[picker as usize]);
+        }
+        let _ = a.update(Message::ChipExpand(ChipPicker::Artists, false));
+        assert_eq!(a.chip_expanded, [true, false, true, false]);
+        let _ = a.update(Message::TagQuery("calm".into()));
+        assert_eq!(a.filter, selected);
+        let _ = a.view();
+        let _ = a.update(Message::JamFilters(false));
+        let _ = a.update(Message::JamFilters(true));
+        assert_eq!(a.chip_expanded, [false; 4]);
+        assert_eq!(a.filter, selected);
+        let _ = a.update(Message::EditTrack(0));
+        let _ = a.update(Message::ChipExpand(ChipPicker::TrackTags, true));
+        let _ = a.view();
+        let _ = a.update(Message::EditTrack(1));
+        assert!(!a.chip_expanded[ChipPicker::TrackTags as usize]);
+    }
+
+    #[test]
+    fn render_chip_filters_in_collapsed_expanded_and_search_states() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless, Style},
+            widget::Tree,
+        };
+        use iced::{Font, Pixels, Point, Rectangle, Size, mouse};
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            Font::DEFAULT,
+            Pixels(14.67),
+            Some("tiny-skia"),
+        ))
+        .unwrap();
+        let mut a = app();
+        let track_edit = TrackEdit {
+            id: 0,
+            tags: a.lib.tracks[0].tags.clone(),
+        };
+        for (name, width, height, expanded, query) in [
+            ("wide-collapsed", 560, 520, false, ""),
+            ("wide-grouped", 560, 520, false, ""),
+            ("wide-selected", 560, 520, false, ""),
+            ("wide-category", 560, 520, false, ""),
+            ("wide-expanded", 560, 520, true, ""),
+            ("narrow-collapsed", 390, 844, false, ""),
+            ("narrow-expanded", 390, 844, true, ""),
+            ("narrow-search", 390, 844, false, "romantic"),
+            ("track-tags-collapsed", 390, 520, false, ""),
+            ("track-tags-expanded", 390, 520, true, ""),
+        ] {
+            a.filter = Filter::default();
+            a.tag_browse = TagBrowse::All;
+            if name == "wide-selected" {
+                a.filter.tags = vec!["genre:zouk".into(), "mood:romantic".into()];
+            }
+            if name == "wide-grouped" {
+                a.filter.tags = vec!["genre:zouk".into(), "mood:romantic".into()];
+                let _ = a.update(Message::CommitTagGroup(FilterTarget::Jam));
+            }
+            if name == "wide-category" {
+                a.tag_browse = TagBrowse::Category(None);
+            }
+            a.chip_expanded = [expanded; 4];
+            a.tag_query = query.into();
+            let theme = a.theme();
+            let mut el = if name.starts_with("track-tags") {
+                a.track_dialog(&track_edit)
+            } else if width < 500 {
+                crate::components::responsive_dialog::panel(
+                    a.filter_editor(FilterTarget::Jam),
+                    true,
+                    Size::new(width as f32, height as f32),
+                    0.0,
+                )
+            } else {
+                crate::components::responsive_dialog::panel(
+                    a.filter_editor(FilterTarget::Jam),
+                    false,
+                    Size::new(width as f32, height as f32),
+                    0.0,
+                )
+            };
+            let mut tree = Tree::new(&el);
+            let size = Size::new(width as f32, height as f32);
+            let node = el.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, size),
+            );
+            if name.starts_with("track-tags") {
+                assert_eq!(node.size().width, size.width);
+                assert!(node.size().height <= size.height);
+            } else {
+                assert!(node.size().width <= size.width && node.size().height <= size.height);
+            }
+            let physical = Size::new(width, node.size().height.ceil() as u32);
+            iced::advanced::Renderer::reset(&mut renderer, Rectangle::new(Point::ORIGIN, size));
+            el.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &theme,
+                &Style {
+                    text_color: theme.semantic.window.fg,
+                },
+                layout::Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &Rectangle::new(Point::ORIGIN, size),
+            );
+            let pixels = renderer.screenshot(physical, 1.0, theme.semantic.window.bg);
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[0] != p[1] || p[1] != p[2]),
+                "rendered chips have color"
+            );
+            if let Some(dir) = std::env::var_os("WEAVE_CHIP_REVIEW_DIR") {
+                let path = std::path::PathBuf::from(dir).join(format!("{name}.png"));
+                iad::dev::save_png(&iced::window::Screenshot::new(pixels, physical, 1.0), &path)
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
@@ -2231,7 +5179,7 @@ mod tests {
         assert_eq!(a.dest, Dest::Playlist(i));
         assert_eq!(a.lib.playlists[i].description, "Slow songs");
         // Reading the library again shows the engine has both.
-        let _ = a.update(Message::Imported(Ok(String::new())));
+        let _ = a.update(Message::Imported(Ok(Default::default())));
         let i = at(&a, "Alpha drive").unwrap();
         assert_eq!(a.lib.playlists[i].description, "Slow songs");
         // Another playlist's name is refused, and nothing changes.
@@ -2688,33 +5636,6 @@ mod tests {
     }
 
     #[test]
-    fn minimal_mode_shrinks_the_window_and_remembers_its_size_to_come_back() {
-        let (backend, lib) = backend::sample::backend();
-        let mut a = App::with(backend, lib).0;
-        a.play(vec![10, 11], 0);
-        let _ = a.update(Message::Resized(900.0, 640.0));
-        let _ = a.update(Message::NowPlaying(true));
-        let _ = a.update(Message::Minimal(true));
-        assert!(a.minimal && !a.now_playing, "overlays close");
-        assert_eq!(a.restore_size, Some((900.0, 640.0)));
-        // The strip builds in both views, and the cover switches between them.
-        let _ = a.view();
-        assert!(!a.minimal_details, "the spectrum first");
-        let _ = a.update(Message::MinimalDetails);
-        assert!(a.minimal_details);
-        let _ = a.view();
-        let _ = a.update(Message::MinimalDetails);
-        assert!(!a.minimal_details);
-        let _ = a.update(Message::Resized(560.0, 72.0));
-        let _ = a.update(Message::Minimal(false));
-        assert!(!a.minimal);
-        assert_eq!(a.restore_size, None, "the size is used once");
-        // Asking for what already is does nothing.
-        let _ = a.update(Message::Minimal(false));
-        assert!(!a.minimal);
-    }
-
-    #[test]
     fn a_playlist_or_album_has_a_shuffle_toggle_that_decides_how_play_starts_it() {
         let (mut backend, _) = backend::sample::backend();
         backend::sample::playlist(&mut backend, "Road trip", "");
@@ -2741,7 +5662,7 @@ mod tests {
         queued.sort();
         assert_eq!(queued, ids, "just the playlist is queued");
         // The toggle is kept in the engine: reading the library again keeps it.
-        let _ = a.update(Message::Imported(Ok(String::new())));
+        let _ = a.update(Message::Imported(Ok(Default::default())));
         let i = a
             .lib
             .playlists
@@ -2756,7 +5677,7 @@ mod tests {
         let _ = a.update(Message::Open(Dest::Album(0)));
         assert_eq!(a.page_shuffle(), Some(false));
         let _ = a.update(Message::SetShufflePref(Some(true)));
-        let _ = a.update(Message::Imported(Ok(String::new())));
+        let _ = a.update(Message::Imported(Ok(Default::default())));
         let _ = a.update(Message::Open(Dest::Album(0)));
         assert_eq!(a.page_shuffle(), Some(true));
         let album: Vec<usize> = a.rows.iter().map(|t| t.id).collect();
@@ -3104,7 +6025,7 @@ mod tests {
         a.filter.artists = vec![artist.clone()];
         a.filter.q = "a".into();
         a.refresh();
-        assert!(a.lib.filtered(&a.filter).len() > 0);
+        assert!(!a.matching(&a.filter).is_empty());
         save_jam(&mut a);
         let notice = a.notice.as_ref().map(|n| n.0.clone()).unwrap_or_default();
         assert!(
@@ -3179,32 +6100,33 @@ mod tests {
     #[test]
     fn a_filter_matches_tags_tempo_any_of_the_artists_any_of_the_albums_and_the_search() {
         let a = app();
-        let tree = &a.lib.tags;
+        let matches =
+            |filter: &Filter, track: &Track| a.matching(filter).iter().any(|t| t.id == track.id);
         let t = &a.lib.tracks[3];
         let other = a.lib.tracks.iter().find(|x| x.artist != t.artist).unwrap();
         let mut f = Filter::default();
-        assert!(f.matches(t, tree) && f.is_empty() && f.count() == 0);
+        assert!(matches(&f, t) && f.is_empty() && f.count() == 0);
         // Artists: any of them, exact and case-insensitive.
         f.artists = vec![t.artist.to_uppercase()];
-        assert!(f.matches(t, tree) && !f.matches(other, tree));
+        assert!(matches(&f, t) && !matches(&f, other));
         f.artists = vec!["zzz-nobody".into(), other.artist.clone()];
-        assert!(!f.matches(t, tree) && f.matches(other, tree), "ORed within");
+        assert!(!matches(&f, t) && matches(&f, other), "ORed within");
         f.artists = vec![t.artist[..2].to_string()];
-        assert!(!f.matches(t, tree), "exact, not a substring");
+        assert!(!matches(&f, t), "exact, not a substring");
         // Both artists chosen: the two tracks' artists are both accepted.
         f.artists = vec![t.artist.clone(), other.artist.clone()];
-        assert!(f.matches(t, tree) && f.matches(other, tree));
+        assert!(matches(&f, t) && matches(&f, other));
         // ANDed across: an artist and an album that do not go together match nothing.
         f.artists = vec![t.artist.clone()];
         f.albums = vec!["zzz-no-album".into()];
-        assert!(!f.matches(t, tree), "artists AND albums");
+        assert!(!matches(&f, t), "artists AND albums");
         f.albums.clear();
         // The generic search reaches the title.
         f.artists.clear();
         f.q = t.title[..2].to_string();
-        assert!(f.matches(t, tree));
+        assert!(matches(&f, t));
         f.q = "zzz-nothing".into();
-        assert!(!f.matches(t, tree));
+        assert!(!matches(&f, t));
         // Counting: tags, tempo, artists and albums are the tag filters; q the search.
         f.q = "x".into();
         f.artists = vec!["y".into(), "z".into()];
@@ -3234,34 +6156,26 @@ mod tests {
 
     #[test]
     fn the_unknown_sentinel_picks_tracks_with_no_artist_or_no_album() {
-        let a = app();
-        let tree = &a.lib.tags;
-        let mut no_album = a.lib.tracks[0].clone();
-        no_album.album.clear();
-        let mut with_album = a.lib.tracks[0].clone();
-        with_album.album = "Some Album".into();
-        let mut no_artist = a.lib.tracks[0].clone();
-        no_artist.artist = "Unknown artist".into();
-        no_artist.artist_known = false;
+        let mut a = app();
+        backend::sample::unknown_tracks(&mut a.backend);
+        assert!(a.reload_library());
+        let get = |title: &str| a.lib.tracks.iter().find(|t| t.title == title).unwrap();
+        let no_album = get("Fixture no album");
+        let with_album = get("Fixture with album");
+        let no_artist = get("Fixture no artist");
+        let matches = |f: &Filter, t: &Track| a.matching(f).iter().any(|r| r.id == t.id);
         let mut f = Filter {
             albums: vec![data::UNKNOWN.into()],
-            ..Filter::default()
+            ..Default::default()
         };
-        assert!(f.matches(&no_album, tree) && !f.matches(&with_album, tree));
-        f.albums = vec![data::UNKNOWN.into(), "Some Album".into()];
-        assert!(
-            f.matches(&no_album, tree) && f.matches(&with_album, tree),
-            "or a named one"
-        );
+        assert!(matches(&f, no_album) && !matches(&f, with_album));
+        f.albums.push("Some Album".into());
+        assert!(matches(&f, no_album) && matches(&f, with_album));
         f.albums.clear();
         f.artists = vec![data::UNKNOWN.into()];
-        assert!(f.matches(&no_artist, tree) && !f.matches(&with_album, tree));
-        // The text "Unknown artist" is not a real artist the sentinel could be confused with.
+        assert!(matches(&f, no_artist) && !matches(&f, with_album));
         f.artists = vec!["Unknown artist".into()];
-        assert!(
-            !f.matches(&no_artist, tree),
-            "only the sentinel names a missing artist"
-        );
+        assert!(!matches(&f, no_artist));
     }
 
     #[test]
@@ -3297,6 +6211,95 @@ mod tests {
     }
 
     #[test]
+    fn narrow_sort_and_timer_sheets_close_before_applying_their_actions() {
+        use weave_player_lib::core::CollectionOrder;
+        let mut a = app();
+        let _ = a.update(Message::Resized(390.0, 844.0));
+        let _ = a.update(Message::Open(Dest::Tracks));
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Sort)));
+        let _ = a.view();
+        let _ = a.update(Message::SheetAction(Box::new(Message::CollectionOrder(
+            CollectionOrder::Rating,
+        ))));
+        assert!(a.sheet.is_none());
+        assert_eq!(a.collection_order(), CollectionOrder::Rating);
+        assert!(
+            a.rows
+                .windows(2)
+                .all(|pair| pair[0].rating >= pair[1].rating)
+        );
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Sleep)));
+        let _ = a.view();
+        let _ = a.update(Message::SheetAction(Box::new(Message::SleepTimer(Some(
+            15,
+        )))));
+        assert!(a.sheet.is_none());
+        assert_eq!(a.sleep_choice, Some(15));
+        let _ = a.update(Message::ToggleJam);
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.view();
+        let _ = a.update(Message::JamFilters(false));
+        assert!(!a.jam_filters_open);
+    }
+    #[test]
+    fn main_menu_sheet_closes_before_applying_settings_or_importing() {
+        let mut a = app();
+        let _ = a.view();
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.view();
+        assert_eq!(a.sheet, Some(Sheet::Main));
+        let _ = a.update(Message::SheetAction(Box::new(Message::SetDensity(
+            DensityPref::Compact,
+        ))));
+        assert!(a.sheet.is_none());
+        assert!(a.compact());
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::SheetAction(Box::new(Message::ThemeMode(Some(
+            iad::Scheme::Dark,
+        )))));
+        assert!(a.sheet.is_none());
+        assert_eq!(a.theme_mode, Some(iad::Scheme::Dark));
+        assert_eq!(a.theme().scheme, iad::Scheme::Dark);
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.view();
+        // Creating the picker task does not run the OS dialog in this test.
+        let _ = a.update(Message::SheetAction(Box::new(Message::Import(
+            import_picker::Mode::Files,
+        ))));
+        assert!(a.sheet.is_none());
+        let _ = a.update(Message::OpenSheet(Some(Sheet::Main)));
+        let _ = a.update(Message::OpenSheet(None));
+        assert!(a.sheet.is_none());
+    }
+
+    #[test]
+    fn imports_open_jam_with_a_composable_removable_recent_filter() {
+        let mut a = app();
+        let t = a.lib.tracks[0].clone();
+        let _ = a.update(Message::JamArtistToggle(t.artist.clone()));
+        let _ = a.update(Message::Imported(Ok(Default::default())));
+        assert!(a.jam_open);
+        assert_eq!(a.filter.imported_within_days, Some(7));
+        assert_eq!(a.filter.artists.as_slice(), std::slice::from_ref(&t.artist));
+        assert!(!a.rows.is_empty());
+        assert!(a.matching(&a.filter).iter().all(|t| t.added_at > 1));
+        let spec = a.filter.to_spec();
+        assert_eq!(Filter::from_spec(&spec).imported_within_days, Some(7));
+        let _ = a.view();
+        let _ = a.update(Message::Resized(400.0, 800.0));
+        let _ = a.update(Message::JamFilters(true));
+        let _ = a.view();
+        let _ = a.update(Message::JamRecent(false));
+        assert!(
+            a.matching(&a.filter)
+                .iter()
+                .any(|track| track.slug == t.slug)
+        );
+        assert_eq!(a.filter.artists, [t.artist]);
+    }
+
+    #[test]
     fn the_menu_switches_density_and_an_import_reloads_the_library() {
         let mut a = app();
         let _ = a.update(Message::SetDensity(DensityPref::Compact));
@@ -3307,7 +6310,12 @@ mod tests {
         // its tracks by slug.
         a.play(vec![5, 6, 7], 1);
         let playing = a.now().map(|t| t.slug.clone());
-        let _ = a.update(Message::Imported(Ok("Imported 2 tracks".into())));
+        let _ = a.update(Message::Imported(Ok(
+            weave_player_lib::core::ImportReport {
+                added: 2,
+                ..Default::default()
+            },
+        )));
         assert_eq!(
             a.notice.as_ref().map(|n| n.0.as_str()),
             Some("Imported 2 tracks")

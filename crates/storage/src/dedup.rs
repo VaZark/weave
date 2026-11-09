@@ -365,6 +365,17 @@ impl Storage {
             params![into, from],
         )
         .map_err(db_err)?;
+        // Measured and legacy history follow the canonical identity through explicit merges.
+        tx.execute(
+            "UPDATE play_history SET track_id = ?1 WHERE track_id = ?2",
+            params![into, from],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "UPDATE listening_events SET track_id = ?1 WHERE track_id = ?2",
+            params![into, from],
+        )
+        .map_err(db_err)?;
         TAGS.copy(&tx, &TRACK, from, into)?;
         tx.execute(
             "INSERT OR IGNORE INTO track_annotations (track_id) VALUES (?1)",

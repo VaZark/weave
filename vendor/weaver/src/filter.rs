@@ -46,6 +46,8 @@ impl TagClause {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TagFilter {
+    /// Additional AND blocks, each containing OR alternatives. Leaves cannot contain blocks.
+    pub blocks: Vec<Vec<TagFilter>>,
     /// `genre:bachata` matches the tag and its descendants; `=genre:bachata` matches explicit
     /// assignments of that tag only.
     pub all: Vec<String>,
@@ -57,6 +59,17 @@ pub struct TagFilter {
 impl TagFilter {
     /// Trim, drop empties and duplicates (by normalized form, keeping first spelling).
     pub fn normalized(mut self) -> Self {
+        self.blocks = self
+            .blocks
+            .into_iter()
+            .map(|b| {
+                b.into_iter()
+                    .map(Self::normalized)
+                    .filter(|g| !g.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|b| !b.is_empty())
+            .collect();
         for list in [&mut self.all, &mut self.any, &mut self.exclude] {
             let mut seen: Vec<(bool, String)> = Vec::new();
             list.retain_mut(|t| {
@@ -92,6 +105,14 @@ impl TagFilter {
     }
 
     pub fn validate(&self) -> Result<()> {
+        for group in self.blocks.iter().flatten() {
+            if !group.blocks.is_empty() {
+                return Err(Error::InvalidFilter(
+                    "Nested tag groups are not supported".into(),
+                ));
+            }
+            group.validate()?;
+        }
         for c in &self.clauses {
             for k in &c.keys {
                 if TagName::parse_lossy(&format!("{k}:x")).key.as_deref() != Some(k.as_str()) {
@@ -103,7 +124,8 @@ impl TagFilter {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.all.is_empty()
+        self.blocks.iter().flatten().all(Self::is_empty)
+            && self.all.is_empty()
             && self.any.is_empty()
             && self.exclude.is_empty()
             && self.clauses.is_empty()

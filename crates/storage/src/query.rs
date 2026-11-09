@@ -13,7 +13,13 @@ pub const FROM: &str = " FROM track_metadata m \
 /// Column order is relied on by `Storage::fetch`.
 pub const COLUMNS: &str = "m.track_id, m.title, m.artist, m.album, m.album_artist, m.genre, \
      m.composer, m.year, m.track_number, m.disc_number, m.duration_ms, m.bpm, \
-     t.slug, a.rating";
+     t.slug, a.rating, t.added_at";
+
+pub const PLAY_COUNT: &str = "(SELECT COUNT(*) FROM play_history h WHERE h.track_id = t.id)";
+pub const LAST_PLAYED: &str = "(SELECT MAX(last) FROM (\
+    SELECT MAX(h.played_at) AS last FROM play_history h WHERE h.track_id = t.id \
+    UNION ALL SELECT MAX(s.ended_ms / 1000) AS last FROM listening_segments s \
+    JOIN listening_events e ON e.id = s.event_id WHERE e.track_id = t.id))";
 
 /// The default order matches the `meta_sort` index, so paging needs no sort step.
 const DEFAULT_ORDER: &str = "m.artist_norm, m.album_norm, m.title_norm, m.track_id";
@@ -33,7 +39,16 @@ pub fn order_by(sort: Option<Sort>) -> String {
         SortField::Duration => "m.duration_ms",
         SortField::Rating => "a.rating",
         SortField::Added => "t.added_at",
+        SortField::PlayCount => PLAY_COUNT,
+        SortField::LastPlayed => LAST_PLAYED,
+        SortField::Preference => "a.rating",
     };
+    if field == SortField::Preference {
+        let dir = if descending { "DESC" } else { "ASC" };
+        return format!(
+            " ORDER BY {expr} IS NULL, {expr} {dir}, (SELECT COUNT(*) FROM listening_events e WHERE e.track_id = t.id AND e.reason = 'completed' AND e.listened_ms > 0) {dir}, {PLAY_COUNT} {dir}, {DEFAULT_ORDER}"
+        );
+    }
     let dir = if descending { "DESC" } else { "ASC" };
     format!(" ORDER BY {expr} IS NULL, {expr} {dir}, {DEFAULT_ORDER}")
 }
@@ -62,15 +77,52 @@ pub const ALBUM_TAGS: TagOwner = TagOwner {
 /// The tag conditions of a filter (flat lists and clauses) as ` AND …` terms over
 /// the given kind of owner. Expects a normalized, validated filter.
 pub fn tag_conditions(f: &FilterSpec, o: TagOwner) -> (String, Vec<Value>) {
-    weaver::conditions(&f.tag_filter(), o.owner, o.outer)
+    let (mut conditions, mut args) = weaver::conditions(&f.tag_filter(), o.owner, o.outer);
+    if !f.groups.is_empty() {
+        let mut branches = Vec::new();
+        for group in &f.groups {
+            let (sql, values) = tag_conditions(group, o);
+            branches.push(format!("(1=1{sql})"));
+            args.extend(values);
+        }
+        let join = match f.group_join {
+            weave_player_core::FilterJoin::And => " AND ",
+            weave_player_core::FilterJoin::Or => " OR ",
+        };
+        conditions += &format!(" AND ({})", branches.join(join));
+    }
+    (conditions, args)
 }
 
 /// The filter's own conditions as ` AND …` terms for `FROM` (the caller supplies ` WHERE 1=1`).
 /// Expects a normalized, validated filter; its playlist sources are added by the storage layer.
 pub fn conditions(f: &FilterSpec) -> (String, Vec<Value>) {
     let mut sql = String::new();
-    let (tag_sql, mut args) = tag_conditions(f, TRACK_TAGS);
+    let (tag_sql, mut args) =
+        weaver::conditions(&f.tag_filter(), TRACK_TAGS.owner, TRACK_TAGS.outer);
     sql += &tag_sql;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if let Some(cutoff) = f.import_cutoff(now) {
+        sql += " AND t.added_at >= ?";
+        args.push(Value::Integer(cutoff));
+    }
+    if let Some(q) = f.query.as_ref() {
+        sql += " AND (instr(m.title_norm, ?) > 0 OR instr(m.artist_norm, ?) > 0 OR instr(m.album_norm, ?) > 0)";
+        args.extend(std::iter::repeat_n(Value::Text(q.trim().to_lowercase()), 3));
+    }
+    if let Some(days) = f.not_played_for_days {
+        sql += &format!(" AND ({LAST_PLAYED} IS NULL OR {LAST_PLAYED} <= ?)");
+        args.push(Value::Integer(now.saturating_sub(i64::from(days) * 86_400)));
+    }
+    if let Some(played) = f.has_played {
+        sql += &format!(
+            " AND {LAST_PLAYED} IS {}NULL",
+            if played { "NOT " } else { "" }
+        );
+    }
     // NULL compares as NULL, so an unknown BPM, year or rating never matches a bound.
     for (col, op, v) in [
         ("m.bpm", ">=", f.bpm_min.map(Value::Real)),

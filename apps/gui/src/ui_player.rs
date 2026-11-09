@@ -3,16 +3,34 @@
 use iad::prelude::{
     self as w, ChipSize, Menu, MenuItem, ReorderableList, SyncedText, typography as ty,
 };
-use iad::{Icon, styles as style};
+use iad::styles as style;
 use iced::widget::{button, column, container, mouse_area, row, space, vertical_slider};
-use iced::{Alignment, Background, Color, Length};
+use iced::{Alignment, Color, Length};
 use iced_adaptive_design as iad;
+use weave_icons::Icon;
 
 use crate::components::tag_badge::tag_pill;
 use crate::data::{Track, clock};
 use crate::icons::cover;
 use crate::{App, Element, LYRICS, Message};
 use iad::prelude::surface;
+
+fn now_playing_style(theme: &iad::Theme, radius: f32) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(
+            Color {
+                a: 1.0,
+                ..theme.semantic.window.bg
+            }
+            .into(),
+        ),
+        border: iced::Border {
+            radius: radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
 
 impl App {
     fn play_pause(&self, size: f32) -> Element<'_> {
@@ -26,32 +44,27 @@ impl App {
             .into()
     }
 
-    /// A skip button. Without a press (nothing to skip to) it is drawn faded and does nothing:
-    /// an icon does not follow its button's disabled state, so it is tinted here.
-    fn skip_button(&self, icon: Icon, press: Option<Message>) -> Element<'_> {
-        let Some(msg) = press else {
-            let m = iad::Metrics::desktop();
-            // The solid dim colour of the theme: an icon tint keeps no transparency.
-            let faded = self.theme().semantic.dim_solid();
-            return button(
-                container(icon.colored(m.icon_size, faded))
-                    .center(Length::Fixed(m.button_min_height)),
-            )
-            .padding(0)
-            .style(style::button::flat)
-            .into();
-        };
-        w::icon_button(icon).on_press(msg).into()
+    /// Same geometry as the toolkit icon button, with a dimmed icon when unavailable.
+    pub(super) fn icon_action(&self, icon: Icon, press: Option<Message>) -> Element<'_> {
+        let metrics = iad::Metrics::desktop();
+        button(
+            container(icon.view(metrics.icon_size))
+                .center(Length::Fixed(metrics.button_min_height)),
+        )
+        .padding(0)
+        .style(style::button::flat)
+        .on_press_maybe(press)
+        .into()
     }
 
     pub(crate) fn controls(&self, size: f32) -> Element<'_> {
         row![
-            self.skip_button(
+            self.icon_action(
                 Icon::SkipBackward,
                 self.can_previous().then_some(Message::Previous)
             ),
             self.play_pause(size),
-            self.skip_button(Icon::SkipForward, self.can_next().then_some(Message::Next)),
+            self.icon_action(Icon::SkipForward, self.can_next().then_some(Message::Next)),
         ]
         .spacing(4)
         .align_y(Alignment::Center)
@@ -94,7 +107,12 @@ impl App {
         let panel = container(slider)
             .padding(8) // gutter-ok: a component's own padding, not a page gutter
             .style(style::container::popover);
-        w::Popover::new(icon.view(16.0), panel)
+        let metrics = iad::Metrics::desktop();
+        let trigger = container(icon.view(16.0)).center_y(Length::Fixed(
+            metrics.button_min_height - metrics.button_padding.y(),
+        ));
+        w::Popover::new(trigger, panel)
+            .appearance(w::PopoverAppearance::Flat)
             .fit_content()
             .align(w::PopoverAlign::Center)
             .open_initially(std::env::var("WEAVE_GUI_START").as_deref() == Ok("volume"))
@@ -109,63 +127,58 @@ impl App {
             .into()
     }
 
-    /// Enters or leaves full screen mode.
-    fn fullscreen_button(&self) -> Element<'_> {
-        let icon = if self.fullscreen {
-            Icon::FullscreenExit
-        } else {
-            Icon::Fullscreen
-        };
-        w::icon_button(icon)
-            .on_press(Message::Fullscreen(!self.fullscreen))
-            .into()
-    }
-
     /// Wide layout: the player bar.
     pub fn player_bar(&self) -> Element<'_> {
         let Some(t) = self.now() else {
-            // Nothing playing: no bar at all.
             return space::vertical().height(0).into();
         };
+        // Equal side regions keep transport centered independently of the metadata/actions.
+        let scrubber_width = (self.win_w - 720.0).max(200.0);
+        let metadata_width = ((self.win_w - scrubber_width - 400.0) / 2.0).clamp(64.0, 200.0);
+        let track = row![
+            mouse_area(
+                row![
+                    cover(t.id, 48.0),
+                    container(column![
+                        ty::body(t.title.clone()),
+                        ty::caption(t.artist.clone())
+                    ])
+                    .max_width(metadata_width),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .on_press(Message::NowPlaying(!self.now_playing)),
+            self.heart(t.id),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        let actions = row![
+            w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
+                .size(16.0)
+                .on_toggle(move |_| Message::Shuffle),
+            w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
+                .size(16.0)
+                .on_toggle(move |_| Message::Repeat),
+            self.volume_control(),
+            w::IconToggleButton::new(Icon::Queue, self.queue_open)
+                .size(16.0)
+                .on_toggle(move |_| Message::ToggleQueue),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
         container(
             row![
-                mouse_area(
-                    row![
-                        cover(t.id, 48.0),
-                        column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
-                            .width(Length::Fixed(200.0)),
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center)
-                )
-                .on_press(Message::NowPlaying(!self.now_playing)),
-                self.heart(t.id),
-                self.controls(16.0),
-                container(self.seek(t)).width(Length::Fill),
-                w::IconToggleButton::new(Icon::Shuffle, self.player.shuffle)
-                    .size(16.0)
-                    .on_toggle(move |_| Message::Shuffle),
-                w::IconToggleButton::new(Icon::Repeat, self.player.repeat)
-                    .size(16.0)
-                    .on_toggle(move |_| Message::Repeat),
-                self.volume_control(),
-                w::IconToggleButton::new(Icon::Queue, self.queue_open)
-                    .size(16.0)
-                    .on_toggle(move |_| Message::ToggleQueue),
-                w::IconToggleButton::new(
-                    if self.now_playing {
-                        Icon::GoDown
-                    } else {
-                        Icon::GoUp
-                    },
-                    false
-                )
-                .size(16.0)
-                .on_toggle(move |_| Message::NowPlaying(!self.now_playing)),
-                self.fullscreen_button(),
-                w::icon_button(Icon::Compact).on_press(Message::Minimal(true)),
+                container(track).align_left(Length::FillPortion(1)),
+                row![
+                    self.controls(16.0),
+                    container(self.seek(t)).width(scrubber_width),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                container(actions).align_right(Length::FillPortion(1)),
             ]
-            .spacing(14)
+            .spacing(8)
             .align_y(Alignment::Center),
         )
         .padding(surface::bar_padding())
@@ -180,23 +193,28 @@ impl App {
         };
         let frac = self.player.pos / t.secs as f32;
         container(column![
-            w::progress_bar(0.0..=1.0, frac),
             row![
                 mouse_area(
                     row![
                         cover(t.id, 40.0),
-                        column![ty::body(t.title.clone()), ty::caption(t.artist.clone())]
-                            .width(Length::Fill),
+                        container(column![
+                            ty::body(t.title.clone()),
+                            ty::caption(t.artist.clone())
+                        ])
+                        .max_width(180.0),
                     ]
                     .spacing(10)
                     .align_y(Alignment::Center)
                 )
                 .on_press(Message::NowPlaying(true)),
+                self.heart(t.id),
+                space::horizontal(),
                 self.play_pause(16.0),
             ]
             .spacing(8)
             .align_y(Alignment::Center)
             .padding([6, 12]), // gutter-ok: a component's own padding, not a page gutter
+            w::progress_bar(0.0..=1.0, frac),
         ])
         .style(style::container::headerbar)
         .into()
@@ -222,27 +240,35 @@ impl App {
         }
     }
 
+    pub fn sleep_menu(&self, wrap: impl Fn(Message) -> Message) -> Menu<Message> {
+        let option = |minutes: Option<u32>, label: &'static str| {
+            MenuItem::check(
+                label,
+                self.sleep_choice == minutes,
+                wrap(Message::SleepTimer(minutes)),
+            )
+        };
+        Menu::new("Sleep timer")
+            .check_style(w::MenuCheckStyle::Mark)
+            .section([
+                option(None, "Off"),
+                option(Some(15), "In 15 minutes"),
+                option(Some(30), "In 30 minutes"),
+                option(Some(60), "In an hour"),
+            ])
+    }
+
     /// The body of the queue: the sleep timer, shuffle and repeat where the bar lacks them, and
     /// "Up next", which is only what follows the playing track and is always editable (a delete
     /// button before the drag handle).
     pub fn queue_body(&self) -> Element<'_> {
         let narrow = self.is_narrow();
-        let timer = {
-            let opt = |m: Option<u32>, label: &'static str| {
-                MenuItem::check(label, self.sleep_choice == m, Message::SleepTimer(m))
-            };
-            self.menu_button(
-                Icon::Clock,
-                "Sleep timer",
-                Menu::new("Sleep timer")
-                    .check_style(w::MenuCheckStyle::Mark)
-                    .section([
-                        opt(None, "Off"),
-                        opt(Some(15), "In 15 minutes"),
-                        opt(Some(30), "In 30 minutes"),
-                        opt(Some(60), "In an hour"),
-                    ]),
-            )
+        let timer = if narrow {
+            crate::icons::icon_button(Icon::Clock)
+                .on_press(Message::OpenSheet(Some(crate::Sheet::Sleep)))
+                .into()
+        } else {
+            self.menu_button(Icon::Clock, "Sleep timer", self.sleep_menu(|m| m))
         };
         let sleep = match self.sleep_left {
             Some(left) => ty::caption(format!("Stops in {}", clock(left))),
@@ -269,7 +295,7 @@ impl App {
                 .iter()
                 .position(|x| x == id)
                 .unwrap_or(0);
-            w::icon_button(Icon::Delete)
+            crate::icons::icon_button(Icon::Delete)
                 .on_press(Message::QueueRemove(at))
                 .into()
         })
@@ -293,10 +319,11 @@ impl App {
         }
         controls = controls
             .push(timer)
-            .push(w::icon_button(Icon::Delete).on_press_maybe(
+            .push(self.icon_action(
+                Icon::Delete,
                 (!self.player.up_next.items().is_empty()).then_some(Message::ClearQueue),
             ))
-            .push(w::icon_button(Icon::GoDown).on_press(Message::ToggleQueue));
+            .push(crate::icons::icon_button(Icon::GoDown).on_press(Message::ToggleQueue));
         // The playing track is not listed: the player is right above.
         let played = self
             .player
@@ -346,6 +373,34 @@ impl App {
 
     // ---- Now Playing ----------------------------------------------------------------------
 
+    pub(super) fn radial_visualizer_visible(&self) -> bool {
+        self.now_playing
+            && self.now().is_some()
+            && self.theme_config.text("player", "artwork") == Some("disc")
+            && self.theme_config.bool("player", "radial-visualizer") == Some(true)
+            && !(self.show_lyrics && self.is_narrow())
+            && !iad::config::current().reduced_motion
+    }
+
+    fn player_artwork(&self, track: &Track, size: f32) -> Element<'_> {
+        if self.theme_config.text("player", "artwork") == Some("disc") {
+            let silent = &[];
+            let bands = if iad::config::current().reduced_motion {
+                silent
+            } else {
+                &self.spectrum[..]
+            };
+            crate::components::disc_artwork::disc(
+                track.id,
+                size,
+                bands,
+                self.theme_config.bool("player", "radial-visualizer") == Some(true),
+            )
+        } else {
+            cover(track.id, size)
+        }
+    }
+
     /// Now Playing: the cover, or the lyrics in its place. The transport controls are only
     /// here when the layout has no player bar (narrow): they are not drawn twice.
     pub fn now_playing_view(&self) -> Element<'_> {
@@ -366,7 +421,7 @@ impl App {
         let tags = row(t
             .tags
             .iter()
-            .map(|g| tag_pill(g, &self.lib.style_of(g), ChipSize::Medium)))
+            .map(|g| tag_pill(g, &self.tag_style(g), ChipSize::Medium)))
         .spacing(6)
         .wrap();
         let info = column![
@@ -404,10 +459,13 @@ impl App {
         let stage: Element<'_> = if beside {
             // The cover and what it is on the left, the lyrics on the right.
             row![
-                column![container(cover(t.id, 300.0)).center(Length::Fill), info]
-                    .spacing(12)
-                    .align_x(Alignment::Center)
-                    .width(Length::FillPortion(1)),
+                column![
+                    container(self.player_artwork(t, 300.0)).center(Length::Fill),
+                    info
+                ]
+                .spacing(12)
+                .align_x(Alignment::Center)
+                .width(Length::FillPortion(1)),
                 container(synced())
                     .width(Length::FillPortion(1))
                     .height(Length::Fill),
@@ -419,7 +477,9 @@ impl App {
             let art: Element<'_> = if self.show_lyrics {
                 synced()
             } else {
-                container(cover(t.id, 260.0)).center(Length::Fill).into()
+                container(self.player_artwork(t, 300.0))
+                    .center(Length::Fill)
+                    .into()
             };
             column![
                 container(art).height(Length::Fill).width(Length::Fill),
@@ -442,30 +502,47 @@ impl App {
             w::flat_button(Icon::GoDown.view(16.0)).on_press(Message::NowPlaying(false)),
             mouse_area(space::horizontal().height(Length::Fixed(32.0)))
                 .on_press(Message::Window(iad::windows::Action::Drag)),
-            self.fullscreen_button(),
         ]
         .align_y(Alignment::Center);
-        let backdrop = iad::color::from_index(t.id);
+        let radius = self.chrome(true, true).radius();
         container(column![
             close,
             surface::full(container(body).center_x(Length::Fill))
         ])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(move |t: &iad::Theme| {
-            // Opaque: the window colour with a wash of the cover's colour.
-            let base = t.palette.window_bg_color;
-            let k = 0.14;
-            iced::widget::container::Style {
-                background: Some(Background::Color(Color {
-                    r: base.r + (backdrop.r - base.r) * k,
-                    g: base.g + (backdrop.g - base.g) * k,
-                    b: base.b + (backdrop.b - base.b) * k,
-                    a: 1.0,
-                })),
-                ..Default::default()
-            }
-        })
+        .style(move |theme| now_playing_style(theme, radius))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iad::windows::{Chrome, State};
+
+    #[test]
+    fn now_playing_background_is_opaque_and_matches_window_corners() {
+        let theme = iad::Theme::light();
+        for (fullscreen, csd) in [(false, true), (true, true), (false, false)] {
+            let chrome = Chrome::new(State {
+                maximized: false,
+                fullscreen,
+            })
+            .csd_override(csd);
+            let radius = chrome.radius();
+            let style = now_playing_style(&theme, radius);
+            assert_eq!(style.border.radius, iced::border::Radius::from(radius));
+            assert_eq!(
+                style.background,
+                Some(
+                    Color {
+                        a: 1.0,
+                        ..theme.semantic.window.bg
+                    }
+                    .into()
+                )
+            );
+        }
     }
 }

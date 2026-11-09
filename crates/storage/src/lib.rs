@@ -5,6 +5,7 @@ mod annotations;
 mod dedup;
 mod entities;
 mod history;
+mod listening;
 mod migrations;
 mod playlists;
 mod prefs;
@@ -68,6 +69,7 @@ impl Storage {
             .map_err(db_err)?;
         migrations::run(&mut conn)?;
         history::ensure(&conn)?;
+        listening::ensure(&conn)?;
         prefs::ensure(&conn)?;
         Ok(Self { conn })
     }
@@ -136,10 +138,8 @@ impl Storage {
     pub fn search(&self, filter: &FilterSpec, page: Page) -> Result<SearchResult> {
         let filter = filter.clone().normalized();
         filter.validate()?;
-        let (conditions, mut args) = query::conditions(&filter);
-        let (from_sources, source_args) = self.source_terms(&filter, 0)?;
-        args.extend(source_args);
-        let where_sql = format!(" WHERE 1=1{conditions}{from_sources}");
+        let (conditions, mut args) = self.filter_terms(&filter, 0)?;
+        let where_sql = format!(" WHERE 1=1{conditions}");
 
         let counted: i64 = self
             .conn
@@ -265,6 +265,7 @@ impl Storage {
                         },
                         tags: Vec::new(),
                         rating: r.get(13)?,
+                        added_at: r.get(14)?,
                     },
                 ))
             })
@@ -432,3 +433,6 @@ mod tests_entities;
 mod tests_sources;
 #[cfg(test)]
 mod tests_tags;
+
+#[cfg(test)]
+mod tests_groups;

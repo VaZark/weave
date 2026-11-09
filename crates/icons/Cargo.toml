@@ -1,0 +1,17 @@
+[package]
+name = "weave-icons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Weave-owned symbolic SVG icons with optional iced integration"
+
+[features]
+default = []
+iced = ["dep:iced", "dep:iced-adaptive-design"]
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["svg"], optional = true }
+iced-adaptive-design = { workspace = true, optional = true }
+
+[dev-dependencies]
+roxmltree = "0.20"

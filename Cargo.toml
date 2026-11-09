@@ -4,6 +4,7 @@ members = [
   "apps/cli",
   "apps/gui",
   "crates/local",
+  "crates/icons",
   "crates/core",
   "crates/engine",
   "crates/storage",
@@ -26,3 +27,6 @@ weave-player-lib = { path = "crates/weave" }
 weave-player-engine = { path = "crates/engine" }
 weave-player-local = { path = "crates/local" }
 weave-player-storage = { path = "crates/storage" }
+
+weave-icons = { path = "crates/icons" }
+iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "526e4aaac674c718c2dd69d57f8d20763586f337" }

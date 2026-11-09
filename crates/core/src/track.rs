@@ -38,6 +38,9 @@ pub struct Track {
     pub tags: Vec<String>,
     /// 1 to 5 stars; `None` means unrated.
     pub rating: Option<u8>,
+    /// When first indexed, in Unix seconds. Reimports retain this timestamp.
+    #[serde(default)]
+    pub added_at: i64,
 }
 
 /// A file found by a scan, before the engine assigns identity.
