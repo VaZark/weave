@@ -29,4 +29,4 @@ weave-player-local = { path = "crates/local" }
 weave-player-storage = { path = "crates/storage" }
 
 weave-icons = { path = "crates/icons" }
-iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "15930fb959baddc478000c6b41f4d87d6b4ad04a" }
+iced-adaptive-design = { git = "https://github.com/VaZark/iced-libadwaita", rev = "c61ccbe55b6655d95537c22bcaddd938f5125c4a" }
