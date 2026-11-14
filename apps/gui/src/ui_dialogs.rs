@@ -13,7 +13,7 @@ use crate::icons::{cover, playlist_avatar};
 use crate::ui_lists::RowOpts;
 use crate::{App, ChipPicker, Dest, Element, FilterTarget, Message, TagBrowse};
 use iad::prelude::{ChipGroup, ChipOption, ChipSize};
-use iad::primitives::histogram::Histogram;
+use crate::components::histogram_range::{Histogram, HistogramRangeSlider};
 
 /// The id of the Save as playlist name field.
 const SAVE_NAME_ID: &str = "save-name";
@@ -502,7 +502,7 @@ impl App {
             ]
             .align_y(Alignment::Center),
             // One component: the bars and the thumbs edit the same range.
-            w::HistogramRangeSlider::new(histogram, (lo, hi), on_bpm)
+            HistogramRangeSlider::new(histogram, (lo, hi), on_bpm)
                 .step(5.0)
                 .height(48.0),
             row![

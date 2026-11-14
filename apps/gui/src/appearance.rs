@@ -67,9 +67,9 @@ impl ThemeConfig {
         if let Some(default) = default {
             return iad::color::parse(default);
         }
-        // Toolkit schemas declare their native dark defaults separately.
-        if section == "colors" && scheme.is_dark() {
-            config.color("colors-dark", key)
+        if section == "colors" {
+            // The toolkit's declared defaults are scheme-neutral; ask for this scheme's.
+            iad::theme_config::palette_default(scheme, key)
         } else {
             config.color(section, key)
         }
@@ -116,19 +116,10 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
                 && matches!(value.as_str(), "light" | "dark" | "system");
             !section.starts_with("light:")
                 && !section.starts_with("dark:")
-                && section != "colors-dark"
                 && !legacy_scheme
         })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    // Keep the toolkit's older dark-color section as a lower-priority import alias.
-    if scheme.is_dark() {
-        for ((section, key), value) in &raw {
-            if section == "colors-dark" {
-                values.insert(("colors".into(), key.clone()), value.clone());
-            }
-        }
-    }
     let prefix = scheme.light_dark("light:", "dark:");
     for ((section, key), value) in &raw {
         if let Some(base) = section.strip_prefix(prefix) {
@@ -155,6 +146,8 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
     ToolkitConfig::builder(crate::platforms::APP_ID)
         .schema(app_schema)
         .files(false)
+        // A skin is the app's own look: no desktop theme file, desktop.conf or portal scheme.
+        .inheritance(iad::theme_config::Inheritance::OptOut)
         .app_text(resolved)
         .build()
 }
@@ -489,9 +482,9 @@ mod tests {
             theme(iad::Scheme::Dark, &old.config).scheme,
             iad::Scheme::Dark
         );
-        let legacy = ThemeDocument::parse("[theme]\nname=Legacy\nkey=legacy\n[colors]\naccent=#123456\n[colors-dark]\nwindow-bg=#181818\n").unwrap();
+        let dark_variant = ThemeDocument::parse("[theme]\nname=Legacy\nkey=legacy\n[colors]\naccent=#123456\n[dark:colors]\nwindow-bg=#181818\n").unwrap();
         assert_eq!(
-            theme(iad::Scheme::Dark, &legacy.config).semantic.window.bg,
+            theme(iad::Scheme::Dark, &dark_variant.config).semantic.window.bg,
             iad::color::parse("#181818").unwrap()
         );
     }
