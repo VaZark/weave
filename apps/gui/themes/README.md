@@ -5,6 +5,19 @@ appears in the selector. The imported theme is activated and remembered across
 restarts. **Desktop theme** restores the standard appearance. There is no built-in
 preset list and no environment variable needed to select a theme.
 
+`base.conf` is the app-owned libadwaita-style baseline, adapted from
+[`iced-libadwaita/themes/libadwaita.conf`](https://github.com/VaZark/iced-libadwaita/blob/65b1a9ea38e68922565c36e131480e54634f3058/themes/libadwaita.conf).
+The toolkit itself now has neutral defaults, so Weave explicitly bundles its
+standard colors, geometry, typography and effects. This base is not an importable
+skin: it has no theme identity. Imported tokens override the base per key;
+**Desktop theme** removes those overrides and follows the desktop light/dark
+scheme, not an installed toolkit skin. Startup, theme selection and scheme changes
+apply the same resolved config to layout metrics, window chrome and drawing.
+No installed desktop or user theme files are modified. Primary/suggested actions
+follow the resolved accent by default; a skin can override `primary`, `primary-fg`
+and `primary-text` independently. The compatibility fallback is resolved in the
+base config layer, not in button rendering.
+
 Import these examples from this directory:
 
 - `neon-arcade.conf` → **Neon Orbit**: circular artwork, a live radial spectrum,

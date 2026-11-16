@@ -1,3 +1,4 @@
 /target
+/screenshots
 /.cargo/config.toml
 /.cargo/config.toml.local-check

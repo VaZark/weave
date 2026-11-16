@@ -1685,7 +1685,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "iad-icons"
 version = "0.1.0"
-source = "git+https://github.com/VaZark/iced-libadwaita?rev=c61ccbe55b6655d95537c22bcaddd938f5125c4a#c61ccbe55b6655d95537c22bcaddd938f5125c4a"
+source = "git+https://github.com/VaZark/iced-libadwaita?rev=65b1a9ea38e68922565c36e131480e54634f3058#65b1a9ea38e68922565c36e131480e54634f3058"
 
 [[package]]
 name = "iced"
@@ -1707,7 +1707,7 @@ dependencies = [
 [[package]]
 name = "iced-adaptive-design"
 version = "0.1.0"
-source = "git+https://github.com/VaZark/iced-libadwaita?rev=c61ccbe55b6655d95537c22bcaddd938f5125c4a#c61ccbe55b6655d95537c22bcaddd938f5125c4a"
+source = "git+https://github.com/VaZark/iced-libadwaita?rev=65b1a9ea38e68922565c36e131480e54634f3058#65b1a9ea38e68922565c36e131480e54634f3058"
 dependencies = [
  "iad-icons",
  "iced",
@@ -4892,7 +4892,7 @@ dependencies = [
 
 [[package]]
 name = "weave-icons"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "iced",
  "iced-adaptive-design",
@@ -4901,7 +4901,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "serde",
@@ -4911,7 +4911,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4920,7 +4920,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "weave-player-core",
  "weave-player-local",
@@ -4929,7 +4929,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-gui"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "iced",
  "iced-adaptive-design",
@@ -4940,7 +4940,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-lib"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "souvlaki",
  "weave-player-core",
@@ -4950,7 +4950,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-local"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "lofty",
  "rodio",
@@ -4961,7 +4961,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-storage"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "rusqlite",
  "serde_json",

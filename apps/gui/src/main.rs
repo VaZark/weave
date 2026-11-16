@@ -601,6 +601,8 @@ pub struct App {
     pub theme_import_pending: bool,
     pub themes_open: bool,
     pub theme_config: appearance::ThemeConfig,
+    /// Sample/unit-test apps resolve appearance locally, without installing global metrics.
+    runtime_appearance: bool,
     /// "It's been a while" on Home: rated highly, not played for this many days.
     pub while_days: u32,
     pub favorites: std::collections::HashSet<String>,
@@ -637,7 +639,9 @@ impl App {
                 eprintln!("weave: cannot open the library: {e}");
                 std::process::exit(1);
             });
-        Self::with(backend, lib)
+        let (mut app, task) = Self::with(backend, lib);
+        app.enable_runtime_appearance();
+        (app, task)
     }
 
     fn with(mut backend: backend::Backend, lib: Library) -> (Self, Task<Message>) {
@@ -652,6 +656,7 @@ impl App {
         let mut app = Self {
             themes,
             theme_config,
+            runtime_appearance: false,
             theme_import_pending: false,
             themes_open: false,
             backend,
@@ -1809,6 +1814,7 @@ impl App {
             }
             Message::ThemeMode(mode) => {
                 self.theme_mode = mode;
+                self.sync_runtime_appearance();
                 Vec::new()
             }
             Message::SetShufflePref(pref) => {
@@ -2898,6 +2904,7 @@ impl App {
             }
             Message::SystemTheme(settings) => {
                 self.desktop_scheme = settings.scheme;
+                self.sync_runtime_appearance();
                 Vec::new()
             }
             Message::Poll => {
@@ -3171,6 +3178,94 @@ mod tests {
         App::with(backend, lib).0
     }
 
+    // Toolkit layout/chrome consume process globals. Run only the owning fixture in a
+    // child process, so other tests remain parallel and cannot observe its installed skin.
+    fn run_appearance_test_in_subprocess(name: &str) -> bool {
+        if std::env::var("WEAVE_APPEARANCE_TEST").as_deref() == Ok(name) {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("WEAVE_APPEARANCE_TEST", name)
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated appearance test failed: {name}");
+        true
+    }
+
+    #[test]
+    fn runtime_appearance_installs_geometry_on_startup_selection_and_scheme_changes() {
+        if run_appearance_test_in_subprocess(
+            "tests::runtime_appearance_installs_geometry_on_startup_selection_and_scheme_changes",
+        ) {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("weave-runtime-theme-{}", std::process::id()));
+        let mut a = app();
+        a.themes = appearance::ThemeLibrary::load(root.clone());
+        a.themes.themes = appearance::EXAMPLES
+            .into_iter()
+            .map(|text| appearance::ThemeDocument::parse(text).unwrap())
+            .collect();
+        a.themes.selected = None;
+        a.apply_theme();
+        a.enable_runtime_appearance();
+        assert_eq!(iad::Metrics::desktop().gutter, 16.0);
+        assert_eq!(iad::Metrics::desktop().radius_window, 15.0);
+        let queue = a.player.queue.clone();
+        for (key, radius) in [("neon-arcade", 20.0), ("tokyo-lagoon", 14.0)] {
+            let _ = a.update(Message::SelectTheme(Some(key.into())));
+            assert_eq!(a.themes.selected.as_deref(), Some(key));
+            for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
+                let _ = a.update(Message::ThemeMode(Some(scheme)));
+                let metrics = iad::Metrics::desktop();
+                assert_eq!(metrics.gutter, 16.0);
+                assert_eq!(metrics.radius_window, radius);
+                assert_eq!(a.theme().metrics.radius_window, radius);
+                assert_eq!(
+                    iad::theme_config::current().number("metrics", "radius-window"),
+                    Some(radius)
+                );
+                assert_eq!(
+                    iad::Theme::from_config(&iad::config::current()).scheme,
+                    scheme
+                );
+                for (maximized, fullscreen, expected) in [
+                    (false, false, radius),
+                    (true, false, 0.0),
+                    (false, true, 0.0),
+                ] {
+                    let chrome = iad::windows::Chrome::new(iad::windows::State {
+                        maximized,
+                        fullscreen,
+                    })
+                    .csd_override(true);
+                    assert_eq!(chrome.radius(), expected);
+                }
+                a.fullscreen = true;
+                assert_eq!(a.chrome(true, true).radius(), 0.0);
+                a.fullscreen = false;
+            }
+        }
+        let _ = a.update(Message::SelectTheme(None));
+        assert_eq!(iad::Metrics::desktop().radius_window, 15.0);
+        let _ = a.update(Message::ThemeMode(None));
+        for scheme in [iad::Scheme::Dark, iad::Scheme::Light] {
+            let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+                scheme,
+                icon_theme: "hicolor".into(),
+            }));
+            assert_eq!(
+                iad::Theme::from_config(&iad::config::current()).scheme,
+                scheme
+            );
+            assert_eq!(a.theme().scheme, scheme);
+            assert_eq!(iad::Metrics::desktop().gutter, 16.0);
+        }
+        assert_eq!(a.player.queue, queue);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn desktop_events_rebuild_adaptive_palette_and_tag_colors_without_resetting_state() {
         let mut a = app();
@@ -3328,6 +3423,11 @@ mod tests {
 
     #[test]
     fn theme_presets_render_pages_and_filters_without_changing_library_state() {
+        if run_appearance_test_in_subprocess(
+            "tests::theme_presets_render_pages_and_filters_without_changing_library_state",
+        ) {
+            return;
+        }
         use iced::advanced::{
             layout,
             renderer::{Headless, Style},
@@ -3355,14 +3455,26 @@ mod tests {
             .into_iter()
             .map(|text| appearance::ThemeDocument::parse(text).unwrap())
             .collect();
+        a.themes.selected = None;
+        a.apply_theme();
+        a.enable_runtime_appearance();
         let original_filter = a.filter.clone();
         let original_rows = a.rows.clone();
         for text in appearance::EXAMPLES {
             let document = appearance::ThemeDocument::parse(text).unwrap();
             for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
-                a.desktop_scheme = scheme;
-                a.theme_config = document.config.clone();
+                let _ = a.update(Message::SystemTheme(iad::utils::ThemeSettings {
+                    scheme,
+                    icon_theme: "hicolor".into(),
+                }));
+                // The fixture selects in memory: never write the user's active-theme file.
                 a.themes.selected = Some(document.key.clone());
+                a.apply_theme();
+                assert_eq!(iad::Metrics::desktop().gutter, 16.0);
+                assert_eq!(
+                    iad::Metrics::desktop().radius_window,
+                    a.theme().metrics.radius_window,
+                );
                 assert_eq!(a.filter, original_filter);
                 assert_eq!(a.rows, original_rows);
                 assert_eq!(
@@ -3371,6 +3483,7 @@ mod tests {
                 );
                 for (scene, width, height) in [
                     ("app", 1000, 720),
+                    ("app-narrow", 600, 720),
                     ("home", 1000, 720),
                     ("home-narrow", 390, 720),
                     ("filters", 560, 520),
@@ -3419,7 +3532,7 @@ mod tests {
                         a.view()
                     } else if scene.starts_with("now-playing") {
                         a.now_playing_view()
-                    } else if scene == "app" {
+                    } else if scene == "app" || scene == "app-narrow" {
                         a.view()
                     } else {
                         a.page()

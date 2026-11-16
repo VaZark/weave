@@ -7,6 +7,7 @@ use iced_adaptive_design::{
 use std::path::{Path, PathBuf};
 
 const MAX_THEME_BYTES: u64 = 256 * 1024;
+const BASE_THEME: &str = include_str!("../themes/base.conf");
 
 fn schema(scheme: iad::Scheme) -> Schema {
     let mut schema = Schema::new()
@@ -102,9 +103,7 @@ impl ThemeConfig {
     }
 }
 
-fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
-    let app_schema = schema(scheme);
-    let full_schema = Schema::toolkit().with(&app_schema);
+fn mode_text(text: &str, scheme: iad::Scheme, full_schema: &Schema) -> String {
     let raw = iad::config::parse_keyfile(text);
     let mut values: std::collections::BTreeMap<_, _> = raw
         .iter()
@@ -114,9 +113,7 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
             let legacy_scheme = section == "theme"
                 && key == "scheme"
                 && matches!(value.as_str(), "light" | "dark" | "system");
-            !section.starts_with("light:")
-                && !section.starts_with("dark:")
-                && !legacy_scheme
+            !section.starts_with("light:") && !section.starts_with("dark:") && !legacy_scheme
         })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
@@ -143,13 +140,37 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
         }
         resolved.push_str(&format!("{key}={value}\n"));
     }
-    ToolkitConfig::builder(crate::platforms::APP_ID)
-        .schema(app_schema)
-        .files(false)
-        // A skin is the app's own look: no desktop theme file, desktop.conf or portal scheme.
-        .inheritance(iad::theme_config::Inheritance::OptOut)
-        .app_text(resolved)
-        .build()
+    resolved
+}
+
+fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
+    let app_schema = schema(scheme);
+    let full_schema = Schema::toolkit().with(&app_schema);
+    // Resolve each layer's scheme before layering, so base dark colors cannot
+    // outrank an imported skin's unmarked colors at draw time.
+    let mut base = mode_text(BASE_THEME, scheme, &full_schema);
+    let overlay = mode_text(text, scheme, &full_schema);
+    let build = |base: &str| {
+        ToolkitConfig::builder(crate::platforms::APP_ID)
+            .schema(app_schema.clone())
+            .files(false)
+            .inheritance(iad::theme_config::Inheritance::OptOut)
+            .toolkit_text(base)
+            .app_text(overlay.clone())
+            .build()
+    };
+    let cfg = build(&base);
+    let mut palette = iad::Palette::new(scheme);
+    cfg.apply_to_palette(&mut palette, scheme);
+    // Primary became independent in the toolkit. Keep Weave's accent-following
+    // default in the lower config layer, so explicit skin primary tokens still win.
+    base.push_str(&format!(
+        "\n[colors]\nprimary={}\nprimary-fg={}\nprimary-text={}\n",
+        iad::color::to_hex(palette.accent_bg_color),
+        iad::color::to_hex(palette.accent_fg_color),
+        iad::color::to_hex(palette.accent_color),
+    ));
+    build(&base)
 }
 
 pub fn config(text: &str) -> ThemeConfig {
@@ -316,21 +337,46 @@ pub async fn choose() -> Option<PathBuf> {
         .map(|file| file.path().to_path_buf())
 }
 
+/// Resolve layout and paint from the same cascade without changing process globals.
+pub fn resolved_config(
+    desktop: &iad::config::Config,
+    scheme: iad::Scheme,
+    cfg: &ThemeConfig,
+) -> iad::config::Config {
+    let mut resolved = desktop.clone().with_theme_config(cfg.for_scheme(scheme));
+    // OptOut resets desktop preferences; the app still owns its system/light/dark choice.
+    resolved.color_scheme = iad::config::Pick::Fixed(scheme);
+    resolved
+}
+
 pub fn theme(scheme: iad::Scheme, cfg: &ThemeConfig) -> iad::Theme {
-    let mut desktop = (*iad::config::current()).clone();
-    desktop.color_scheme = iad::config::Pick::Fixed(scheme);
-    let theme = iad::Theme::from_config(&desktop);
-    let scheme = theme.scheme;
-    theme.with_theme_config(cfg.for_scheme(scheme))
+    iad::Theme::from_config(&resolved_config(&iad::config::current(), scheme, cfg))
 }
 
 impl App {
+    /// Only live applications (and isolated render fixtures) install toolkit globals.
+    pub fn enable_runtime_appearance(&mut self) {
+        self.runtime_appearance = true;
+        self.sync_runtime_appearance();
+    }
+
+    pub fn sync_runtime_appearance(&self) {
+        if self.runtime_appearance {
+            iad::config::install(resolved_config(
+                &iad::config::current(),
+                self.effective_scheme(),
+                &self.theme_config,
+            ));
+        }
+    }
+
     pub fn apply_theme(&mut self) {
         self.theme_config = self
             .themes
             .current()
             .map(|theme| theme.config.clone())
             .unwrap_or_else(|| config(""));
+        self.sync_runtime_appearance();
     }
     /// Scheme-aware color lookup with an explicit Rust-side fallback.
     pub fn light_dark(&self, key: &str, default: Option<&str>) -> Option<iced::Color> {
@@ -373,6 +419,91 @@ pub const EXAMPLES: [&str; 4] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_base_restores_layout_metrics_and_skin_overrides_without_global_installation() {
+        let desktop = iad::config::Config::default();
+        let base = config("");
+        for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
+            assert!(base.warnings().is_empty(), "{:?}", base.warnings());
+            assert!(base.unknown().is_empty(), "{:?}", base.unknown());
+            let resolved = resolved_config(&desktop, scheme, &base);
+            let metrics = resolved.metrics();
+            assert_eq!(metrics.gutter, 16.0);
+            assert_eq!(metrics.radius_m, 9.0);
+            assert_eq!(metrics.radius_l, 12.0);
+            assert_eq!(metrics.radius_window, 15.0);
+            assert_eq!(metrics.headerbar_height, 47.0);
+            assert_eq!(metrics.button_min_height, 34.0);
+            assert_eq!(metrics.card_padding, iced::Padding::from(12.0));
+            for (text, radius_m, radius_window) in [
+                (EXAMPLES[0], 14.0, 20.0),
+                (EXAMPLES[1], 8.0, 14.0),
+                (EXAMPLES[2], 12.0, 18.0),
+                (EXAMPLES[3], 18.0, 24.0),
+            ] {
+                let skin = config(text);
+                let selected = resolved_config(&resolved, scheme, &skin);
+                assert_eq!(selected.metrics().gutter, metrics.gutter);
+                assert_eq!(selected.metrics().radius_m, radius_m);
+                assert_eq!(selected.metrics().radius_window, radius_window);
+                let painted = iad::Theme::from_config(&selected);
+                assert_eq!(painted.metrics.radius_m, radius_m);
+                assert_eq!(painted.metrics.radius_window, radius_window);
+                let restored = resolved_config(&selected, scheme, &base);
+                assert_eq!(restored.metrics().radius_window, metrics.radius_window);
+                assert_eq!(restored.metrics().radius_m, metrics.radius_m);
+            }
+        }
+    }
+
+    #[test]
+    fn primary_actions_follow_inherited_or_skin_accent_unless_explicitly_overridden() {
+        for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
+            for text in std::iter::once("").chain(EXAMPLES) {
+                let cfg = config(text);
+                let theme = theme(scheme, &cfg);
+                let p = &theme.palette;
+                for (primary, accent) in [
+                    (p.primary_bg_color, p.accent_bg_color),
+                    (p.primary_fg_color, p.accent_fg_color),
+                    (p.primary_color, p.accent_color),
+                ] {
+                    assert_eq!(iad::color::to_hex(primary), iad::color::to_hex(accent));
+                }
+                assert_eq!(
+                    iad::color::to_hex(p.primary_bg_color),
+                    iad::color::to_hex(cfg.for_scheme(scheme).color("colors", "accent").unwrap())
+                );
+                let button =
+                    iad::styles::button::suggested(&theme, iced::widget::button::Status::Active);
+                assert_eq!(
+                    button.background,
+                    Some(iced::Background::Color(p.primary_bg_color))
+                );
+            }
+            let cfg = config(
+                "[colors]\naccent=#a92777\nprimary=#116633\nprimary-fg=#ffffff\nprimary-text=#113322\n[dark:colors]\naccent=#ff6ac1\nprimary=#225599\nprimary-fg=#ffffee\nprimary-text=#aaddff\n",
+            );
+            let theme = theme(scheme, &cfg);
+            let p = &theme.palette;
+            for (key, actual) in [
+                ("primary", p.primary_bg_color),
+                ("primary-fg", p.primary_fg_color),
+                ("primary-text", p.primary_color),
+            ] {
+                assert_eq!(Some(actual), cfg.for_scheme(scheme).color("colors", key));
+            }
+            assert_ne!(p.primary_bg_color, p.accent_bg_color);
+            let button =
+                iad::styles::button::suggested(&theme, iced::widget::button::Status::Active);
+            assert_eq!(
+                button.background,
+                Some(iced::Background::Color(p.primary_bg_color))
+            );
+        }
+    }
+
     #[test]
     fn examples_follow_system_and_keep_every_color_adaptive_and_legible() {
         for text in EXAMPLES {
@@ -484,7 +615,10 @@ mod tests {
         );
         let dark_variant = ThemeDocument::parse("[theme]\nname=Legacy\nkey=legacy\n[colors]\naccent=#123456\n[dark:colors]\nwindow-bg=#181818\n").unwrap();
         assert_eq!(
-            theme(iad::Scheme::Dark, &dark_variant.config).semantic.window.bg,
+            theme(iad::Scheme::Dark, &dark_variant.config)
+                .semantic
+                .window
+                .bg,
             iad::color::parse("#181818").unwrap()
         );
     }
