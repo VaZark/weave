@@ -1,7 +1,7 @@
 # Importable player skins
 
 Palette-only built-in options do not express the intended music-player skins.
-Use portable ThemeConfig documents with required `[theme] name` and `key`, mode-specific
+Use portable ThemeConfig documents with required `theme` `name` and `key` (RON), mode-specific
 color sections over common defaults, and optional player presentation settings.
 The selector contains imported documents plus Desktop. A system chooser imports
 one document; validation happens before an atomic copy into the app's own config

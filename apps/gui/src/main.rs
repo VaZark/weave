@@ -3151,7 +3151,7 @@ fn main() -> iced::Result {
         print!("{}", platforms::DESKTOP_ENTRY.render());
         return Ok(());
     }
-    // Shared desktop behavior: ~/.config/iced-adaptive-design/desktop.conf (+ system files).
+    // Shared desktop behavior: ~/.config/iced-adaptive-design/desktop.ron (+ system files).
     iad::config::install(iad::config::Config::load());
     iced::application(App::new, App::update, App::view)
         .title(App::title)
@@ -3680,7 +3680,7 @@ mod tests {
         let _ = a.update(Message::Themes(true));
         assert!(a.themes_open && a.dialog_open_for_test());
         let _ = a.view();
-        let source = root.join("theme.conf");
+        let source = root.join("theme.ron");
         std::fs::write(&source, appearance::EXAMPLES[0]).unwrap();
         let _ = a.update(Message::ThemeChosen(Some(source)));
         assert!(a.themes_open, "import must return to the chooser");
@@ -3715,13 +3715,18 @@ mod tests {
         let _ = a.update(Message::ThemeChosen(None));
         assert!(!a.theme_import_pending);
         assert!(a.themes.themes.is_empty());
-        let path = root.join("skin.conf");
+        let path = root.join("skin.ron");
         std::fs::write(&path, appearance::EXAMPLES[0]).unwrap();
         let _ = a.update(Message::ThemeChosen(Some(path.clone())));
         assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
         assert_eq!(a.theme_config.text("player", "artwork"), Some("disc"));
         assert_eq!(a.filter, original);
-        std::fs::write(&path, "[theme]\nkey=../invalid\n").unwrap();
+        std::fs::write(&path, r##"{
+    "theme": {
+        "key": "../invalid",
+    },
+}
+"##).unwrap();
         let _ = a.update(Message::ThemeChosen(Some(path)));
         assert_eq!(a.themes.current().unwrap().name, "Neon Orbit");
         assert!(a.notice.as_ref().unwrap().0.contains("Cannot import theme"));

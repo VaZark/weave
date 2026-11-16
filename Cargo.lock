@@ -456,6 +456,9 @@ name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "bitstream-io"
@@ -1685,7 +1688,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "iad-icons"
 version = "0.1.0"
-source = "git+https://github.com/VaZark/iced-libadwaita?rev=65b1a9ea38e68922565c36e131480e54634f3058#65b1a9ea38e68922565c36e131480e54634f3058"
+source = "git+https://github.com/VaZark/iced-libadwaita?rev=521a233b08084d2ba412970c786ed7a46f92cbba#521a233b08084d2ba412970c786ed7a46f92cbba"
 
 [[package]]
 name = "iced"
@@ -1707,13 +1710,14 @@ dependencies = [
 [[package]]
 name = "iced-adaptive-design"
 version = "0.1.0"
-source = "git+https://github.com/VaZark/iced-libadwaita?rev=65b1a9ea38e68922565c36e131480e54634f3058#65b1a9ea38e68922565c36e131480e54634f3058"
+source = "git+https://github.com/VaZark/iced-libadwaita?rev=521a233b08084d2ba412970c786ed7a46f92cbba#521a233b08084d2ba412970c786ed7a46f92cbba"
 dependencies = [
  "iad-icons",
  "iced",
  "image",
  "regex",
  "resvg",
+ "ron",
  "roxmltree",
  "svgtypes",
  "tokio",
@@ -3634,6 +3638,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ron"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97b3fe97c18ff24299ea56f802c5693eb34266fb0bc8317f4e101debc8a3ceaf"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+ "serde_derive",
+ "typeid",
+ "unicode-ident",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4529,6 +4546,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+
+[[package]]
 name = "uds_windows"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4892,7 +4915,7 @@ dependencies = [
 
 [[package]]
 name = "weave-icons"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "iced",
  "iced-adaptive-design",
@@ -4901,7 +4924,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "clap",
  "serde",
@@ -4911,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -4920,7 +4943,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-engine"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "weave-player-core",
  "weave-player-local",
@@ -4929,7 +4952,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-gui"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "iced",
  "iced-adaptive-design",
@@ -4940,7 +4963,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-lib"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "souvlaki",
  "weave-player-core",
@@ -4950,7 +4973,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-local"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "lofty",
  "rodio",
@@ -4961,7 +4984,7 @@ dependencies = [
 
 [[package]]
 name = "weave-player-storage"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "rusqlite",
  "serde_json",

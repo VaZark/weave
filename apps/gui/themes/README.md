@@ -5,8 +5,8 @@ appears in the selector. The imported theme is activated and remembered across
 restarts. **Desktop theme** restores the standard appearance. There is no built-in
 preset list and no environment variable needed to select a theme.
 
-`base.conf` is the app-owned libadwaita-style baseline, adapted from
-[`iced-libadwaita/themes/libadwaita.conf`](https://github.com/VaZark/iced-libadwaita/blob/65b1a9ea38e68922565c36e131480e54634f3058/themes/libadwaita.conf).
+`base.ron` is the app-owned libadwaita-style baseline, adapted from
+[`iced-libadwaita/themes/libadwaita.ron`](https://github.com/VaZark/iced-libadwaita/blob/521a233b08084d2ba412970c786ed7a46f92cbba/themes/libadwaita.ron).
 The toolkit itself now has neutral defaults, so Weave explicitly bundles its
 standard colors, geometry, typography and effects. This base is not an importable
 skin: it has no theme identity. Imported tokens override the base per key;
@@ -20,13 +20,13 @@ base config layer, not in button rendering.
 
 Import these examples from this directory:
 
-- `neon-arcade.conf` → **Neon Orbit**: circular artwork, a live radial spectrum,
+- `neon-arcade.ron` → **Neon Orbit**: circular artwork, a live radial spectrum,
   plum surfaces, pink, cyan and violet accents.
-- `tokyo-lagoon.conf` → **Amber Tide**: teal surfaces, a circular spectrum, and
+- `tokyo-lagoon.ron` → **Amber Tide**: teal surfaces, a circular spectrum, and
   ambient surface tinting from the current cover's color.
-- `mocha-pop.conf` → **Studio Velvet**: a restrained square-artwork player and
+- `mocha-pop.ron` → **Studio Velvet**: a restrained square-artwork player and
   violet-charcoal surfaces.
-- `sakura-soda.conf` → **Cotton Candy**: a light rose/porcelain player with a disc
+- `sakura-soda.ron` → **Cotton Candy**: a light rose/porcelain player with a disc
   and raspberry spectrum ring.
 
 The chooser shows all files; extensions do not determine whether a theme is valid.
@@ -35,42 +35,45 @@ When running from a development checkout it opens the example themes folder.
 Every theme announces its own identity. The filename does not control the label
 or identity:
 
-```ini
-[theme]
-name=My Night Player
-key=my-night-player
-
-[player]
-artwork=disc
-radial-visualizer=true
-ambient=true
-
-[colors]
-accent=#a92777
-window-bg=#fff5fb
-window-fg=#35213b
-view-bg=#fffafd
-view-fg=#35213b
-card-bg=#f4e6f3
-card-fg=#35213b
-
-[dark:colors]
-accent=#ff6ac1
-window-bg=#18112b
-window-fg=#f6efff
-view-bg=#211532
-view-fg=#f6efff
-card-bg=#302047
-card-fg=#f6efff
-
-[metrics]
-radius-m=14
-radius-l=18
-
-[tags]
-genre=#b892ff
-mood=#ff83c9
-lang=#64e6cf
+```ron
+{
+    "theme": {
+        "name": "My Night Player",
+        "key": "my-night-player",
+    },
+    "player": {
+        "artwork": "disc",
+        "radial-visualizer": true,
+        "ambient": true,
+    },
+    "colors": {
+        "accent": "#a92777",
+        "window-bg": "#fff5fb",
+        "window-fg": "#35213b",
+        "view-bg": "#fffafd",
+        "view-fg": "#35213b",
+        "card-bg": "#f4e6f3",
+        "card-fg": "#35213b",
+    },
+    "dark:colors": {
+        "accent": "#ff6ac1",
+        "window-bg": "#18112b",
+        "window-fg": "#f6efff",
+        "view-bg": "#211532",
+        "view-fg": "#f6efff",
+        "card-bg": "#302047",
+        "card-fg": "#f6efff",
+    },
+    "metrics": {
+        "radius-m": 14,
+        "radius-l": 18,
+    },
+    "tags": {
+        "genre": "#b892ff",
+        "mood": "#ff83c9",
+        "lang": "#64e6cf",
+    },
+}
 ```
 
 `name` is required (1–80 printable characters). `key` is required, starts with a
@@ -84,7 +87,7 @@ metric tokens are available; category colors are in `[tags]`.
 
 Imports validate metadata and token types before writing. Files must be UTF-8
 and under 256 KiB. Themes are inert config data, not executable plugins. Imported
-copies live in `$XDG_CONFIG_HOME/io.github.vazark.Weave/themes/<key>.conf`
+copies live in `$XDG_CONFIG_HOME/io.github.vazark.Weave/themes/<key>.ron`
 (normally `~/.config/...`); selection lives in `active-theme` beside that folder.
 Reimporting the same key updates that theme instead of adding a duplicate.
 Edit a source file and reimport it to try changes without rebuilding.

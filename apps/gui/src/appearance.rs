@@ -2,12 +2,12 @@
 use crate::{App, data};
 use iced_adaptive_design::{
     self as iad,
-    theme_config::{Kind, Schema, ThemeConfig as ToolkitConfig},
+    theme_config::{Document, Kind, Schema, ThemeConfig as ToolkitConfig},
 };
 use std::path::{Path, PathBuf};
 
 const MAX_THEME_BYTES: u64 = 256 * 1024;
-const BASE_THEME: &str = include_str!("../themes/base.conf");
+const BASE_THEME: &str = include_str!("../themes/base.ron");
 
 fn schema(scheme: iad::Scheme) -> Schema {
     let mut schema = Schema::new()
@@ -103,44 +103,37 @@ impl ThemeConfig {
     }
 }
 
-fn mode_text(text: &str, scheme: iad::Scheme, full_schema: &Schema) -> String {
-    let raw = iad::config::parse_keyfile(text);
-    let mut values: std::collections::BTreeMap<_, _> = raw
-        .iter()
-        .filter(|((section, key), value)| {
-            // Old documents remain importable, but their scheme metadata no longer
-            // overrides the desktop. New documents have no scheme field.
-            let legacy_scheme = section == "theme"
-                && key == "scheme"
-                && matches!(value.as_str(), "light" | "dark" | "system");
-            !section.starts_with("light:") && !section.starts_with("dark:") && !legacy_scheme
-        })
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
+/// The document for one scheme: the base sections, with the scheme's `light:`/`dark:` sections
+/// laid over them. Text that is not RON has no values here; `ThemeDocument::parse` reports it.
+fn mode_doc(text: &str, scheme: iad::Scheme, full_schema: &Schema) -> Document {
+    use iad::theme_config::ron::Value as R;
+    let raw = Document::parse(text).unwrap_or_default();
+    let mut doc = Document::default();
+    for (section, key, value) in raw.entries() {
+        // Old documents remain importable, but their scheme metadata no longer
+        // overrides the desktop. New documents have no scheme field.
+        let legacy_scheme = section == "theme"
+            && key == "scheme"
+            && matches!(value, R::String(s) if matches!(s.as_str(), "light" | "dark" | "system"));
+        if !section.starts_with("light:") && !section.starts_with("dark:") && !legacy_scheme {
+            doc.set(section, key, value.clone());
+        }
+    }
     let prefix = scheme.light_dark("light:", "dark:");
-    for ((section, key), value) in &raw {
+    for (section, key, value) in raw.entries() {
         if let Some(base) = section.strip_prefix(prefix) {
             // Mode-specific sections contain colors, leaving identity and behavior mode-neutral.
             if full_schema
                 .get(base, key)
                 .is_some_and(|spec| spec.ty.kind() == Kind::Color)
             {
-                values.insert((base.to_owned(), key.clone()), value.clone());
+                doc.set(base, key, value.clone());
             } else {
-                values.insert((section.clone(), key.clone()), value.clone());
+                doc.set(section, key, value.clone());
             }
         }
     }
-    let mut resolved = String::new();
-    let mut previous = None;
-    for ((section, key), value) in values {
-        if previous.as_deref() != Some(section.as_str()) {
-            resolved.push_str(&format!("\n[{section}]\n"));
-            previous = Some(section);
-        }
-        resolved.push_str(&format!("{key}={value}\n"));
-    }
-    resolved
+    doc
 }
 
 fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
@@ -148,9 +141,10 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
     let full_schema = Schema::toolkit().with(&app_schema);
     // Resolve each layer's scheme before layering, so base dark colors cannot
     // outrank an imported skin's unmarked colors at draw time.
-    let mut base = mode_text(BASE_THEME, scheme, &full_schema);
-    let overlay = mode_text(text, scheme, &full_schema);
-    let build = |base: &str| {
+    let mut base = mode_doc(BASE_THEME, scheme, &full_schema);
+    let overlay = mode_doc(text, scheme, &full_schema).to_text("", &full_schema);
+    let build = |base: &Document| {
+        let base = base.to_text("", &full_schema);
         ToolkitConfig::builder(crate::platforms::APP_ID)
             .schema(app_schema.clone())
             .files(false)
@@ -164,12 +158,17 @@ fn build_config(text: &str, scheme: iad::Scheme) -> ToolkitConfig {
     cfg.apply_to_palette(&mut palette, scheme);
     // Primary became independent in the toolkit. Keep Weave's accent-following
     // default in the lower config layer, so explicit skin primary tokens still win.
-    base.push_str(&format!(
-        "\n[colors]\nprimary={}\nprimary-fg={}\nprimary-text={}\n",
-        iad::color::to_hex(palette.accent_bg_color),
-        iad::color::to_hex(palette.accent_fg_color),
-        iad::color::to_hex(palette.accent_color),
-    ));
+    for (key, color) in [
+        ("primary", palette.accent_bg_color),
+        ("primary-fg", palette.accent_fg_color),
+        ("primary-text", palette.accent_color),
+    ] {
+        base.set(
+            "colors",
+            key,
+            iad::theme_config::ron::Value::String(iad::color::to_hex(color)),
+        );
+    }
     build(&base)
 }
 
@@ -193,6 +192,8 @@ impl ThemeDocument {
         if text.len() as u64 > MAX_THEME_BYTES {
             return Err("Theme files must be smaller than 256 KiB".into());
         }
+        // A file that is not RON is reported with where it went wrong.
+        Document::parse(text)?;
         let cfg = config(text);
         if !cfg.warnings().is_empty() {
             return Err(cfg.warnings().join("; "));
@@ -203,7 +204,7 @@ impl ThemeDocument {
         let name = cfg.text("theme", "name").unwrap_or("").trim().to_string();
         let key = cfg.text("theme", "key").unwrap_or("").to_string();
         if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
-            return Err("[theme] name must contain 1–80 printable characters".into());
+            return Err("theme name must contain 1–80 printable characters".into());
         }
         if key.is_empty()
             || key.len() > 64
@@ -212,10 +213,10 @@ impl ThemeDocument {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         {
-            return Err("[theme] key must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens (up to 64 characters)".into());
+            return Err("theme key must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens (up to 64 characters)".into());
         }
         if !matches!(cfg.text("player", "artwork"), Some("square" | "disc")) {
-            return Err("[player] artwork must be square or disc".into());
+            return Err("player artwork must be square or disc".into());
         }
         Ok(Self {
             name,
@@ -247,7 +248,7 @@ impl ThemeLibrary {
         if let Ok(files) = std::fs::read_dir(root.join("themes")) {
             for entry in files.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "conf") {
+                if path.extension().is_some_and(|ext| ext == "ron") {
                     if let Ok(theme) = read_document(&path) {
                         if path
                             .file_stem()
@@ -281,7 +282,7 @@ impl ThemeLibrary {
         let theme = read_document(path)?;
         let dir = self.root.join("themes");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        atomic_write(&dir.join(format!("{}.conf", theme.key)), &theme.text)?;
+        atomic_write(&dir.join(format!("{}.ron", theme.key)), &theme.text)?;
         let key = theme.key.clone();
         self.themes.retain(|old| old.key != key);
         self.themes.push(theme);
@@ -410,10 +411,10 @@ impl App {
 
 #[cfg(test)]
 pub const EXAMPLES: [&str; 4] = [
-    include_str!("../themes/neon-arcade.conf"),
-    include_str!("../themes/tokyo-lagoon.conf"),
-    include_str!("../themes/mocha-pop.conf"),
-    include_str!("../themes/sakura-soda.conf"),
+    include_str!("../themes/neon-arcade.ron"),
+    include_str!("../themes/tokyo-lagoon.ron"),
+    include_str!("../themes/mocha-pop.ron"),
+    include_str!("../themes/sakura-soda.ron"),
 ];
 
 #[cfg(test)]
@@ -483,7 +484,21 @@ mod tests {
                 );
             }
             let cfg = config(
-                "[colors]\naccent=#a92777\nprimary=#116633\nprimary-fg=#ffffff\nprimary-text=#113322\n[dark:colors]\naccent=#ff6ac1\nprimary=#225599\nprimary-fg=#ffffee\nprimary-text=#aaddff\n",
+                r##"{
+    "colors": {
+        "accent": "#a92777",
+        "primary": "#116633",
+        "primary-fg": "#ffffff",
+        "primary-text": "#113322",
+    },
+    "dark:colors": {
+        "accent": "#ff6ac1",
+        "primary": "#225599",
+        "primary-fg": "#ffffee",
+        "primary-text": "#aaddff",
+    },
+}
+"##,
             );
             let theme = theme(scheme, &cfg);
             let p = &theme.palette;
@@ -508,12 +523,16 @@ mod tests {
     fn examples_follow_system_and_keep_every_color_adaptive_and_legible() {
         for text in EXAMPLES {
             let document = ThemeDocument::parse(text).unwrap();
-            for ((section, _), value) in iad::config::parse_keyfile(text) {
+            for (section, _, value) in Document::parse(text).unwrap().entries() {
                 if matches!(
-                    section.as_str(),
+                    section,
                     "colors" | "tags" | "dark:colors" | "dark:tags" | "light:colors" | "light:tags"
                 ) {
-                    assert!(iad::color::parse(&value).is_some(), "{section}: {value}");
+                    let ron_value = value;
+                    let iad::theme_config::ron::Value::String(value) = ron_value else {
+                        panic!("{section}: {ron_value:?} is not a color string");
+                    };
+                    assert!(iad::color::parse(value).is_some(), "{section}: {value}");
                 }
             }
             for scheme in [iad::Scheme::Light, iad::Scheme::Dark] {
@@ -566,7 +585,12 @@ mod tests {
                 iad::color::parse("#12345680")
             );
         }
-        let configured = config("[colors]\naccent=#abcdef\n");
+        let configured = config(r##"{
+    "colors": {
+        "accent": "#abcdef",
+    },
+}
+"##);
         assert_eq!(
             configured.light_dark(iad::Scheme::Light, "accent", Some("#000")),
             iad::color::parse("#abcdef")
@@ -575,7 +599,30 @@ mod tests {
 
     #[test]
     fn mode_sections_cascade_over_defaults_independently_of_file_order() {
-        let document = ThemeDocument::parse("[theme]\nname=Cascade\nkey=cascade\n[dark:colors]\nwindow-bg=#111111\n[light:colors]\naccent=#123456\n[colors]\nwindow-bg=#eeeeee\nwindow-fg=#333333\naccent=#456789\n[tags]\ngenre=#123456\n[dark:tags]\ngenre=#abcdef\n").unwrap();
+        let document = ThemeDocument::parse(r##"{
+    "theme": {
+        "name": "Cascade",
+        "key": "cascade",
+    },
+    "dark:colors": {
+        "window-bg": "#111111",
+    },
+    "light:colors": {
+        "accent": "#123456",
+    },
+    "colors": {
+        "window-bg": "#eeeeee",
+        "window-fg": "#333333",
+        "accent": "#456789",
+    },
+    "tags": {
+        "genre": "#123456",
+    },
+    "dark:tags": {
+        "genre": "#abcdef",
+    },
+}
+"##).unwrap();
         let cfg = &document.config;
         let read =
             |scheme, key| iad::color::to_hex(cfg.light_dark(scheme, key, Some("#987654")).unwrap());
@@ -598,13 +645,20 @@ mod tests {
             for value in ["not-a-color", "light-dark(#fff,#000)"] {
                 assert!(
                     ThemeDocument::parse(&format!(
-                        "[theme]\nname=Test\nkey=test\n[{section}]\nwindow-bg={value}\n"
+                        "{{ \"theme\": {{ \"name\": \"Test\", \"key\": \"test\" }}, {section:?}: {{ \"window-bg\": {value:?} }} }}"
                     ))
                     .is_err()
                 );
             }
         }
-        let old = ThemeDocument::parse("[theme]\nname=Old\nkey=old\nscheme=dark\n").unwrap();
+        let old = ThemeDocument::parse(r##"{
+    "theme": {
+        "name": "Old",
+        "key": "old",
+        "scheme": "dark",
+    },
+}
+"##).unwrap();
         assert_eq!(
             theme(iad::Scheme::Light, &old.config).scheme,
             iad::Scheme::Light
@@ -613,7 +667,19 @@ mod tests {
             theme(iad::Scheme::Dark, &old.config).scheme,
             iad::Scheme::Dark
         );
-        let dark_variant = ThemeDocument::parse("[theme]\nname=Legacy\nkey=legacy\n[colors]\naccent=#123456\n[dark:colors]\nwindow-bg=#181818\n").unwrap();
+        let dark_variant = ThemeDocument::parse(r##"{
+    "theme": {
+        "name": "Legacy",
+        "key": "legacy",
+    },
+    "colors": {
+        "accent": "#123456",
+    },
+    "dark:colors": {
+        "window-bg": "#181818",
+    },
+}
+"##).unwrap();
         assert_eq!(
             theme(iad::Scheme::Dark, &dark_variant.config)
                 .semantic
@@ -632,7 +698,7 @@ mod tests {
         let key = library.import(&source).unwrap();
         library.select(Some(key.clone())).unwrap();
         assert_eq!(
-            std::fs::read_to_string(root.join("settings/themes").join(format!("{key}.conf")))
+            std::fs::read_to_string(root.join("settings/themes").join(format!("{key}.ron")))
                 .unwrap(),
             EXAMPLES[0]
         );
@@ -654,10 +720,37 @@ mod tests {
     #[test]
     fn invalid_metadata_and_settings_are_rejected_before_import() {
         for text in [
-            "[theme]\nname=Oops\nkey=../escape\n",
-            "[theme]\nname=Oops\nkey=valid\nscheme=purple\n",
-            "[theme]\nname=Oops\nkey=valid\n[player]\nartwork=triangle\n",
-            "[colors]\naccent=bad\n",
+            r##"{
+    "theme": {
+        "name": "Oops",
+        "key": "../escape",
+    },
+}
+"##,
+            r##"{
+    "theme": {
+        "name": "Oops",
+        "key": "valid",
+        "scheme": "purple",
+    },
+}
+"##,
+            r##"{
+    "theme": {
+        "name": "Oops",
+        "key": "valid",
+    },
+    "player": {
+        "artwork": "triangle",
+    },
+}
+"##,
+            r##"{
+    "colors": {
+        "accent": "bad",
+    },
+}
+"##,
             "",
         ] {
             assert!(ThemeDocument::parse(text).is_err());
